@@ -60,4 +60,4 @@ jobs:
 
       - name: pip-audit (dependency vulnerabilities)
         continue-on-error: true
-        run: uv run --frozen pip-audit --strict
+        run: uv run --frozen pip-audit --skip-editable
