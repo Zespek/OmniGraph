@@ -1,0 +1,80 @@
+"""Query logging for omnigraph — append-only JSONL, fail-silent."""
+from __future__ import annotations
+
+import json
+import os
+import re
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+_NODES_RE = re.compile(r"(\d+)\s+nodes?\s+found")
+
+
+def _log_path() -> Path | None:
+    # Somente adesão. O log registra cada pergunta de consulta/caminho/explicação e
+    # caminho do corpus (e respostas completas se OMNIGRAPH_QUERY_LOG_RESPONSES) em um
+    # arquivo de texto simples em ~/.cache - fora de qualquer .gitignore/retention de qualquer repositório. UM
+    # o registro padrão de consultas proprietárias contradiz o dispositivo do zspekfy,
+    # postura sem telemetria, portanto está DESLIGADO, a menos que seja explicitamente ativado:
+    #   OMNIGRAPH_QUERY_LOG=<caminho> registre-se nesse caminho ou
+    #   OMNIGRAPH_QUERY_LOG_ENABLE=1 log em ~/.cache/omnigraph-queries.log.
+    # OMNIGRAPH_QUERY_LOG_DISABLE=1 ainda força o desligamento (compatibilidade retroativa, vitórias).
+    if os.environ.get("OMNIGRAPH_QUERY_LOG_DISABLE", "").lower() in ("1", "true", "yes"):
+        return None
+    override = os.environ.get("OMNIGRAPH_QUERY_LOG", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if os.environ.get("OMNIGRAPH_QUERY_LOG_ENABLE", "").lower() in ("1", "true", "yes"):
+        return Path.home() / ".cache" / "omnigraph-queries.log"
+    return None
+
+
+def _log_responses() -> bool:
+    return os.environ.get("OMNIGRAPH_QUERY_LOG_RESPONSES", "").lower() in ("1", "true", "yes")
+
+
+def nodes_from_result(result: str) -> int | None:
+    m = _NODES_RE.search(result or "")
+    return int(m.group(1)) if m else None
+
+
+def log_query(
+    *,
+    kind: str,
+    question: str,
+    corpus: str,
+    result: str | None = None,
+    nodes_returned: int | None = None,
+    duration_ms: float | None = None,
+    **extra: Any,
+) -> None:
+    """Append one JSONL record to the query log. Never raises."""
+    try:
+        path = _log_path()
+        if path is None:
+            return
+        if nodes_returned is None and result is not None:
+            nodes_returned = nodes_from_result(result)
+        rec: dict[str, Any] = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "kind": kind,
+            "question": question,
+            "corpus": corpus,
+            "nodes_returned": nodes_returned,
+        }
+        if result is not None:
+            rec["result_chars"] = len(result)
+        if duration_ms is not None:
+            rec["duration_ms"] = round(duration_ms, 3)
+        for k, v in extra.items():
+            if v is not None:
+                rec[k] = v
+        if result is not None and _log_responses():
+            rec["response"] = result
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
