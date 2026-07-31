@@ -1990,7 +1990,7 @@ def _build_http_app(
     # estão expondo intencionalmente o servidor, então aceite qualquer cabeçalho Host; por um
     # loopback/ligação específica, restrinja o Host a esse endereço (com e sem
     # a porta) mais os aliases do host local.
-    if host in ("0.0.0.0", "::", ""):
+    if host in ("0.0.0.0", "::", ""):  # nosec B104
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     else:
         allowed = {host, "localhost", "127.0.0.1"}
@@ -2045,7 +2045,7 @@ def serve_http(
 
     ``api_key`` (or the ``OMNIGRAPH_API_KEY`` env var) enables a simple header
     check (``Authorization: Bearer <key>`` or ``X-API-Key: <key>``). OAuth is a
-    deliberate follow-up. Binding ``0.0.0.0`` exposes the server beyond
+    deliberate follow-up. Binding ``0.0.0.0`` exposes the server beyond  # nosec B104
     localhost — set an api_key when you do.
     """
     graph_path = graph_path or _default_graph_json()
@@ -2075,9 +2075,9 @@ def serve_http(
         f"omnigraph MCP server (streamable-http) on http://{host}:{port}{path} - {auth_note}",
         file=sys.stderr,
     )
-    if host in ("0.0.0.0", "::", "") and not api_key:
+    if host in ("0.0.0.0", "::", "") and not api_key:  # nosec B104
         print(
-            f"WARNING: binding {host or '0.0.0.0'} with no api-key exposes the graph "
+            f"WARNING: binding {host or '0.0.0.0'} with no api-key exposes the graph "  # nosec B104
             "unauthenticated on the network. Set --api-key (or OMNIGRAPH_API_KEY).",
             file=sys.stderr,
         )

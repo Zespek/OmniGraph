@@ -12,6 +12,7 @@ license-files = ["LICENSE", "LICENSE-MIT", "NOTICE"]
 keywords = ["claude", "claude-code", "codex", "opencode", "kilo", "cursor", "gemini", "aider", "kiro", "pi", "devin", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
 requires-python = ">=3.10"
 dependencies = [
+    "defusedxml>=0.7",
     "networkx>=3.4",
     "numpy>=1.21",
     "rapidfuzz>=3.0",

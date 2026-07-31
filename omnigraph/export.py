@@ -423,7 +423,7 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     b = s.encode("utf-8")
     if len(b) <= limit:
         return s
-    digest = hashlib.sha1(s.encode("utf-8")).hexdigest()[:8]  # nosec - não é segurança
+    digest = hashlib.sha1(s.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]  # nosec - não é segurança
     keep = limit - 9  # "_" + 8 hex chars
     truncated = b[:keep].decode("utf-8", "ignore")  # "ignorar" descarta um caractere dividido à direita
     return f"{truncated}_{digest}"

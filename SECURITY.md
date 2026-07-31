@@ -7,8 +7,8 @@ zespek@server:~$ cat ./politica_seguranca.ini
 [ Diretrizes de Segurança, Versões Suportadas e Reporte de Vulnerabilidades ]
 
 [Versoes_Suportadas]
-  - "0.3.x  : Sim (Ativa)"
-  - "< 0.3  : Não"
+  - "1.0.x  : Sim (Ativa)"
+  - "< 1.0  : Não"
 
 [Como_Reportar_Vulnerabilidade]
   - "Por favor, NÃO abra uma issue pública no GitHub para relatar falhas de segurança."

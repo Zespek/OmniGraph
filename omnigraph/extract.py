@@ -3081,7 +3081,7 @@ def extract_lazarus_package(path: Path) -> dict:
     - package --contains--> listed unit
     """
     try:
-        import xml.etree.ElementTree as ET
+        import defusedxml.ElementTree as ET
         src = path.read_bytes()
     except OSError as e:
         return {"nodes": [], "edges": [], "error": str(e)}
@@ -3186,7 +3186,7 @@ def extract_slnx(path: Path) -> dict:
     Project="..."/>`` children. Unlike .sln there are no GUIDs -- projects are
     identified by their path.
     """
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as ET
 
     try:
         src = path.read_bytes()
@@ -3265,7 +3265,7 @@ def extract_slnx(path: Path) -> dict:
 
 def extract_csproj(path: Path) -> dict:
     """Extract packages, project refs, and target framework from a .csproj/.fsproj/.vbproj."""
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as ET
 
     try:
         src = path.read_bytes()
@@ -3776,7 +3776,7 @@ def _xaml_communitytoolkit_members(vm_node: dict) -> tuple[dict[str, dict], list
 
 def extract_xaml(path: Path) -> dict:
     """Extract WPF/XAML structure, bindings, x:Class, and event handler references."""
-    import xml.etree.ElementTree as ET
+    import defusedxml.ElementTree as ET
 
     try:
         src = path.read_bytes()
