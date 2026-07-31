@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="OmniGraph">
+  <defs>
+    <style>
+      .aresta      { stroke: #7a2f9e; stroke-width: 1.1; stroke-linecap: round; opacity: 0.6; fill: none; }
+      .aresta-viva { stroke: #bd00ff; stroke-width: 1.2; stroke-linecap: round; opacity: 0.95; fill: none; }
+      .no          { fill: #0d0714; stroke: #bd00ff; stroke-width: 1.3; }
+      .no-nucleo   { fill: #bd00ff; }
+      .hub         { fill: #16091f; stroke: #d94dff; stroke-width: 1.6; }
+      .hub-nucleo  { fill: #d94dff; }
+      .realce      { fill: #0d0714; stroke: #00e5ff; stroke-width: 1.3; }
+      .realce-core { fill: #00e5ff; }
+    </style>
+  </defs>
+
+  <!-- halo do hub -->
+  <circle cx="24" cy="24" r="11" fill="none" stroke="#bd00ff" stroke-width="0.4" opacity="0.22"/>
+
+  <!-- arestas do hub para os satelites -->
+  <line class="aresta-viva" x1="24" y1="24" x2="10" y2="11"/>
+  <line class="aresta-viva" x1="24" y1="24" x2="39" y2="14"/>
+  <line class="aresta-viva" x1="24" y1="24" x2="38" y2="36"/>
+  <line class="aresta-viva" x1="24" y1="24" x2="11" y2="37"/>
+
+  <!-- arestas do perimetro -->
+  <line class="aresta" x1="10" y1="11" x2="39" y2="14"/>
+  <line class="aresta" x1="39" y1="14" x2="38" y2="36"/>
+  <line class="aresta" x1="38" y1="36" x2="11" y2="37"/>
+  <line class="aresta" x1="11" y1="37" x2="10" y2="11"/>
+
+  <!-- satelites -->
+  <circle class="no"        cx="10" cy="11" r="2.6"/>
+  <circle class="no-nucleo" cx="10" cy="11" r="1.1"/>
+
+  <circle class="no"        cx="39" cy="14" r="2.6"/>
+  <circle class="no-nucleo" cx="39" cy="14" r="1.1"/>
+
+  <!-- um unico no ciano: sem ele o mapa fica monocromatico e os nos somem entre si -->
+  <circle class="realce"      cx="38" cy="36" r="2.8"/>
+  <circle class="realce-core" cx="38" cy="36" r="1.25"/>
+
+  <circle class="no"        cx="11" cy="37" r="2.6"/>
+  <circle class="no-nucleo" cx="11" cy="37" r="1.1"/>
+
+  <!-- hub central -->
+  <circle class="hub"        cx="24" cy="24" r="4.4"/>
+  <circle class="hub-nucleo" cx="24" cy="24" r="1.8"/>
+</svg>

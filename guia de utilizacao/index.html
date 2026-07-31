@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OmniGraph — Guia de Utilização</title>
+<style>
+  :root{
+    --bg:#0d0714; --bg2:#16091f; --card:#160b20; --card2:#1c0f28;
+    --border:#33184a; --border2:#432060;
+    --roxo:#bd00ff; --roxo-cl:#d94dff; --roxo-dk:#9500cc;
+    --ciano:#00e5ff;
+    --txt:#ede4f5; --txt-dim:#b79fce; --txt-mute:#8a6fa8;
+    --mono:'Fira Code',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:radial-gradient(1200px 600px at 80% -10%,rgba(189,0,255,.10),transparent 60%),var(--bg);
+    color:var(--txt);font-family:var(--sans);line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--roxo-cl);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  .wrap{display:grid;grid-template-columns:230px 1fr;max-width:1180px;margin:0 auto;gap:0}
+
+  /* ---- sidebar ---- */
+  aside{
+    position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    border-right:1px solid var(--border);padding:28px 18px;
+  }
+  .brand{display:flex;align-items:baseline;gap:2px;font-family:var(--mono);
+    font-size:22px;font-weight:600;letter-spacing:-.5px;margin-bottom:4px}
+  .brand .p{color:var(--roxo);font-weight:700;margin-right:6px}
+  .brand .a{color:var(--txt)} .brand .b{color:var(--roxo)}
+  .brand-sub{color:var(--txt-mute);font-size:12px;font-family:var(--mono);margin-bottom:26px;padding-left:2px}
+  nav a{display:block;color:var(--txt-dim);padding:7px 12px;border-radius:8px;
+    font-size:14px;border-left:2px solid transparent;transition:all .15s}
+  nav a:hover{background:var(--card);color:var(--txt);text-decoration:none}
+  nav a .n{color:var(--roxo);font-family:var(--mono);font-size:12px;margin-right:8px}
+
+  /* ---- main ---- */
+  main{padding:48px 46px 90px;min-width:0}
+  header.hero{margin-bottom:48px}
+  .prompt{font-family:var(--mono);color:var(--roxo);font-size:15px;margin-bottom:14px}
+  h1{font-size:40px;line-height:1.15;letter-spacing:-1px;margin-bottom:14px;font-weight:700}
+  h1 .g{color:var(--roxo)}
+  .lead{font-size:18px;color:var(--txt-dim);max-width:60ch}
+  .tags{display:flex;flex-wrap:wrap;gap:8px;margin-top:20px}
+  .tag{font-family:var(--mono);font-size:12px;color:var(--roxo-cl);
+    background:var(--card);border:1px solid var(--border);border-radius:20px;padding:5px 13px}
+
+  section{margin-bottom:52px;scroll-margin-top:24px}
+  h2{font-size:14px;font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;
+    color:var(--roxo);margin-bottom:6px}
+  h2 .n{color:var(--txt-mute);margin-right:8px}
+  .h2sub{font-size:24px;font-weight:700;margin-bottom:20px;letter-spacing:-.4px}
+  p.body{color:var(--txt-dim);margin-bottom:16px;max-width:66ch}
+
+  /* ---- code block ---- */
+  .code{background:#0a0510;border:1px solid var(--border);border-radius:12px;
+    overflow:hidden;margin:14px 0 20px}
+  .code-head{display:flex;align-items:center;gap:7px;padding:10px 14px;
+    border-bottom:1px solid var(--border);background:var(--card)}
+  .dot{width:11px;height:11px;border-radius:50%}
+  .dot.r{background:#ff5f56}.dot.y{background:#ffbd2e}.dot.g{background:#27c93f}
+  .code-title{margin-left:8px;font-family:var(--mono);font-size:12px;color:var(--txt-mute)}
+  pre{padding:16px 18px;overflow-x:auto;font-family:var(--mono);font-size:13.5px;line-height:1.75}
+  code{font-family:var(--mono)}
+  .c-prompt{color:var(--roxo);user-select:none}
+  .c-cmd{color:var(--txt)}
+  .c-arg{color:var(--roxo-cl)}
+  .c-cmt{color:var(--txt-mute);font-style:italic}
+  .c-out{color:var(--txt-dim)}
+
+  /* ---- cards ---- */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:18px 0}
+  .card{background:linear-gradient(160deg,var(--card),var(--card2));
+    border:1px solid var(--border);border-radius:14px;padding:18px 18px 16px;transition:border-color .2s,transform .2s}
+  .card:hover{border-color:var(--border2);transform:translateY(-2px)}
+  .card .ico{font-size:22px;margin-bottom:10px}
+  .card h3{font-size:15px;margin-bottom:6px;font-family:var(--mono);color:var(--txt)}
+  .card p{font-size:13.5px;color:var(--txt-mute);line-height:1.5}
+  .card code{color:var(--roxo-cl);font-size:12.5px}
+
+  /* ---- table ---- */
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}
+  th,td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--border)}
+  th{font-family:var(--mono);font-size:12px;text-transform:uppercase;letter-spacing:.5px;color:var(--roxo);font-weight:600}
+  td{color:var(--txt-dim)} td code{color:var(--roxo-cl)}
+  tr:last-child td{border-bottom:none}
+
+  /* ---- flow ---- */
+  .flow{display:flex;align-items:stretch;gap:12px;flex-wrap:wrap;margin:20px 0}
+  .step{flex:1;min-width:150px;background:var(--card);border:1px solid var(--border);
+    border-radius:14px;padding:18px;position:relative}
+  .step .num{position:absolute;top:-11px;left:16px;background:var(--roxo);color:#0d0714;
+    font-family:var(--mono);font-weight:700;font-size:12px;width:24px;height:24px;
+    border-radius:50%;display:flex;align-items:center;justify-content:center}
+  .step h4{font-family:var(--mono);font-size:14px;margin:8px 0 6px;color:var(--txt)}
+  .step p{font-size:13px;color:var(--txt-mute)}
+  .step code{color:var(--roxo-cl);font-size:12.5px}
+
+  .note{border-left:3px solid var(--roxo);background:var(--card);border-radius:0 10px 10px 0;
+    padding:14px 18px;margin:18px 0;font-size:14px;color:var(--txt-dim)}
+  .note b{color:var(--roxo-cl)}
+  .note.warn{border-left-color:var(--ciano)} .note.warn b{color:var(--ciano)}
+
+  footer{border-top:1px solid var(--border);padding:26px 46px;color:var(--txt-mute);
+    font-size:13px;font-family:var(--mono);max-width:1180px;margin:0 auto}
+  footer .b{color:var(--roxo)}
+
+  @media(max-width:820px){
+    .wrap{grid-template-columns:1fr}
+    aside{position:static;height:auto;border-right:none;border-bottom:1px solid var(--border);
+      display:flex;flex-direction:column}
+    aside nav{display:flex;flex-wrap:wrap;gap:4px}
+    nav a{border-left:none;padding:6px 10px}
+    main{padding:32px 22px 70px}
+    h1{font-size:30px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <aside>
+    <div class="brand"><span class="p">&gt;_</span><span class="a">omni</span><span class="b">graph</span></div>
+    <div class="brand-sub">guia de utilização</div>
+    <nav>
+      <a href="#sobre"><span class="n">00</span>O que é</a>
+      <a href="#instalar"><span class="n">01</span>Instalação</a>
+      <a href="#extrair"><span class="n">02</span>Extrair o grafo</a>
+      <a href="#consultar"><span class="n">03</span>Consultar</a>
+      <a href="#mcp"><span class="n">04</span>Servir via MCP</a>
+      <a href="#docker"><span class="n">05</span>Docker</a>
+      <a href="#fluxo"><span class="n">06</span>Fluxo completo</a>
+    </nav>
+  </aside>
+
+  <main>
+    <header class="hero">
+      <div class="prompt">&gt;_ ./omnigraph.sh</div>
+      <h1>Mapeie qualquer projeto num <span class="g">grafo de conhecimento</span> que você consulta em vez de vasculhar arquivos.</h1>
+      <p class="lead">O OmniGraph lê seu código, docs, PDFs e imagens e monta um grafo interativo — local, privado, sem embeddings. Este guia mostra o caminho prático do zero à primeira consulta.</p>
+      <div class="tags">
+        <span class="tag">100% local</span>
+        <span class="tag">AST via tree-sitter</span>
+        <span class="tag">grafo real, não vetor</span>
+        <span class="tag">MCP para IA</span>
+      </div>
+    </header>
+
+    <!-- 00 -->
+    <section id="sobre">
+      <h2><span class="n">00</span>O que é</h2>
+      <div class="h2sub">Grafo em vez de grep</div>
+      <p class="body">Cada arquivo, classe, função e conexão vira um nó ou aresta. Você pergunta "qual o caminho entre A e B?" ou "o que é este módulo?" e recebe a resposta traçada no grafo — em vez de ler dezenas de arquivos na mão.</p>
+      <div class="grid">
+        <div class="card"><div class="ico">🗺️</div><h3>Código de graça</h3><p>Parsing por AST com tree-sitter: determinístico, sem LLM, nada sai da máquina.</p></div>
+        <div class="card"><div class="ico">🔗</div><h3>Toda aresta é explicada</h3><p>Cada conexão é <code>EXTRACTED</code> (explícita) ou <code>INFERRED</code> (deduzida).</p></div>
+        <div class="card"><div class="ico">🔒</div><h3>Privado</h3><p>Sem vetor, sem nuvem. Um grafo que você percorre em <code>graph.html</code>.</p></div>
+      </div>
+    </section>
+
+    <!-- 01 -->
+    <section id="instalar">
+      <h2><span class="n">01</span>Instalação</h2>
+      <div class="h2sub">A partir de um clone, com uv</div>
+      <p class="body">O pacote não está num índice público — instale direto do repositório clonado. O <code>uv</code> cria o ambiente isolado e registra os binários <code>omnigraph</code> e <code>omnigraph-mcp</code>.</p>
+      <div class="code">
+        <div class="code-head"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-title">terminal</span></div>
+        <pre><code><span class="c-cmt"># clone o repositório e entre nele</span>
+<span class="c-prompt">$</span> <span class="c-cmd">git clone https://github.com/Zespek/OmniGraph.git &amp;&amp; cd OmniGraph</span>
+
+<span class="c-cmt"># instala o CLI a partir do clone local</span>
+<span class="c-prompt">$</span> <span class="c-cmd">uv tool install --from . omnigraph</span>
+
+<span class="c-cmt"># registra a skill no seu assistente de IA (Claude, Cursor, etc.)</span>
+<span class="c-prompt">$</span> <span class="c-cmd">omnigraph install</span></code></pre>
+      </div>
+      <div class="note"><b>Não achou o comando depois?</b> Rode <code>uv tool update-shell</code> e reabra o terminal.</div>
+    </section>
+
+    <!-- 02 -->
+    <section id="extrair">
+      <h2><span class="n">02</span>Extrair o grafo</h2>
+      <div class="h2sub">Do projeto ao graph.json</div>
+      <p class="body">Na raiz do projeto que você quer mapear. O resultado fica em <code>omnigraph-out/</code> — o grafo (<code>graph.json</code>), o relatório e um <code>graph.html</code> navegável.</p>
+      <div class="code">
+        <div class="code-head"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-title">terminal</span></div>
+        <pre><code><span class="c-prompt">$</span> <span class="c-cmd">omnigraph</span> <span class="c-arg">extract .</span>        <span class="c-cmt"># AST + passe semântico; gera omnigraph-out/graph.json</span>
+<span class="c-prompt">$</span> <span class="c-cmd">omnigraph</span> <span class="c-arg">update .</span>         <span class="c-cmt"># reextrai só o código e atualiza (sem LLM, sem custo)</span>
+<span class="c-prompt">$</span> <span class="c-cmd">omnigraph</span> <span class="c-arg">cluster-only .</span>  <span class="c-cmt"># reagrupa comunidades e regenera o relatório</span></code></pre>
+      </div>
+      <div class="note"><b>Dica:</b> rode <code>omnigraph update .</code> depois de mexer no código para manter o grafo em dia — é rápido e não chama API nenhuma.</div>
+    </section>
+
+    <!-- 03 -->
+    <section id="consultar">
+      <h2><span class="n">03</span>Consultar</h2>
+      <div class="h2sub">Perguntas ao grafo, não aos arquivos</div>
+      <div class="code">
+        <div class="code-head"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-title">terminal</span></div>
+        <pre><code><span class="c-cmt"># menor caminho entre dois nós</span>
+<span class="c-prompt">$</span> <span class="c-cmd">omnigraph</span> <span class="c-arg">path "LoginView" "Database"</span>
+
+<span class="c-cmt"># explicação em linguagem simples de um nó e seus vizinhos</span>
+<span class="c-prompt">$</span> <span class="c-cmd">omnigraph</span> <span class="c-arg">explain "PaymentService"</span>
+
+<span class="c-cmt"># diagnostica risco de arestas colapsadas no grafo</span>
+<span class="c-prompt">$</span> <span class="c-cmd">omnigraph</span> <span class="c-arg">diagnose multigraph</span></code></pre>
+      </div>
+      <table>
+        <tr><th>Comando</th><th>Para quê</th></tr>
+        <tr><td><code>path "A" "B"</code></td><td>Traça o caminho mais curto entre dois nós</td></tr>
+        <tr><td><code>explain "X"</code></td><td>Descreve um nó e o que o cerca, em português claro</td></tr>
+        <tr><td><code>clone &lt;url&gt;</code></td><td>Clona um repo do GitHub e prepara para o <code>/omnigraph</code></td></tr>
+        <tr><td><code>diagnose multigraph</code></td><td>Aponta onde arestas de mesmo par podem se colapsar</td></tr>
+      </table>
+    </section>
+
+    <!-- 04 -->
+    <section id="mcp">
+      <h2><span class="n">04</span>Servir via MCP</h2>
+      <div class="h2sub">Exponha o grafo para o assistente de IA</div>
+      <p class="body">O <code>omnigraph-mcp</code> serve as ferramentas de consulta por protocolo MCP. Dois transportes: <b>stdio</b> (padrão, um dev — o assistente sobe sozinho) e <b>HTTP</b> (serviço compartilhado).</p>
+      <div class="code">
+        <div class="code-head"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-title">stdio — local</span></div>
+        <pre><code><span class="c-prompt">$</span> <span class="c-cmd">omnigraph-mcp</span>                       <span class="c-cmt"># lê omnigraph-out/graph.json</span>
+<span class="c-prompt">$</span> <span class="c-cmd">omnigraph-mcp</span> <span class="c-arg">caminho/graph.json</span>     <span class="c-cmt"># ou um grafo específico</span></code></pre>
+      </div>
+      <div class="code">
+        <div class="code-head"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-title">http — serviço compartilhado</span></div>
+        <pre><code><span class="c-prompt">$</span> <span class="c-cmd">export</span> <span class="c-arg">OMNIGRAPH_API_KEY="uma-chave-secreta"</span>
+<span class="c-prompt">$</span> <span class="c-cmd">omnigraph-mcp</span> <span class="c-arg">graph.json --transport http --host 0.0.0.0 --port 8080</span></code></pre>
+      </div>
+      <table>
+        <tr><th>Flag</th><th>Padrão</th><th>Para quê</th></tr>
+        <tr><td><code>--host</code></td><td><code>127.0.0.1</code></td><td>Interface. <code>0.0.0.0</code> expõe na rede — só com chave</td></tr>
+        <tr><td><code>--port</code></td><td><code>8080</code></td><td>Porta HTTP</td></tr>
+        <tr><td><code>--path</code></td><td><code>/mcp</code></td><td>Caminho: <code>http://host:porta/mcp</code></td></tr>
+        <tr><td><code>--api-key</code></td><td>—</td><td>Exige a chave (ou <code>OMNIGRAPH_API_KEY</code>)</td></tr>
+      </table>
+      <div class="note warn"><b>Expôs na rede? Use chave.</b> Com <code>--host 0.0.0.0</code> sem <code>--api-key</code>, qualquer um na rede consulta seu grafo.</div>
+    </section>
+
+    <!-- 05 -->
+    <section id="docker">
+      <h2><span class="n">05</span>Docker</h2>
+      <div class="h2sub">O servidor HTTP em container</div>
+      <p class="body">O <code>Dockerfile</code> da raiz empacota o servidor HTTP. Monte o diretório do grafo em <code>/data</code>.</p>
+      <div class="code">
+        <div class="code-head"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="code-title">docker</span></div>
+        <pre><code><span class="c-prompt">$</span> <span class="c-cmd">docker build</span> <span class="c-arg">-t omnigraph-mcp .</span>
+<span class="c-prompt">$</span> <span class="c-cmd">docker run</span> <span class="c-arg">--rm -p 8080:8080 -v "$PWD/omnigraph-out:/data" \
+    omnigraph-mcp /data/graph.json --transport http --host 0.0.0.0 --port 8080</span></code></pre>
+      </div>
+      <p class="body">O container roda como usuário sem privilégio e escuta em <code>:8080</code>.</p>
+    </section>
+
+    <!-- 06 -->
+    <section id="fluxo">
+      <h2><span class="n">06</span>Fluxo completo</h2>
+      <div class="h2sub">Do clone à consulta pela IA</div>
+      <div class="flow">
+        <div class="step"><div class="num">1</div><h4>Instalar</h4><p><code>uv tool install --from . omnigraph</code></p></div>
+        <div class="step"><div class="num">2</div><h4>Extrair</h4><p><code>omnigraph extract .</code> → <code>omnigraph-out/graph.json</code></p></div>
+        <div class="step"><div class="num">3</div><h4>Consultar</h4><p><code>omnigraph path</code> / <code>explain</code> no terminal</p></div>
+        <div class="step"><div class="num">4</div><h4>Servir</h4><p><code>omnigraph-mcp</code> — a IA consulta o grafo</p></div>
+      </div>
+      <div class="note"><b>Manteve o grafo em dia?</b> Depois de editar o código, um <code>omnigraph update .</code> reflete as mudanças sem custo de API.</div>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <span class="b">&gt;_ omnigraph</span> — guia de utilização · projeto de <b>Zespek (José&nbsp;Felipe)</b> · local &amp; privativo
+</footer>
+</body>
+</html>

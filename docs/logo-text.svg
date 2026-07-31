@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 64" role="img" aria-label="OmniGraph">
+  <rect width="260" height="64" rx="8" fill="#0d0714"/>
+  <defs>
+    <style>
+      /* Monoespaçada, como o resto da identidade - o README usa Fira Code.
+         A pilha de fallback cobre quem não tiver a fonte instalada. */
+      .marca  { font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                font-size: 26px; font-weight: 600; letter-spacing: -0.5px; }
+      .prompt { font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                font-size: 26px; font-weight: 700; }
+    </style>
+  </defs>
+
+  <!-- marca do grafo, em miniatura -->
+  <circle cx="24" cy="32" r="11" fill="none" stroke="#bd00ff" stroke-width="0.4" opacity="0.22"/>
+  <line x1="24" y1="32" x2="10" y2="19" stroke="#bd00ff" stroke-width="1.2" stroke-linecap="round" opacity="0.95"/>
+  <line x1="24" y1="32" x2="39" y2="22" stroke="#bd00ff" stroke-width="1.2" stroke-linecap="round" opacity="0.95"/>
+  <line x1="24" y1="32" x2="38" y2="44" stroke="#bd00ff" stroke-width="1.2" stroke-linecap="round" opacity="0.95"/>
+  <line x1="24" y1="32" x2="11" y2="45" stroke="#bd00ff" stroke-width="1.2" stroke-linecap="round" opacity="0.95"/>
+  <line x1="10" y1="19" x2="39" y2="22" stroke="#7a2f9e" stroke-width="1.1" stroke-linecap="round" opacity="0.6"/>
+  <line x1="39" y1="22" x2="38" y2="44" stroke="#7a2f9e" stroke-width="1.1" stroke-linecap="round" opacity="0.6"/>
+  <line x1="38" y1="44" x2="11" y2="45" stroke="#7a2f9e" stroke-width="1.1" stroke-linecap="round" opacity="0.6"/>
+  <line x1="11" y1="45" x2="10" y2="19" stroke="#7a2f9e" stroke-width="1.1" stroke-linecap="round" opacity="0.6"/>
+  <circle cx="10" cy="19" r="2.6" fill="#0d0714" stroke="#bd00ff" stroke-width="1.3"/>
+  <circle cx="10" cy="19" r="1.1" fill="#bd00ff"/>
+  <circle cx="39" cy="22" r="2.6" fill="#0d0714" stroke="#bd00ff" stroke-width="1.3"/>
+  <circle cx="39" cy="22" r="1.1" fill="#bd00ff"/>
+  <circle cx="38" cy="44" r="2.8" fill="#0d0714" stroke="#00e5ff" stroke-width="1.3"/>
+  <circle cx="38" cy="44" r="1.25" fill="#00e5ff"/>
+  <circle cx="11" cy="45" r="2.6" fill="#0d0714" stroke="#bd00ff" stroke-width="1.3"/>
+  <circle cx="11" cy="45" r="1.1" fill="#bd00ff"/>
+  <circle cx="24" cy="32" r="4.4" fill="#16091f" stroke="#d94dff" stroke-width="1.6"/>
+  <circle cx="24" cy="32" r="1.8" fill="#d94dff"/>
+
+  <!-- divisor -->
+  <line x1="56" y1="18" x2="56" y2="46" stroke="#bd00ff" stroke-width="1" opacity="0.25"/>
+
+  <!-- prompt + nome: ecoa o ">_ ./omnigraph.sh" do README -->
+  <text x="68"  y="41" class="prompt" fill="#bd00ff">&gt;_</text>
+  <text x="104" y="41" class="marca"  fill="#ede4f5">omni</text>
+  <text x="166" y="41" class="marca"  fill="#bd00ff">graph</text>
+</svg>
