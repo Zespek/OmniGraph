@@ -73,8 +73,8 @@ zespek@server:~$ cat ./funcionalidades.ini
 # Ou, no terminal, a partir deste clone:
 uv tool install --from . omnigraph && omnigraph install
 
-# Executar a análise na pasta atual
-omnigraph .
+# Gerar o mapa na pasta atual: extrai os dados e cria o graph.html
+omnigraph extract . && omnigraph cluster-only .
 
 # O grafo interativo estará disponível localmente em:
 # ./omnigraph-out/graph.html
