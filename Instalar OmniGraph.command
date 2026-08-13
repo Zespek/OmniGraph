@@ -58,12 +58,17 @@ fi
 
 # 3) instalar a ferramenta ─────────────────────────────────────────────────────
 titulo "Instalando o OmniGraph"
-if uv tool install --from . omnigraph --force >/dev/null 2>&1; then
+# pasta onde o uv coloca o executavel (fonte da verdade; cai pra ~/.local/bin)
+BIN="$(uv tool dir --bin 2>/dev/null)"; [ -z "$BIN" ] && BIN="$HOME/.local/bin"
+export PATH="$BIN:$PATH"
+inst_log="$(uv tool install --from . omnigraph --force 2>&1)"
+uv tool update-shell >/dev/null 2>&1 || true
+if [ -x "$BIN/omnigraph" ]; then
   ok "comandos 'omnigraph' e 'omnigraph-mcp' instalados"
-  # garante que a pasta dos comandos (~/.local/bin) fique no PATH de terminais futuros
-  uv tool update-shell >/dev/null 2>&1 || true
 else
-  aviso "falha ao instalar a ferramenta"
+  aviso "FALHA ao instalar a ferramenta. Detalhe do erro:"
+  printf '%s\n' "$inst_log" | tail -12 | sed 's/^/      /'
+  aviso "Copie essas linhas e mande para o suporte."
 fi
 
 # 4) IA local (Ollama) — sem gastar tokens de API ─────────────────────────────
@@ -100,48 +105,48 @@ if command -v ollama >/dev/null 2>&1; then
   fi
 fi
 
-# 5) persistir PATH + IA local no perfil ───────────────────────────────────────
+# 5) persistir PATH + IA local (funciona em zsh E bash) ─────────────────────────
 titulo "Ajustando o terminal (PATH e IA local)"
-case "$SO" in
-  Darwin) perfil="$HOME/.zshrc" ;;
-  Linux)  perfil="${SHELL##*/}" ; [ "$perfil" = "zsh" ] && perfil="$HOME/.zshrc" || perfil="$HOME/.bashrc" ;;
-  *)      perfil="$HOME/.profile" ;;
-esac
-# garante que a pasta dos comandos esteja no PATH ao abrir um terminal novo
-if grep -q '.local/bin' "$perfil" 2>/dev/null; then
-  ok "PATH já configurado"
+# um arquivo unico com o ambiente, carregado por qualquer shell
+env_file="$HOME/.omnigraph_env"
+{
+  echo "# OmniGraph — ambiente (gerado pelo instalador). Nao edite."
+  echo "export PATH=\"$BIN:\$PATH\""
+  echo "export OLLAMA_HOST=localhost:11434"
+} > "$env_file"
+# faz cada perfil de shell carregar esse arquivo (sem duplicar)
+linha_src='[ -f "$HOME/.omnigraph_env" ] && . "$HOME/.omnigraph_env"  # OmniGraph'
+for perfil in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+  [ -e "$perfil" ] || { case "$perfil" in */.zshrc|*/.bash_profile|*/.profile) : ;; *) continue ;; esac; }
+  grep -q '.omnigraph_env' "$perfil" 2>/dev/null || printf '\n%s\n' "$linha_src" >> "$perfil"
+done
+ok "PATH e IA local configurados (zsh e bash)"
+
+# 6) verificação final ─────────────────────────────────────────────────────────
+titulo "Verificando a instalação"
+if "$BIN/omnigraph" --version >/dev/null 2>&1; then
+  ok "OK! omnigraph responde: $("$BIN/omnigraph" --version 2>/dev/null | head -1)"
+  instalou_ok=1
 else
-  {
-    echo ""
-    echo "# OmniGraph: deixar os comandos (omnigraph) acessíveis no terminal"
-    echo 'export PATH="$HOME/.local/bin:$PATH"'
-  } >> "$perfil"
-  ok "PATH configurado (comando 'omnigraph' disponível em terminais novos)"
-fi
-if grep -q "OLLAMA_HOST" "$perfil" 2>/dev/null; then
-  ok "IA local já era o padrão"
-else
-  {
-    echo "# OmniGraph: usar a IA local (Ollama) por padrão, sem gastar tokens de API"
-    echo "export OLLAMA_HOST=localhost:11434"
-  } >> "$perfil"
-  ok "IA local definida como padrão"
+  aviso "o comando 'omnigraph' ainda não respondeu (veja os erros acima)"
+  instalou_ok=0
 fi
 
 echo ""
 echo "════════════════════════════════════════════════"
-ok "Tudo pronto!"
+if [ "${instalou_ok:-0}" = 1 ]; then ok "Tudo pronto!"; else aviso "Instalação incompleta — leia as mensagens acima."; fi
 echo ""
 echo "  O comando 'omnigraph' funciona em QUALQUER pasta —"
 echo "  você NÃO precisa estar dentro da pasta do OmniGraph."
 echo ""
 aviso "Para usar, ative o comando de uma destas formas:"
 echo "    • feche este terminal e abra um NOVO   (mais simples), ou"
-echo "    • rode agora, neste mesmo terminal:   source \"$perfil\""
+echo "    • rode agora, neste mesmo terminal:   source \"\$HOME/.omnigraph_env\""
 echo ""
-echo "  Depois, entre no SEU projeto e gere o mapa:"
+echo "  Depois, entre no SEU projeto e gere o mapa (os DOIS passos):"
 echo "      cd /caminho/do/seu/projeto"
-echo "      omnigraph extract ."
+echo "      omnigraph extract . && omnigraph cluster-only ."
+echo "  O gráfico sai em:  omnigraph-out/graph.html"
 echo ""
 echo "  Instruções completas: abra 'guia de utilizacao/index.html'"
 echo "════════════════════════════════════════════════"

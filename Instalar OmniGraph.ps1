@@ -44,12 +44,19 @@ if ((Get-Command git -ErrorAction SilentlyContinue) -and (Test-Path .git)) {
 
 # 3) instalar a ferramenta ----------------------------------------------------
 Titulo "Instalando o OmniGraph"
-uv tool install --from . omnigraph --force
-if ($LASTEXITCODE -eq 0) {
+# pasta onde o uv coloca o executavel (fonte da verdade)
+$bin = (uv tool dir --bin 2>$null)
+if (-not $bin) { $bin = "$env:USERPROFILE\.local\bin" }
+$env:Path = "$bin;$env:Path"
+$instLog = (uv tool install --from . omnigraph --force 2>&1 | Out-String)
+uv tool update-shell 2>$null
+if (Test-Path "$bin\omnigraph.exe") {
   Ok "comandos 'omnigraph' e 'omnigraph-mcp' instalados"
-  # garante que a pasta dos comandos fique no PATH de terminais futuros
-  uv tool update-shell 2>$null
-} else { Aviso "falha ao instalar a ferramenta" }
+} else {
+  Aviso "FALHA ao instalar a ferramenta. Detalhe do erro:"
+  ($instLog -split "`n" | Select-Object -Last 12) | ForEach-Object { Write-Host "      $_" }
+  Aviso "Copie essas linhas e mande para o suporte."
+}
 
 # 4) IA local (Ollama) - sem gastar tokens de API -----------------------------
 Titulo "Configurando a IA local (Ollama)"
@@ -81,27 +88,36 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
 
 # 5) PATH + IA local no ambiente do usuario -----------------------------------
 Titulo "Ajustando o terminal (PATH e IA local)"
-# garante ~\.local\bin no PATH do usuario (persistente) para terminais novos
-$binDir = "$env:USERPROFILE\.local\bin"
+# garante a pasta dos comandos no PATH do usuario (persistente) para terminais novos
 $pathUsuario = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($pathUsuario -notlike "*$binDir*") {
-  [Environment]::SetEnvironmentVariable("Path", "$binDir;$pathUsuario", "User")
+if ($pathUsuario -notlike "*$bin*") {
+  [Environment]::SetEnvironmentVariable("Path", "$bin;$pathUsuario", "User")
   Ok "PATH configurado (comando 'omnigraph' disponivel em terminais novos)"
 } else { Ok "PATH ja configurado" }
 setx OLLAMA_HOST "localhost:11434" | Out-Null
 Ok "IA local definida como padrao"
 
+# 6) verificacao final --------------------------------------------------------
+Titulo "Verificando a instalacao"
+$okInstalou = $false
+if (Test-Path "$bin\omnigraph.exe") {
+  try { & "$bin\omnigraph.exe" --version | Out-Null; $okInstalou = ($LASTEXITCODE -eq 0) } catch {}
+}
+if ($okInstalou) { Ok "OK! o comando 'omnigraph' respondeu" }
+else { Aviso "o comando 'omnigraph' ainda nao respondeu (veja os erros acima)" }
+
 Write-Host "`n================================================"
-Ok "Tudo pronto!"
+if ($okInstalou) { Ok "Tudo pronto!" } else { Aviso "Instalacao incompleta - leia as mensagens acima." }
 Write-Host ""
 Write-Host "  O comando 'omnigraph' funciona em QUALQUER pasta -"
 Write-Host "  voce NAO precisa estar dentro da pasta do OmniGraph."
 Write-Host ""
 Aviso "Para usar, feche este terminal e abra um NOVO (carrega o PATH)."
 Write-Host ""
-Write-Host "  Depois, entre no SEU projeto e gere o mapa:"
+Write-Host "  Depois, entre no SEU projeto e gere o mapa (os DOIS passos):"
 Write-Host "      cd C:\caminho\do\seu\projeto"
-Write-Host "      omnigraph extract ."
+Write-Host "      omnigraph extract . ; omnigraph cluster-only ."
+Write-Host "  O grafico sai em:  omnigraph-out\graph.html"
 Write-Host ""
 Write-Host "  Instrucoes completas: abra 'guia de utilizacao\index.html'"
 Write-Host "================================================`n"
