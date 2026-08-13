@@ -24,7 +24,8 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 if [ -d "$DIR/.git" ]; then
-  git -C "$DIR" pull --ff-only origin main
+  # sincroniza forcado com o remoto: resiste a historico reescrito (force-push)
+  git -C "$DIR" fetch origin --quiet && git -C "$DIR" reset --hard origin/main --quiet
 else
   git clone "$REPO" "$DIR"
 fi

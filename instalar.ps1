@@ -18,8 +18,11 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
   exit 1
 }
 
-if (Test-Path "$dir\.git") { git -C $dir pull --ff-only origin main }
-else { git clone $repo $dir }
+if (Test-Path "$dir\.git") {
+  # sincroniza forcado com o remoto: resiste a historico reescrito (force-push)
+  git -C $dir fetch origin --quiet
+  git -C $dir reset --hard origin/main --quiet
+} else { git clone $repo $dir }
 
 Set-Location $dir
 powershell -ExecutionPolicy Bypass -File "Instalar OmniGraph.ps1"

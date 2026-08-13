@@ -32,12 +32,14 @@ if (Get-Command uv -ErrorAction SilentlyContinue) { Ok "uv pronto" } else { Avis
 Titulo "Verificando atualizacoes"
 if ((Get-Command git -ErrorAction SilentlyContinue) -and (Test-Path .git)) {
   git fetch origin --quiet 2>$null
-  $atras = (git rev-list HEAD..origin/main --count 2>$null)
-  if ($atras -and [int]$atras -gt 0) {
-    Aviso "ha $atras atualizacao(oes) disponivel(is)"
+  if ((git rev-parse HEAD 2>$null) -eq (git rev-parse origin/main 2>$null)) {
+    Ok "ja esta na ultima versao"
+  } else {
+    Aviso "atualizacao disponivel"
     $r = Read-Host "  Atualizar agora? [S/n]"
-    if ($r -ne "n" -and $r -ne "N") { git pull --ff-only origin main; Ok "atualizado para a ultima versao" }
-  } else { Ok "ja esta na ultima versao" }
+    # reset --hard resiste a historico reescrito (force-push) sem quebrar
+    if ($r -ne "n" -and $r -ne "N") { git reset --hard origin/main --quiet; Ok "atualizado para a ultima versao" }
+  }
 }
 
 # 3) instalar a ferramenta ----------------------------------------------------

@@ -39,16 +39,17 @@ command -v uv >/dev/null 2>&1 && ok "uv pronto" || aviso "não consegui instalar
 titulo "Verificando atualizações"
 if command -v git >/dev/null 2>&1 && [ -d .git ]; then
   if git fetch origin --quiet 2>/dev/null; then
-    atras=$(git rev-list HEAD..origin/main --count 2>/dev/null || echo 0)
-    if [ "${atras:-0}" -gt 0 ]; then
-      aviso "há ${atras} atualização(ões) disponível(is)"
+    # local == remoto?  (compara os commits)
+    if [ "$(git rev-parse HEAD 2>/dev/null)" = "$(git rev-parse origin/main 2>/dev/null)" ]; then
+      ok "já está na última versão"
+    else
+      aviso "atualização disponível"
       printf "  Atualizar agora? [S/n] "; read -r r
       case "${r:-S}" in
         [Nn]*) aviso "pulando a atualização";;
-        *) git pull --ff-only origin main && ok "atualizado para a última versão";;
+        # reset --hard resiste a histórico reescrito (force-push) sem quebrar
+        *) git reset --hard origin/main --quiet && ok "atualizado para a última versão";;
       esac
-    else
-      ok "já está na última versão"
     fi
   else
     aviso "sem internet para verificar (seguindo assim mesmo)"
