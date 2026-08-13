@@ -26,6 +26,26 @@ zespek@server:~$ cat ./omnigraph.ini
 ---
 
 <div align="left">
+  <img src="https://readme-typing-svg.herokuapp.com/?font=Fira+Code&weight=600&size=22&pause=2500&duration=2000&color=bd00ff&vCenter=true&width=800&height=40&lines=>_+./abrir_o_guia.sh" alt="Abrir o Guia" />
+</div>
+
+> **Primeiro acesso? Comece pelo guia.** Passo a passo, para leigo usar.
+
+```ini
+zespek@server:~$ ./abrir_o_guia.sh
+[Abrir_o_Guia_de_Utilizacao]
+  - "macOS  : dê um duplo-clique em   →  Abrir Guia.command"
+  - "Outros : abra no navegador       →  guia de utilizacao/index.html"
+
+[Instalar_Tudo_com_um_Duplo-Clique]
+  - "macOS  : duplo-clique em          →  Instalar OmniGraph.command"
+  - "         instala a ferramenta + a IA local (Ollama) + o modelo,"
+  - "         e verifica atualizações. Roda de novo quando quiser."
+```
+
+---
+
+<div align="left">
   <img src="https://readme-typing-svg.herokuapp.com/?font=Fira+Code&weight=600&size=22&pause=2500&duration=2000&color=bd00ff&vCenter=true&width=800&height=40&lines=>_+./como_funciona.sh" alt="Como Funciona" />
 </div>
 
@@ -45,8 +65,9 @@ zespek@server:~$ cat ./funcionalidades.ini
 </div>
 
 ```bash
-# Instalação recomendada com uv
-uv tool install omnigraph && omnigraph install
+# Recomendado: duplo-clique em "Instalar OmniGraph.command" (faz tudo sozinho)
+# Ou, no terminal, a partir deste clone:
+uv tool install --from . omnigraph && omnigraph install
 
 # Executar a análise na pasta atual
 omnigraph .
