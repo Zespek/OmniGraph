@@ -34,6 +34,11 @@ def _load_graph(graph_path: str) -> nx.Graph:
         data = json.loads(safe.read_text(encoding="utf-8"))
         if "links" not in data and "edges" in data:
             data = dict(data, links=data["edges"])
+        # Stash the on-disk logical flag before the load-time override below:
+        # `directed: True` exists only so renderers can recover stored arc
+        # order; tools that care about logical direction must
+        # not mistake the override for graph truth.
+        _logical_directed = bool(data.get("directed", False))
         data = {**data, "directed": True}
         try:
             from omnigraph.build import graph_has_legacy_ids as _legacy
@@ -49,6 +54,7 @@ def _load_graph(graph_path: str) -> nx.Graph:
             G = json_graph.node_link_graph(data, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(data)
+        G.graph["_logical_directed"] = _logical_directed
         # Anexe a sobreposição de memória de trabalho (sidecar derivado próximo a graph.json) para
         # a superfície de leitura de consulta/MCP pode anotar linhas NODE somente para exibição. Vazio
         # quando não existe nenhum sidecar, deixando o byte de saída não anotado idêntico.
@@ -316,6 +322,14 @@ def _node_search_text(data: dict, nid: str) -> str:
     - `source_tokens` feeds _find_node's exact source-file path lookup, where a
       query like "app/api/example/route.ts" tokenizes to "app api example route ts".
     - `nid` feeds the whole-query `joined == nid_lower` tier.
+    - a trailing diacritic-folded `nid` feeds _find_node's `norm_query == nid_norm`
+      tier. Every query path folds through `_strip_diacritics` (NFKD), so a raw-only
+      id field leaves the needle and the posting under different normal forms and
+      the node is dropped before any predicate runs (#2467). Hangul is the common
+      case: NFKD decomposes a syllable into conjoining jamo, which have combining
+      class 0 and therefore survive the combining-character filter. The field is
+      appended only when the fold actually differs, so the text an all-ASCII graph
+      indexes — and every field position the other readers rely on — is unchanged.
 
     NUL separators stop a trigram from spanning two fields (a query never contains
     NUL, so a cross-field trigram can never be a real match).
@@ -324,7 +338,13 @@ def _node_search_text(data: dict, nid: str) -> str:
     label_tokens = " ".join(_search_tokens(data.get("label") or ""))
     source = (data.get("source_file") or "").lower()
     source_tokens = " ".join(_search_tokens(data.get("source_file") or ""))
-    return "\x00".join((norm_label, label_tokens, str(nid).lower(), source, source_tokens))
+    nid_text = str(nid).lower()
+    fields = (norm_label, label_tokens, nid_text, source, source_tokens)
+    if not nid_text.isascii():
+        nid_folded = _strip_diacritics(str(nid)).lower()
+        if nid_folded != nid_text:
+            fields += (nid_folded,)
+    return "\x00".join(fields)
 
 
 def _get_trigram_index(G: nx.Graph) -> dict:
@@ -716,8 +736,31 @@ def _pick_seeds(
     return seeds
 
 
+# Verb-shaped tokens that express the RELATION a query asks about ("who calls
+# X", "what uses Y") rather than a symbol to look up. `_query_terms` keeps them
+# on purpose (a corpus can legitimately define an identifier named `calls`, see
+#), but they must not be handed a guaranteed seed slot in `_pick_seeds`:
+# an incidental prefix match (e.g. "calls" prefixing `.callStoreWithAmount()`)
+# would otherwise seat an unrelated decoy as a BFS root. Demotion
+# happens at the `_query_graph_text` call site, so `_score_query`'s ranking —
+# where such a verb can still win a seat on merit via the gap window — is
+# untouched. Deliberately verbs only; relation NOUNS (module, field, return)
+# stay eligible for the guarantee.
+_RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset({
+    "call", "calls", "called", "caller", "callers",
+    "invoke", "invokes", "invoked",
+    "use", "uses", "used", "using",
+    "import", "imports", "imported",
+    "export", "exports", "exported",
+    "extend", "extends", "extended",
+    "implement", "implements", "implemented",
+    "depend", "depends",
+    "reference", "references", "referenced",
+})
+
+
 _CONTEXT_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("call", ("call", "calls", "called", "invoke", "invokes", "invoked")),
+    ("call", ("call", "calls", "called", "caller", "callers", "invoke", "invokes", "invoked")),
     ("import", ("import", "imports", "imported", "module", "modules")),
     ("field", ("field", "fields", "member", "members", "property", "properties")),
     ("parameter_type", ("parameter", "parameters", "param", "params", "argument", "arguments")),
@@ -819,6 +862,56 @@ def _filter_graph_by_context(G: nx.Graph, context_filters: list[str] | None) -> 
     return H
 
 
+def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tuple]) -> None:
+    """Append edges between visited nodes that the traversal never recorded (#2323).
+
+    Both traversals only record an edge that *discovers* an unvisited neighbour,
+    so what they return is a traversal tree, not the induced subgraph over the
+    nodes they return. `_bfs` marks every seed visited up front, so an edge
+    between two seeds can never be recorded — the reported symptom, where both
+    endpoints render and the edge between them does not. It drops ordinary
+    cross-edges for the same reason. `_dfs` appends on push rather than on
+    visit, so it already captured those; its one gap is an edge between two
+    non-seed hubs, since neither endpoint is ever expanded.
+
+    Scans only edges incident to `visited`, so cost tracks the subgraph rather
+    than the whole graph, bounded by O(2E) overall. A visited hub is rescanned
+    in full even though the traversal deliberately did not expand it — that is
+    unavoidable, since a hub-to-hub edge is exactly the case `_dfs` misses.
+    `G` here is the context-filtered `traversal_graph` (see
+    `_query_graph_text`), so a filtered-out relation cannot reappear.
+
+    Self-loops are skipped. A recursive function legitimately carries one, but
+    neither traversal has ever recorded one (`n` is always already visited when
+    its own self-loop is examined), and surfacing them is a separate output
+    change from the missing edges reported here.
+
+    Dedup keys on the ordered pair for directed graphs and the unordered pair
+    otherwise: on a DiGraph `u->v` and `v->u` are genuinely distinct edges
+    (mutual recursion, circular imports), and collapsing them would drop a real
+    one. On a multigraph parallel edges collapse to one entry, matching the
+    renderer, which already shows only the first (`_subgraph_to_text`).
+
+    Traversal edges keep their discovery order; completions are appended after.
+    """
+    directed = G.is_directed()
+
+    def _key(u: str, v: str):
+        return (u, v) if directed else frozenset((u, v))
+
+    seen = {_key(u, v) for u, v in edges_seen}
+    # sorted() so the appended order can't shift run-to-run with CPython's
+    # per-process string-hash seed, the same reason the renderer sorts.
+    for u, v in G.edges(sorted(visited)):
+        if u == v or v not in visited:
+            continue
+        key = _key(u, v)
+        if key in seen:
+            continue
+        seen.add(key)
+        edges_seen.append((u, v))
+
+
 def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], list[tuple]]:
     # Limite do hub de computação: os nós acima desse grau não são expandidos como trânsito.
     # p99 da distribuição de graus, com piso em 50 para evitar o bloqueio excessivo de pequenos grafos.
@@ -846,6 +939,7 @@ def _bfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
                     edges_seen.append((n, neighbor))
         visited.update(next_frontier)
         frontier = next_frontier
+    _complete_induced_edges(G, visited, edges_seen)
     return visited, edges_seen
 
 
@@ -872,6 +966,7 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
             if neighbor not in visited:
                 stack.append((neighbor, d + 1))
                 edges_seen.append((node, neighbor))
+    _complete_induced_edges(G, visited, edges_seen)
     return visited, edges_seen
 
 
@@ -987,6 +1082,16 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         total_nodes = sum(1 for l in lines if l.startswith("NODE "))
         shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
         cut_count = total_nodes - shown_nodes
+        # Nodes render before edges, so a char-budget overflow whose cut lands
+        # past the last NODE line drops only trailing edges — no whole node is
+        # lost. Announcing "showing N of N nodes … among the 0 cut nodes" then
+        # reads as a false truncation warning that teaches an agent to distrust a
+        # complete answer and burn follow-up narrowing calls for nodes that were
+        # never cut. When every node is shown the answer is complete:
+        # return the full output with no banner rather than silently dropping
+        # edges under a misleading notice.
+        if cut_count == 0:
+            return output
         # Prominent notice at the TOP so a truncated answer can never be mistaken
         # for a complete one — silence used to read as absence (#BUG2). The
         # notice + end marker sit OUTSIDE char_budget by design (two bounded
@@ -1047,7 +1152,20 @@ def _query_graph_text(
     # tempo; em um benchmark de três termos de 100 mil nós, aproximadamente 71% do tempo de pontuação foi
     # gastos nesses passes redundantes por período.
     qs = _score_query(G, terms, collect_per_term_seeds=True)
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=qs.best_seed_by_term)
+    # Relational-intent verbs ("calls", "uses", ...) describe the relation the
+    # question asks about, not a symbol to seed from; drop them from the
+    # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
+    # BFS root. They keep their place in `qs.ranked`, so a genuine
+    # identifier named after a verb can still win a seat on merit via the gap
+    # window — and when the query consists ONLY of intent words (bare "calls"),
+    # the guarantee is left intact so such an identifier stays reachable.
+    best_seed_by_term = qs.best_seed_by_term
+    intent = {t for t in best_seed_by_term if t in _RELATIONAL_INTENT_TERMS}
+    if intent and any(t not in _RELATIONAL_INTENT_TERMS for t in terms):
+        best_seed_by_term = {
+            t: nid for t, nid in best_seed_by_term.items() if t not in intent
+        }
+    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
@@ -1086,6 +1204,8 @@ def _find_node_tiers(
     # `term`/`label_tokens` funciona quando o rótulo do nó tokeniza da mesma maneira, mas é
     # frágil se `label` e `norm_label` divergem. `norm_query` corresponde a `norm_label`
     # simetricamente para que um rótulo pontuado exatamente digitado sempre seja resolvido.
+    # `nid_norm` below extends that symmetry to node ids, which keep their
+    # punctuation too and are compared raw against the tokenized `term`.
     norm_query = _strip_diacritics(str(label)).lower().strip()
     source_exact: list[str] = []
     exact: list[str] = []
@@ -1104,11 +1224,14 @@ def _find_node_tiers(
         label_tokens = " ".join(_search_tokens(d.get("label") or ""))
         source_tokens = " ".join(_search_tokens(d.get("source_file") or ""))
         nid_lower = nid.lower()
+        # `_strip_diacritics` is the identity on ASCII, so the NFKD fold is only
+        # paid for ids that actually carry non-ASCII text.
+        nid_norm = nid_lower if nid.isascii() else _strip_diacritics(nid).lower()
         if term == source_tokens:
             source_exact.append(nid)
         elif (
             term == norm_label or term == bare_label or term == label_tokens or term == nid_lower
-            or norm_query == norm_label or norm_query == bare_label
+            or norm_query == norm_label or norm_query == bare_label or norm_query == nid_norm
         ):
             exact.append(nid)
         elif (
@@ -1176,6 +1299,107 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
             by_source.setdefault(source, nid)
         return list(by_source.values()) if len(by_source) > 1 else []
     return []
+
+
+def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
+    """Body of the `shortest_path` MCP tool (module-level so tests can call it
+    without an mcp install).
+
+    Directed by default (#2487): the returned path must follow stored
+    caller→callee direction; pass ``undirected=True`` to ignore it.
+    """
+    src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
+    tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
+    if not src_scored:
+        return f"No node matching source '{arguments['source']}' found."
+    if not tgt_scored:
+        return f"No node matching target '{arguments['target']}' found."
+    src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
+    tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
+    # Proteção de ambigüidade: quando ambas as consultas são resolvidas para o mesmo nó, o
+    # o caminho mais curto é trivialmente zero saltos, o que quase nunca é o que o
+    # caller wanted (see bug).
+    if src_nid == tgt_nid:
+        return (
+            f"'{arguments['source']}' and '{arguments['target']}' both resolved to "
+            f"the same node '{src_nid}'. Use a more specific label or the exact node ID."
+        )
+    warnings: list[str] = []
+    for name, scored, nid in (
+        ("source", src_scored, src_nid),
+        ("target", tgt_scored, tgt_nid),
+    ):
+        # Só faz sentido quando a pontuação bruta é o que foi escolhido - um
+        # a substituição completa do token foi escolhida na cobertura do token, não na pontuação.
+        if len(scored) >= 2 and nid == scored[0][1]:
+            top, runner = scored[0][0], scored[1][0]
+            if top > 0 and (top - runner) / top < 0.10:
+                warnings.append(
+                    f"warning: {name} match was ambiguous "
+                    f"(top score {top:g}, runner-up {runner:g})"
+                )
+    max_hops = int(arguments.get("max_hops", 8))
+    undirected = bool(arguments.get("undirected", False))
+    try:
+        # Deterministic path: the hash-seeded undirected view picked an
+        # arbitrary route among equal-length paths. Build a sorted, materialized
+        # graph so the chosen path is canonical. Serve's shared G is left
+        # untouched (its degree feeds query-seed tie-breaks).
+        if undirected:
+            _und = nx.Graph()
+            _und.add_nodes_from(sorted(G.nodes))
+            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
+            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
+        else:
+            # Directed by default. True direction is NOT raw arc
+            # order: legacy canonicalized files persist a flipped arc with
+            # _src/_tgt markers, so build the digraph from _src/_tgt
+            # (falling back to the loaded arc) rather than to_directed().
+            _dg = nx.DiGraph()
+            _dg.add_nodes_from(sorted(G.nodes))
+            _dg.add_edges_from(sorted(
+                (d.get("_src", u), d.get("_tgt", v)) for u, v, d in G.edges(data=True)
+            ))
+            path_nodes = nx.shortest_path(_dg, src_nid, tgt_nid)
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        src_label = G.nodes[src_nid].get("label", src_nid)
+        tgt_label = G.nodes[tgt_nid].get("label", tgt_nid)
+        if undirected:
+            return f"No path found between '{src_label}' and '{tgt_label}'."
+        return (
+            f"No directed path found between '{src_label}' and '{tgt_label}'. "
+            "Retry with undirected=true to search ignoring edge direction."
+        )
+    hops = len(path_nodes) - 1
+    if hops > max_hops:
+        return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
+    segments = []
+    for i in range(len(path_nodes) - 1):
+        u, v = path_nodes[i], path_nodes[i + 1]
+        # Report the actual stored relation(s), never a fabricated `calls`;
+        # fall back to an honest "related" when the edge has no relation.
+        # Direction truth lives in the per-link _src/_tgt markers: a
+        # legacy canonicalized file can persist a flipped arc, so classify each
+        # hop by _src (falling back to the arc tail) instead of raw arc order.
+        fwd, bwd = [], []
+        for a, b in ((u, v), (v, u)):
+            if G.has_edge(a, b):
+                for d in edge_datas(G, a, b):
+                    (fwd if d.get("_src", a) == u else bwd).append(d)
+        datas = fwd or bwd
+        forward = bool(fwd)
+        rels = sorted({d.get("relation") for d in datas if d.get("relation")})
+        rel = "/".join(rels) if rels else "related"
+        confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
+        conf_str = f" [{'/'.join(confs)}]" if confs else ""
+        if i == 0:
+            segments.append(G.nodes[u].get("label", u))
+        if forward:
+            segments.append(f"--{rel}{conf_str}--> {G.nodes[v].get('label', v)}")
+        else:
+            segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
+    prefix = ("\n".join(warnings) + "\n") if warnings else ""
+    return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
 
 
 def _filter_blank_stdin() -> None:
@@ -1359,13 +1583,18 @@ def _build_server(graph_path: str):
             ),
             types.Tool(
                 name="shortest_path",
-                description="Find the shortest path between two concepts in the knowledge graph.",
+                description=(
+                    "Find the shortest path between two concepts in the knowledge graph. "
+                    "Follows stored edge direction by default; set undirected=true to ignore it."
+                ),
                 inputSchema={
                     "type": "object",
                     "properties": {
                         "source": {"type": "string", "description": "Source concept label or keyword"},
                         "target": {"type": "string", "description": "Target concept label or keyword"},
                         "max_hops": {"type": "integer", "default": 8, "description": "Maximum hops to consider"},
+                        "undirected": {"type": "boolean", "default": False,
+                                       "description": "Ignore stored edge direction when searching"},
                     },
                     "required": ["source", "target"],
                 },
@@ -1571,74 +1800,7 @@ def _build_server(graph_path: str):
         )
 
     def _tool_shortest_path(arguments: dict) -> str:
-        src_scored = _score_nodes(G, [t.lower() for t in arguments["source"].split()])
-        tgt_scored = _score_nodes(G, [t.lower() for t in arguments["target"].split()])
-        if not src_scored:
-            return f"No node matching source '{arguments['source']}' found."
-        if not tgt_scored:
-            return f"No node matching target '{arguments['target']}' found."
-        src_nid = _pick_scored_endpoint(G, src_scored, arguments["source"])
-        tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
-        # Proteção de ambigüidade: quando ambas as consultas são resolvidas para o mesmo nó, o
-        # o caminho mais curto é trivialmente zero saltos, o que quase nunca é o que o
-        # caller wanted (see bug).
-        if src_nid == tgt_nid:
-            return (
-                f"'{arguments['source']}' and '{arguments['target']}' both resolved to "
-                f"the same node '{src_nid}'. Use a more specific label or the exact node ID."
-            )
-        warnings: list[str] = []
-        for name, scored, nid in (
-            ("source", src_scored, src_nid),
-            ("target", tgt_scored, tgt_nid),
-        ):
-            # Só faz sentido quando a pontuação bruta é o que foi escolhido - um
-            # a substituição completa do token foi escolhida na cobertura do token, não na pontuação.
-            if len(scored) >= 2 and nid == scored[0][1]:
-                top, runner = scored[0][0], scored[1][0]
-                if top > 0 and (top - runner) / top < 0.10:
-                    warnings.append(
-                        f"warning: {name} match was ambiguous "
-                        f"(top score {top:g}, runner-up {runner:g})"
-                    )
-        max_hops = int(arguments.get("max_hops", 8))
-        try:
-            # Deterministic path: the hash-seeded undirected view picked an
-            # arbitrary route among equal-length paths. Build a sorted, materialized
-            # undirected graph so the chosen path is canonical. Serve's shared G is
-            # left untouched (its degree feeds query-seed tie-breaks).
-            _und = nx.Graph()
-            _und.add_nodes_from(sorted(G.nodes))
-            _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
-            path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
-        except (nx.NetworkXNoPath, nx.NodeNotFound):
-            return f"No path found between '{G.nodes[src_nid].get('label', src_nid)}' and '{G.nodes[tgt_nid].get('label', tgt_nid)}'."
-        hops = len(path_nodes) - 1
-        if hops > max_hops:
-            return f"Path exceeds max_hops={max_hops} ({hops} hops found)."
-        segments = []
-        for i in range(len(path_nodes) - 1):
-            u, v = path_nodes[i], path_nodes[i + 1]
-            # Report the actual stored relation(s), never a fabricated `calls`;
-            # fall back to an honest "related" when the edge has no relation.
-            if G.has_edge(u, v):
-                datas = edge_datas(G, u, v)
-                forward = True
-            else:
-                datas = edge_datas(G, v, u)
-                forward = False
-            rels = sorted({d.get("relation") for d in datas if d.get("relation")})
-            rel = "/".join(rels) if rels else "related"
-            confs = sorted({d.get("confidence") for d in datas if d.get("confidence")})
-            conf_str = f" [{'/'.join(confs)}]" if confs else ""
-            if i == 0:
-                segments.append(G.nodes[u].get("label", u))
-            if forward:
-                segments.append(f"--{rel}{conf_str}--> {G.nodes[v].get('label', v)}")
-            else:
-                segments.append(f"<--{rel}{conf_str}-- {G.nodes[v].get('label', v)}")
-        prefix = ("\n".join(warnings) + "\n") if warnings else ""
-        return prefix + f"Shortest path ({hops} hops):\n  " + " ".join(segments)
+        return _shortest_path_text(G, arguments)
 
     def _tool_list_prs(arguments: dict) -> str:
         from omnigraph.prs import fetch_prs, fetch_worktrees, format_prs_text, _detect_default_branch

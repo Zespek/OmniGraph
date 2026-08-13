@@ -76,6 +76,25 @@ def test_detect_skips_noise_dot_dirs():
                 assert noise not in f
 
 
+def test_detect_skips_obsidian_vault_metadata_dirs(tmp_path):
+    """Obsidian metadata and plugin caches are not part of the source corpus (#2493)."""
+    for directory in (".obsidian", ".smart-env"):
+        metadata_dir = tmp_path / directory
+        metadata_dir.mkdir()
+        (metadata_dir / "state.json").write_text("{}")
+    trash_dir = tmp_path / ".trash"
+    trash_dir.mkdir()
+    (trash_dir / "state.json").write_text("{}")
+    (tmp_path / "project.json").write_text("{}")
+
+    result = detect(tmp_path)
+
+    assert result["files"]["code"] == [
+        str(trash_dir / "state.json"),
+        str(tmp_path / "project.json"),
+    ]
+
+
 def test_classify_md_paper_by_signals(tmp_path):
     """A .md file with enough paper signals should classify as PAPER."""
     paper = tmp_path / "paper.md"
@@ -117,6 +136,61 @@ def test_omnigraphignore_excludes_file(tmp_path):
     assert not any("vendor" in f for f in file_list)
     assert not any("generated" in f for f in file_list)
     assert result["omnigraphignore_patterns"] == 2
+
+
+def test_omnigraphignore_matches_nfd_path_with_nfc_pattern(tmp_path):
+    """An accented pattern excludes its directory even when the FS stores NFD.
+
+    macOS returns filenames in NFD ("c" + U+0327) while editors write ignore
+    files in NFC (U+00E7). Without normalization the two compare unequal and
+    the rule silently does nothing — the files get scanned, and docs/PDFs are
+    sent to an LLM despite an explicit exclusion.
+    """
+    nfc_name = unicodedata.normalize("NFC", "Or\u00e7amento")
+    nfd_name = unicodedata.normalize("NFD", nfc_name)
+    assert nfc_name != nfd_name  # guard: the two forms really do differ
+
+    (tmp_path / ".omnigraphignore").write_text(f"{nfc_name}/\n")
+    secret_dir = tmp_path / nfd_name
+    secret_dir.mkdir()
+    (secret_dir / "contrato.py").write_text("x = 1")
+    (tmp_path / "main.py").write_text("print('hi')")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["code"]
+    assert any("main.py" in f for f in file_list)
+    assert not any("contrato.py" in f for f in file_list)
+
+
+def test_omnigraphignore_matches_nfc_path_with_nfd_pattern(tmp_path):
+    """The reverse direction also holds: NFD pattern, NFC path on disk."""
+    nfc_name = unicodedata.normalize("NFC", "Or\u00e7amento")
+    nfd_name = unicodedata.normalize("NFD", nfc_name)
+
+    (tmp_path / ".omnigraphignore").write_text(f"{nfd_name}/\n")
+    d = tmp_path / nfc_name
+    d.mkdir()
+    (d / "contrato.py").write_text("x = 1")
+    (tmp_path / "main.py").write_text("print('hi')")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["code"]
+    assert any("main.py" in f for f in file_list)
+    assert not any("contrato.py" in f for f in file_list)
+
+
+def test_omnigraphignore_ascii_patterns_unaffected(tmp_path):
+    """Normalization is a no-op for ASCII patterns — no regression."""
+    (tmp_path / ".omnigraphignore").write_text("vendor/\n")
+    v = tmp_path / "vendor"
+    v.mkdir()
+    (v / "lib.py").write_text("x = 1")
+    (tmp_path / "main.py").write_text("x = 1")
+
+    result = detect(tmp_path)
+    file_list = result["files"]["code"]
+    assert any("main.py" in f for f in file_list)
+    assert not any("vendor" in f for f in file_list)
 
 
 def test_omnigraphignore_missing_is_fine(tmp_path):
@@ -686,6 +760,85 @@ def test_detect_skips_coverage_dir(tmp_path):
     assert any("main.py" in f for f in all_files)
 
 
+def test_detect_skips_coverage_dir_by_lcov_info(tmp_path):
+    """A coverage/ dir is still pruned on any single artefact file — an lcov.info
+    with no lcov-report/ subtree is enough evidence (#870, #2339)."""
+    cov = tmp_path / "coverage"
+    cov.mkdir()
+    (cov / "lcov.info").write_text("TN:\nSF:src/app.ts\nend_of_record\n")
+    (cov / "prettify.js").write_text("var PR_SHOULD_USE_CONTINUATION=true;")
+    (tmp_path / "main.py").write_text("def hello(): pass")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert not any(f.startswith(str(cov)) for f in all_files)
+    assert any("main.py" in f for f in all_files)
+
+
+def test_detect_keeps_coverage_code_namespace(tmp_path):
+    """#2339: a coverage/ dir holding real modules and no coverage artefacts is a
+    legitimate package name, not a generated report, and must NOT be pruned.
+
+    Pruning it by name dropped an entire production package while leaving its
+    dependents in the graph, so queries kept returning plausible neighbours and
+    nothing in the report or skipped lists showed the loss."""
+    pkg = tmp_path / "auditor_toolkit" / "assurance" / "coverage"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("from .impact import Impact\n")
+    (pkg / "impact.py").write_text("class Impact:\n    def score(self): return 1\n")
+    (pkg / "inventory.py").write_text("def inventory():\n    return []\n")
+    (tmp_path / "app.py").write_text("from auditor_toolkit.assurance import coverage\n")
+    result = detect(tmp_path)
+    all_files = [f for files in result["files"].values() for f in files]
+    assert any("impact.py" in f for f in all_files)
+    assert any("inventory.py" in f for f in all_files)
+    assert any(f.endswith("coverage" + os.sep + "__init__.py") for f in all_files)
+
+
+def test_collect_files_keeps_coverage_code_namespace(tmp_path):
+    """#2339 as reported: collect_files returned [] for a real coverage package,
+    both when it is the walk target and when it is reached through the repo root.
+    A genuine report dir alongside it must still be skipped."""
+    from omnigraph.extract import collect_files
+
+    pkg = tmp_path / "auditor_toolkit" / "assurance" / "coverage"
+    pkg.mkdir(parents=True)
+    for name in ("__init__.py", "impact.py", "mapping.py"):
+        (pkg / name).write_text("def f(): pass\n")
+
+    report = tmp_path / "webapp" / "coverage"
+    report.mkdir(parents=True)
+    (report / "index.html").write_text("<html>coverage</html>")
+    (report / "base.css").write_text("body{}")
+    (report / "prettify.js").write_text("var PR=1;")
+
+    assert sorted(p.name for p in collect_files(pkg)) == [
+        "__init__.py", "impact.py", "mapping.py",
+    ]
+    walked = {str(p.relative_to(tmp_path)) for p in collect_files(tmp_path)}
+    assert any(p.endswith("impact.py") for p in walked)
+    assert not any("webapp" in p for p in walked), (
+        "a generated Istanbul report dir must still be pruned (#870)"
+    )
+
+
+def test_is_noise_dir_coverage_is_evidence_gated(tmp_path):
+    """The gate itself: name alone is not enough, and an unverifiable call
+    (no parent) keeps a possibly-real code dir — same contract as env/snapshots."""
+    src = tmp_path / "coverage"
+    src.mkdir()
+    (src / "__init__.py").write_text("")
+    assert detect_mod._is_noise_dir("coverage", tmp_path) is False
+
+    generated = tmp_path / "report" / "coverage"
+    generated.mkdir(parents=True)
+    (generated / "coverage-final.json").write_text("{}")
+    assert detect_mod._is_noise_dir("coverage", tmp_path / "report") is True
+
+    assert detect_mod._is_noise_dir("coverage") is False
+    # lcov-report stays unconditional — no package is ever named that.
+    assert detect_mod._is_noise_dir("lcov-report") is True
+
+
 def test_detect_skips_visual_tests_dir(tmp_path):
     """visual-tests/ bundles and snapshots are noise — must be excluded (#869)."""
     vt = tmp_path / "visual-tests"
@@ -1056,6 +1209,64 @@ def test_anchored_multi_segment_pattern(tmp_path):
     )
 
 
+def test_detect_does_not_ignore_scan_root_itself_via_parent_gitignore(tmp_path):
+    """If a parent `.gitignore` (at the repo root) ignores the directory being scanned
+    (the scan root itself), files inside the scan root must not be ignored (#2468)."""
+    (tmp_path / ".git").mkdir()
+
+    corpus_dir = tmp_path / "omnigraph-corpus"
+    corpus_dir.mkdir()
+
+    (corpus_dir / "keep.py").write_text("x = 1\n", encoding="utf-8")
+    
+    docs_dir = corpus_dir / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "intro.md").write_text("# Introduction\n", encoding="utf-8")
+
+    (tmp_path / ".gitignore").write_text("omnigraph-corpus/\n", encoding="utf-8")
+
+    result = detect(corpus_dir)
+
+    all_files = [Path(f) for files in result["files"].values() for f in files]
+    file_names = {f.name for f in all_files}
+
+    assert result["total_files"] == 2
+    assert "keep.py" in file_names
+    assert "intro.md" in file_names
+
+
+def test_detect_preserves_unrelated_parent_ignores_inside_scan_root(tmp_path):
+    """A parent `.gitignore` should still ignore unrelated directories (like `node_modules/`)
+    inside the scan root, even while the scan root itself is not ignored (#2468)."""
+    (tmp_path / ".git").mkdir()
+
+    corpus_dir = tmp_path / "omnigraph-corpus"
+    corpus_dir.mkdir()
+
+    (corpus_dir / "keep.py").write_text("x = 1\n", encoding="utf-8")
+    
+    docs_dir = corpus_dir / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "intro.md").write_text("# Introduction\n", encoding="utf-8")
+
+    node_modules_dir = corpus_dir / "node_modules"
+    node_modules_dir.mkdir()
+    (node_modules_dir / "lib.js").write_text("console.log(1);\n", encoding="utf-8")
+
+    # Parent .gitignore ignoring the scan root itself AND node_modules/
+    (tmp_path / ".gitignore").write_text("omnigraph-corpus/\nnode_modules/\n", encoding="utf-8")
+
+    result = detect(corpus_dir)
+
+    all_files = [Path(f) for files in result["files"].values() for f in files]
+    file_names = {f.name for f in all_files}
+
+    assert result["total_files"] == 2
+    assert "keep.py" in file_names
+    assert "intro.md" in file_names
+    assert "lib.js" not in file_names
+
+
 # Tests for - memoise _is_ignored/_eval results via a per-detect() cache
 
 def test_is_ignored_cache_matches_uncached_results(tmp_path):
@@ -1371,6 +1582,49 @@ def test_save_manifest_clear_semantic_erases_stale_hash_for_omitted_file(tmp_pat
     assert [Path(f).name for f in inc["new_files"]["document"]] == ["doc.md"], (
         "cleared file must be re-queued for semantic extraction"
     )
+
+
+def test_save_manifest_clear_ast_blanks_both_hashes_for_failed_extra(tmp_path):
+    """#2543: AST failure (missing optional extra) must blank both hashes so
+    the next extract re-queues the file without deleting omnigraph-out/."""
+    import json
+
+    sql = tmp_path / "schema.sql"
+    sql.write_text("CREATE TABLE users (id INT);\n")
+    py = tmp_path / "main.py"
+    py.write_text("def main():\n    return 1\n")
+    manifest_path = str(tmp_path / "omnigraph-out" / "manifest.json")
+    corpus = {str(sql), str(py)}
+
+    # Run 1: both files stamped as if a prior full extract succeeded.
+    save_manifest(
+        {"code": [str(sql), str(py)]},
+        manifest_path,
+        root=tmp_path,
+        scan_corpus=corpus,
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["schema.sql"]["ast_hash"] != ""
+    assert manifest["schema.sql"]["semantic_hash"] != ""
+    assert manifest["main.py"]["ast_hash"] != ""
+
+    # Run 2: sql fails (missing extra) — omitted from stamped files, listed in clear_ast.
+    save_manifest(
+        {"code": [str(py)]},
+        manifest_path,
+        root=tmp_path,
+        scan_corpus=corpus,
+        clear_ast={str(sql)},
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["schema.sql"]["ast_hash"] == "", "failed AST source must lose ast_hash"
+    assert manifest["schema.sql"]["semantic_hash"] == "", "failed AST source must lose semantic_hash"
+    assert manifest["main.py"]["ast_hash"] != "", "successful code must keep its stamp"
+
+    inc = detect_incremental(tmp_path, manifest_path, kind="semantic")
+    new_names = {Path(f).name for f in inc["new_files"].get("code", [])}
+    assert "schema.sql" in new_names, "failed-extra file must be re-queued"
+    assert "main.py" not in new_names, "unchanged successful code must stay warm"
 
 
 def test_save_manifest_without_filter_unchanged_for_code(tmp_path):
@@ -2190,6 +2444,78 @@ def test_detect_prunes_venv_names_without_markers(tmp_path):
     assert any("app.py" in f for f in all_files)
     for name in ("venv", ".venv", "my_venv"):
         assert not any(f"{os.sep}{name}{os.sep}" in f for f in all_files), f"{name} must stay pruned"
+
+
+@pytest.mark.parametrize(
+    ("configured_out", "absolute", "symlink_target"),
+    [
+        pytest.param("omnigraph-out/nlp", False, None, id="default-parent"),
+        pytest.param("artifacts/nlp", False, None, id="custom-parent"),
+        pytest.param("artifacts/nlp", True, None, id="absolute"),
+        pytest.param(
+            "aliases/output-link",
+            False,
+            "artifacts/nlp",
+            id="in-root-symlink",
+        ),
+    ],
+)
+def test_nested_omnigraph_out_prunes_only_configured_path(
+    tmp_path, configured_out, absolute, symlink_target
+):
+    """#2273: a nested output basename must not prune same-named source dirs."""
+    import json
+    import subprocess
+    import sys
+
+    if absolute:
+        configured_out = str(tmp_path / configured_out)
+
+    source = tmp_path / "src" / "revil" / "nexus" / "nlp" / "core.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def tokenize(text):\n    return text.split()\n")
+
+    output_dir = (
+        tmp_path / symlink_target
+        if symlink_target is not None
+        else tmp_path / configured_out
+    )
+    if symlink_target is not None:
+        output_dir.mkdir(parents=True)
+        configured_out_link = tmp_path / configured_out
+        configured_out_link.parent.mkdir(parents=True)
+        try:
+            configured_out_link.symlink_to(output_dir, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pytest.skip("filesystem does not support symlinks")
+
+    generated = output_dir / "generated.py"
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("SHOULD_NOT_BE_INDEXED = True\n")
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys\n"
+                "from pathlib import Path\n"
+                "from omnigraph.detect import detect\n"
+                "result = detect(Path(sys.argv[1]))\n"
+                "print(json.dumps(result['files']['code']))\n"
+            ),
+            str(tmp_path),
+        ],
+        cwd=Path(__file__).parents[1],
+        env={**os.environ, "OMNIGRAPH_OUT": configured_out},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    detected = {Path(p).resolve() for p in json.loads(probe.stdout)}
+
+    assert source.resolve() in detected
+    assert generated.resolve() not in detected
 
 
 def test_detect_records_unclassified_extensionless_files(tmp_path):

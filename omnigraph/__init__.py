@@ -1,8 +1,8 @@
 """omnigraph - extract · build · cluster · analyze · report."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 # Versão da upstream que originou este sync.
-__upstream_base__ = "0.9.31"
+__upstream_base__ = "0.9.41"
 
 
 def __getattr__(name):

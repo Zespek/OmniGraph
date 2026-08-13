@@ -210,7 +210,7 @@ def test_extract_writes_to_omnigraph_out_env(tmp_path):
     """#1423: `omnigraph extract` honours OMNIGRAPH_OUT for where it WRITES, not only
     where readers look — previously it hardcoded omnigraph-out/ and ignored the
     override. Code-only corpus, so no LLM backend is needed."""
-    (tmp_path / "m.py").write_text("def a():\n    return b()\n\n\ndef b():\n    return 1\n")
+    (tmp_path / "m.py").write_text("def a():\n return b()\n\n\ndef b():\n return 1\n")
     env = os.environ.copy()
     env["OMNIGRAPH_OUT"] = "custom-out"
 
@@ -252,6 +252,115 @@ def test_path_uses_omnigraph_out_env(tmp_path):
     assert r.returncode == 0, r.stderr
 
 
+# ── omnigraph path direction ─────────────────────────────────────────
+
+def _write_path_graph(tmp_path: Path, nodes: list[str], links: list[dict]) -> Path:
+    """Write a minimal hand-rolled directed graph.json for path-direction tests."""
+    out = tmp_path / "omnigraph-out"
+    out.mkdir()
+    (out / "graph.json").write_text(json.dumps({
+        "directed": True,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [{"id": n, "label": n} for n in nodes],
+        "links": links,
+    }))
+    return out
+
+
+def _calls(src: str, tgt: str) -> dict:
+    return {"source": src, "target": tgt, "relation": "calls"}
+
+
+def test_path_directed_respects_direction(tmp_path):
+    _write_path_graph(
+        tmp_path, ["alpha", "beta", "gamma"],
+        [_calls("alpha", "beta"), _calls("beta", "gamma")],
+    )
+    r = _run(["path", "alpha", "gamma"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.count("-->") == 2
+    assert "<--" not in r.stdout
+    # Explicit --directed is the same as the default.
+    r2 = _run(["path", "alpha", "gamma", "--directed"], tmp_path)
+    assert r2.returncode == 0, r2.stderr
+    assert r2.stdout == r.stdout
+
+
+def test_path_directed_backwards_is_no_path(tmp_path):
+    # Default-change guard: a plain `path` with no flag is directed,
+    # so walking the chain backwards must report no directed path.
+    _write_path_graph(
+        tmp_path, ["alpha", "beta", "gamma"],
+        [_calls("alpha", "beta"), _calls("beta", "gamma")],
+    )
+    r = _run(["path", "gamma", "alpha"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "No directed path found" in r.stdout
+    assert "--undirected" in r.stdout
+    assert "-->" not in r.stdout
+    assert "<--" not in r.stdout
+
+
+def test_path_undirected_flag_opt_in(tmp_path):
+    _write_path_graph(
+        tmp_path, ["alpha", "beta", "gamma"],
+        [_calls("alpha", "beta"), _calls("beta", "gamma")],
+    )
+    r = _run(["path", "gamma", "alpha", "--undirected"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "Shortest path (2 hops)" in r.stdout
+    assert r.stdout.count("<--calls--") == 2
+    assert "-->" not in r.stdout
+
+
+def test_path_directed_legacy_markers(tmp_path):
+    # Legacy canonicalized file: the persisted arc is flipped (beta->alpha) but
+    # the _src/_tgt markers carry the true direction alpha->beta. Direction
+    # truth must come from the markers, not the raw arc order.
+    _write_path_graph(
+        tmp_path, ["alpha", "beta"],
+        [{"source": "beta", "target": "alpha",
+          "_src": "alpha", "_tgt": "beta", "relation": "calls"}],
+    )
+    r = _run(["path", "alpha", "beta"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "Shortest path (1 hops)" in r.stdout
+    assert "-->" in r.stdout
+    assert "<--" not in r.stdout
+    r2 = _run(["path", "beta", "alpha"], tmp_path)
+    assert r2.returncode == 0, r2.stderr
+    assert "No directed path found" in r2.stdout
+
+
+def test_path_directed_deterministic(tmp_path):
+    # Diamond with two equal-length directed routes: the chosen route must not
+    # depend on the process hash seed (discipline for the digraph too).
+    _write_path_graph(
+        tmp_path, ["start", "left", "right", "goal"],
+        [_calls("start", "left"), _calls("left", "goal"),
+         _calls("start", "right"), _calls("right", "goal")],
+    )
+    outputs = []
+    for seed in ("0", "1"):
+        env = os.environ.copy()
+        env["PYTHONHASHSEED"] = seed
+        r = _run(["path", "start", "goal"], tmp_path, env=env)
+        assert r.returncode == 0, r.stderr
+        assert "-->" in r.stdout
+        outputs.append(r.stdout)
+    assert outputs[0] == outputs[1]
+
+
+def test_path_flags_mutually_exclusive(tmp_path):
+    _write_path_graph(
+        tmp_path, ["alpha", "beta"], [_calls("alpha", "beta")],
+    )
+    r = _run(["path", "alpha", "beta", "--directed", "--undirected"], tmp_path)
+    assert r.returncode != 0
+    assert "mutually exclusive" in r.stderr
+
+
 # ── omnigraph explain ─────────────────────────────────────────────────────────
 
 def test_explain_runs_without_error(tmp_path):
@@ -286,7 +395,7 @@ def test_export_unknown_format_fails(tmp_path):
 
 def test_update_no_cluster_writes_raw_graph(tmp_path):
     src = tmp_path / "sample.py"
-    src.write_text("def f():\n    return 1\n", encoding="utf-8")
+    src.write_text("def f():\n return 1\n", encoding="utf-8")
 
     r = _run(["update", ".", "--no-cluster"], tmp_path)
     assert r.returncode == 0, r.stderr
@@ -327,7 +436,7 @@ def test_cluster_only_graph_in_omnigraph_out_writes_beside_it(tmp_path):
     into a stray omnigraph-out/ in the CWD."""
     project = tmp_path / "project"
     project.mkdir()
-    out_dir = _make_graph(project)  # project/omnigraph-out/graph.json
+    out_dir = _make_graph(project) # project/omnigraph-out/graph.json
 
     cwd = tmp_path / "elsewhere"
     cwd.mkdir()
@@ -336,8 +445,8 @@ def test_cluster_only_graph_in_omnigraph_out_writes_beside_it(tmp_path):
         cwd,
     )
     assert r.returncode == 0, r.stderr
-    assert (out_dir / "GRAPH_REPORT.md").exists()          # beside --graph
-    assert not (cwd / "omnigraph-out").exists()             # no CWD pollution
+    assert (out_dir / "GRAPH_REPORT.md").exists() # beside --graph
+    assert not (cwd / "omnigraph-out").exists() # no CWD pollution
 
 
 def test_extract_out_does_not_pollute_corpus(tmp_path):
@@ -345,7 +454,7 @@ def test_extract_out_does_not_pollute_corpus(tmp_path):
     omnigraph-out/ (cache, stat-index) inside the scanned corpus."""
     corpus = tmp_path / "corpus"
     corpus.mkdir()
-    (corpus / "a.py").write_text("def main():\n    return 1\n")
+    (corpus / "a.py").write_text("def main():\n return 1\n")
     out = tmp_path / "scratch"
 
     r = _run(
@@ -353,14 +462,14 @@ def test_extract_out_does_not_pollute_corpus(tmp_path):
         tmp_path,
     )
     assert r.returncode == 0, r.stderr
-    assert (out / "omnigraph-out" / "graph.json").exists()   # graph in --out
-    assert not (corpus / "omnigraph-out").exists()           # corpus untouched
+    assert (out / "omnigraph-out" / "graph.json").exists() # graph in --out
+    assert not (corpus / "omnigraph-out").exists() # corpus untouched
 
 
 # Regression test for - cluster-only must remap labels via node overlap
 
 def test_cluster_only_persists_analysis_sidecar(tmp_path):
-    """cluster-only must refresh .omnigraph_analysis.json alongside graph.json.
+    """cluster-only must refresh.omnigraph_analysis.json alongside graph.json.
 
     Downstream export commands use the sidecar for community membership and
     should not see stale or missing community analysis after a recluster.
@@ -404,7 +513,7 @@ def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
     # keyed on those ids. After cluster-only, at least one of those sentinel
     # ids must survive in the labels file (= remap succeeded by node overlap).
     # If the cluster-only branch skips remap, Leiden returns small ints
-    # (0, 1, ...) and the sentinel keys disappear entirely.
+    # (0, 1,...) and the sentinel keys disappear entirely.
     g = json.loads(graph_json.read_text(encoding="utf-8"))
     nodes = g.get("nodes", [])
     assert len(nodes) >= 4, "fixture must have enough nodes to form 2+ communities"
@@ -423,7 +532,7 @@ def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
 
     # Real signal: labels.json keys must align with the community ids actually
     # written to graph.json's per-node community attribute. Without remap,
-    # Leiden returns small cids (0, 1, ...) but labels.json still carries the
+    # Leiden returns small cids (0, 1,...) but labels.json still carries the
     # old sentinel keys, so the intersection is empty and labels are orphaned.
     final_graph = json.loads(graph_json.read_text(encoding="utf-8"))
     final_labels = json.loads(labels_json.read_text(encoding="utf-8"))
@@ -439,9 +548,9 @@ def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
     )
 
 
-# ── communities-fallback when .omnigraph_analysis.json is absent ──────────────
+# ── communities-fallback when.omnigraph_analysis.json is absent ──────────────
 # The watch / post-commit rebuild path only writes graph.json + GRAPH_REPORT.md;
-# it does NOT regenerate .omnigraph_analysis.json. The full `omnigraph extract`
+# it does NOT regenerate.omnigraph_analysis.json. The full `omnigraph extract`
 # pipeline also removes its temp files at the end of the run on some skill
 # workflows. In both cases the per-node `community` attribute is intact on
 # every node in graph.json — that's the source of truth `to_json` writes.
@@ -450,7 +559,7 @@ def test_cluster_only_remaps_labels_to_previous_cids(tmp_path):
 # missing, even though the data is right there.
 
 def test_export_html_falls_back_to_node_community_attribute(tmp_path):
-    """When .omnigraph_analysis.json is absent, export html should reconstruct
+    """When.omnigraph_analysis.json is absent, export html should reconstruct
     communities from the per-node attribute in graph.json rather than bailing
     out with 'Single community - aggregated view not useful.'.
     """
@@ -541,3 +650,128 @@ def test_graph_json_node_ids_are_portable_across_checkout_paths(tmp_path):
     leak = {"alice_home", "bob_elsewhere", "checkout", "tmp", "private", "users", "home", "var"}
     assert not any(part in leak for ident in a for part in ident.split("_")), \
         f"node id embeds an absolute-path component: {a}"
+
+
+# ── cluster-only silent failures + refused-write exit code ───
+
+
+def test_cluster_only_reports_failure_when_write_is_refused(tmp_path):
+    """The #479 shrink guard can refuse to overwrite graph.json. cluster-only
+    still printed "graph.json updated" and exited 0, and it had already written
+    GRAPH_REPORT.md and the labels for the clustering it then discarded (#2436).
+ (#2522)."""
+    out = _make_graph(tmp_path)
+    graph_json = out / "graph.json"
+
+    # Duplicate node ids make the file look larger than the graph it loads into,
+    # which is what trips the guard on a real re-cluster.
+    data = json.loads(graph_json.read_text(encoding="utf-8"))
+    data["nodes"] = data["nodes"] + data["nodes"][:3]
+    graph_json.write_text(json.dumps(data), encoding="utf-8")
+
+    report = out / "GRAPH_REPORT.md"
+    report.write_text("PREVIOUS REPORT\n", encoding="utf-8")
+    before = graph_json.read_text(encoding="utf-8")
+
+    r = _run(["cluster-only", ".", "--no-viz", "--no-label"], tmp_path)
+
+    assert r.returncode != 0, r.stdout
+    assert "graph.json NOT written" in r.stderr, r.stderr
+    assert "graph.json updated" not in r.stdout, r.stdout
+    assert graph_json.read_text(encoding="utf-8") == before
+    assert report.read_text(encoding="utf-8") == "PREVIOUS REPORT\n"
+
+
+def test_cluster_only_happy_path_exits_zero(tmp_path):
+    """Guard for the #2522 reordering: the normal re-cluster still succeeds."""
+    _make_graph(tmp_path)
+    r = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "Done -" in r.stdout, r.stdout
+    assert "communities" in r.stdout
+
+
+def test_cluster_only_warns_when_labeling_flags_are_ignored(tmp_path):
+    """#2534 case 1: with a saved.omnigraph_labels.json the reuse branch never
+    calls the LLM, so --backend/--model/--batch-size used to be silently
+    ignored while exiting 0. Reuse stays a success (exit 0), but the ignored
+    flags must be named on stderr."""
+    _make_graph(tmp_path) # persists.omnigraph_labels.json -> reuse branch
+
+    r = _run(["cluster-only", ".", "--backend", "openai", "--no-viz"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "--backend" in r.stderr and "ignored" in r.stderr, r.stderr
+    assert "reusing saved labels" in r.stderr, r.stderr
+    # the reuse branch must NOT have gone through the LLM labeling path
+    assert "Labeling communities" not in r.stdout, r.stdout
+
+
+def test_cluster_only_reuse_without_labeling_flags_stays_quiet(tmp_path):
+    """Control for the #2534 case-1 warning: plain reuse prints no flag warning."""
+    _make_graph(tmp_path)
+    r = _run(["cluster-only", ".", "--no-viz"], tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert "ignored" not in r.stderr, r.stderr
+    assert "reusing saved labels" not in r.stderr, r.stderr
+
+
+# ── cluster-only must not re-stamp built_at_commit from the shell's cwd ──────
+
+
+def _init_git_repo(path: Path, message: str) -> str:
+    """git init + one empty commit; returns the HEAD sha."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "-c", "user.email=t@test", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", message],
+        check=True, capture_output=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_cluster_only_preserves_built_at_commit_from_other_repo_cwd(tmp_path):
+    """#2534 case 4: cluster-only re-clusters an EXISTING graph, so the
+    extract-time built_at_commit must survive — running it from a DIFFERENT
+    repo used to re-stamp graph.json with that repo's HEAD."""
+    target = tmp_path / "target"
+    commit_x = _init_git_repo(target, "init target")
+    out = _make_graph(target)
+    graph_json = out / "graph.json"
+    data = json.loads(graph_json.read_text(encoding="utf-8"))
+    data["built_at_commit"] = commit_x
+    graph_json.write_text(json.dumps(data), encoding="utf-8")
+
+    other = tmp_path / "other"
+    commit_y = _init_git_repo(other, "init other")
+    assert commit_x != commit_y
+
+    r = _run(["cluster-only", str(target), "--no-viz"], other)
+    assert r.returncode == 0, r.stderr
+    final = json.loads(graph_json.read_text(encoding="utf-8"))
+    assert final.get("built_at_commit") == commit_x, (
+        f"built_at_commit re-stamped from the shell's cwd: expected {commit_x}, "
+        f"got {final.get('built_at_commit')} (other repo HEAD is {commit_y})"
+    )
+
+
+def test_cluster_only_preserves_built_at_commit_from_non_repo_cwd(tmp_path):
+    """#2534 case 4: from a cwd that is not a git repo at all, the stamp must
+    still be preserved — not dropped."""
+    target = tmp_path / "target"
+    commit_x = _init_git_repo(target, "init target")
+    out = _make_graph(target)
+    graph_json = out / "graph.json"
+    data = json.loads(graph_json.read_text(encoding="utf-8"))
+    data["built_at_commit"] = commit_x
+    graph_json.write_text(json.dumps(data), encoding="utf-8")
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    r = _run(["cluster-only", str(target), "--no-viz"], plain)
+    assert r.returncode == 0, r.stderr
+    final = json.loads(graph_json.read_text(encoding="utf-8"))
+    assert final.get("built_at_commit") == commit_x

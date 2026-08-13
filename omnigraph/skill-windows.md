@@ -128,14 +128,17 @@ If the import succeeds, print nothing and move straight to Step 2.
 
 ### Step 2 - Detect files
 
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import json
 from omnigraph.detect import detect
 from pathlib import Path
 result = detect(Path('INPUT_PATH'))
-print(json.dumps(result, ensure_ascii=False))
-" > omnigraph-out/.omnigraph_detect.json
+# Write the sidecar from Python, not a shell redirect, so the same block renders
+# on PowerShell hosts without console-encoding drift (#2528).
+Path('omnigraph-out/.omnigraph_detect.json').write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+print(f'Detected {result["total_files"]} files')
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 Replace INPUT_PATH with the actual path the user provided. Do NOT cat or print the JSON - read it silently and present a clean summary instead:
@@ -190,38 +193,38 @@ Note: Parallelizing AST + semantic saves 5-15s on large corpora. AST is determin
 
 For any code files detected, run AST extraction in parallel with Part B subagents:
 
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import sys, json
 from omnigraph.extract import collect_files, extract
 from pathlib import Path
 import json
 
 code_files = []
-detect = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding=\"utf-8\"))
+detect = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding="utf-8"))
 for f in detect.get('files', {}).get('code', []):
     code_files.extend(collect_files(Path(f)) if Path(f).is_dir() else [Path(f)])
 
 if code_files:
     result = extract(code_files, cache_root=Path('INPUT_PATH'))
-    Path('omnigraph-out/.omnigraph_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-    print(f'AST: {len(result[\"nodes\"])} nodes, {len(result[\"edges\"])} edges')
+    Path('omnigraph-out/.omnigraph_ast.json').write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f'AST: {len(result["nodes"])} nodes, {len(result["edges"])} edges')
 else:
-    Path('omnigraph-out/.omnigraph_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}, ensure_ascii=False), encoding=\"utf-8\")
+    Path('omnigraph-out/.omnigraph_ast.json').write_text(json.dumps({'nodes':[],'edges':[],'input_tokens':0,'output_tokens':0}, ensure_ascii=False), encoding="utf-8")
     print('No code files - skipping AST extraction')
-"
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 #### Part B - Semantic extraction (parallel subagents)
 
 **Fast path:** If detection found zero docs, papers, and images (code-only corpus), skip Part B entirely and go straight to Part C. AST handles code - there is nothing for semantic subagents to do. **First write an empty semantic file** so Part C's merge has its input (it reads `.omnigraph_semantic.json` unconditionally; without this a code-only run hits `FileNotFoundError`):
 
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import json
 from pathlib import Path
 Path('omnigraph-out/.omnigraph_semantic.json').write_text(json.dumps({'nodes':[],'edges':[],'hyperedges':[],'input_tokens':0,'output_tokens':0}), encoding='utf-8')
-"
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 **MANDATORY: You MUST use the Agent tool here. Reading files yourself one-by-one is forbidden - it is 5-10x slower. If you do not use the Agent tool you are doing this wrong.**
@@ -238,13 +241,13 @@ Before dispatching any subagents, check which files already have cached extracti
 
 SPEC_PATH below is the **absolute** path of the `references/extraction-spec.md` that ships beside this SKILL.md — the same file Step B2 loads and hands to every subagent. It is the extraction prompt, so cache entries are attributed to it: when a omnigraph upgrade changes the prompt, entries produced by the old one are re-extracted instead of replayed, and unchanged prompts keep their entries (#1939). Substitute the real path in both Step B0 and Step B3 — pass the same one to each, and do not drop the argument.
 
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import json
 from omnigraph.cache import check_semantic_cache
 from pathlib import Path
 
-detect = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding=\"utf-8\"))
+detect = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding="utf-8"))
 # Only content files go to semantic extraction. Code is already covered structurally
 # by the AST pass (Part A); flattening every category here makes subagents re-read
 # every source file (#1392). Video is transcribed to a document in Step 2.5 first.
@@ -255,12 +258,12 @@ cached_nodes, cached_edges, cached_hyperedges, uncached = check_semantic_cache(a
 # Always (re)write the cache file: write hits, else DELETE any leftover from a prior
 # run so Part C never merges a stale .omnigraph_cached.json (#1392).
 if cached_nodes or cached_edges or cached_hyperedges:
-    Path('omnigraph-out/.omnigraph_cached.json').write_text(json.dumps({'nodes': cached_nodes, 'edges': cached_edges, 'hyperedges': cached_hyperedges}, ensure_ascii=False), encoding=\"utf-8\")
+    Path('omnigraph-out/.omnigraph_cached.json').write_text(json.dumps({'nodes': cached_nodes, 'edges': cached_edges, 'hyperedges': cached_hyperedges}, ensure_ascii=False), encoding="utf-8")
 else:
     Path('omnigraph-out/.omnigraph_cached.json').unlink(missing_ok=True)
-Path('omnigraph-out/.omnigraph_uncached.txt').write_text('\n'.join(uncached), encoding=\"utf-8\")
+Path('omnigraph-out/.omnigraph_uncached.txt').write_text('\n'.join(uncached), encoding="utf-8")
 print(f'Cache: {len(all_files)-len(uncached)} files hit, {len(uncached)} files need extraction')
-"
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 Only dispatch subagents for files listed in `omnigraph-out/.omnigraph_uncached.txt`. If all files are cached, skip to Part C directly.
@@ -306,8 +309,8 @@ Wait for all subagents. For each result:
 If more than half the chunks failed or are missing, stop and tell the user to re-run and ensure `subagent_type="general-purpose"` is used.
 
 Merge all chunk files into `.omnigraph_semantic_new.json`. **After each Agent call completes, read the real token counts from the Agent tool result's `usage` field and write them back into the chunk JSON before merging** — the chunk JSON itself always has placeholder zeros. Then run:
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import json, glob
 from pathlib import Path
 
@@ -315,7 +318,7 @@ chunks = sorted(glob.glob('omnigraph-out/.omnigraph_chunk_*.json'))
 all_nodes, all_edges, all_hyperedges = [], [], []
 total_in, total_out = 0, 0
 for c in chunks:
-    d = json.loads(Path(c).read_text(encoding=\"utf-8\"))
+    d = json.loads(Path(c).read_text(encoding="utf-8"))
     all_nodes += d.get('nodes', [])
     all_edges += d.get('edges', [])
     all_hyperedges += d.get('hyperedges', [])
@@ -324,33 +327,33 @@ for c in chunks:
 Path('omnigraph-out/.omnigraph_semantic_new.json').write_text(json.dumps({
     'nodes': all_nodes, 'edges': all_edges, 'hyperedges': all_hyperedges,
     'input_tokens': total_in, 'output_tokens': total_out,
-}, indent=2, ensure_ascii=False), encoding=\"utf-8\")
+}, indent=2, ensure_ascii=False), encoding="utf-8")
 print(f'Merged {len(chunks)} chunks: {total_in:,} in / {total_out:,} out tokens')
-"
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 Save new results to cache. Pass the same SPEC_PATH as Step B0 — it stamps each entry with the prompt that produced it, and a write under a different prompt than the read lands where the next run won't look (#1939):
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import json
 from omnigraph.cache import save_semantic_cache
 from pathlib import Path
 
-new = json.loads(Path('omnigraph-out/.omnigraph_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('omnigraph-out/.omnigraph_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-uncached = [line for line in Path('omnigraph-out/.omnigraph_uncached.txt').read_text(encoding=\"utf-8\").splitlines() if line]
+new = json.loads(Path('omnigraph-out/.omnigraph_semantic_new.json').read_text(encoding="utf-8")) if Path('omnigraph-out/.omnigraph_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
+uncached = [line for line in Path('omnigraph-out/.omnigraph_uncached.txt').read_text(encoding="utf-8").splitlines() if line]
 saved = save_semantic_cache(new.get('nodes', []), new.get('edges', []), new.get('hyperedges', []), root='INPUT_PATH', allowed_source_files=uncached, prompt_file='SPEC_PATH')
 print(f'Cached {saved} files')
-"
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 Merge cached + new results into `omnigraph-out/.omnigraph_semantic.json`:
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import json
 from pathlib import Path
 
-cached = json.loads(Path('omnigraph-out/.omnigraph_cached.json').read_text(encoding=\"utf-8\")) if Path('omnigraph-out/.omnigraph_cached.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
-new = json.loads(Path('omnigraph-out/.omnigraph_semantic_new.json').read_text(encoding=\"utf-8\")) if Path('omnigraph-out/.omnigraph_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
+cached = json.loads(Path('omnigraph-out/.omnigraph_cached.json').read_text(encoding="utf-8")) if Path('omnigraph-out/.omnigraph_cached.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
+new = json.loads(Path('omnigraph-out/.omnigraph_semantic_new.json').read_text(encoding="utf-8")) if Path('omnigraph-out/.omnigraph_semantic_new.json').exists() else {'nodes':[],'edges':[],'hyperedges':[]}
 
 all_nodes = cached['nodes'] + new.get('nodes', [])
 all_edges = cached['edges'] + new.get('edges', [])
@@ -369,21 +372,21 @@ merged = {
     'input_tokens': new.get('input_tokens', 0),
     'output_tokens': new.get('output_tokens', 0),
 }
-Path('omnigraph-out/.omnigraph_semantic.json').write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding=\"utf-8\")
-print(f'Extraction complete - {len(deduped)} nodes, {len(all_edges)} edges ({len(cached[\"nodes\"])} from cache, {len(new.get(\"nodes\",[]))} new)')
-"
+Path('omnigraph-out/.omnigraph_semantic.json').write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+print(f'Extraction complete - {len(deduped)} nodes, {len(all_edges)} edges ({len(cached["nodes"])} from cache, {len(new.get("nodes",[]))} new)')
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
-Clean up temp files: `rm -f omnigraph-out/.omnigraph_cached.json omnigraph-out/.omnigraph_uncached.txt omnigraph-out/.omnigraph_semantic_new.json`
+Clean up temp files: `Remove-Item -Force -ErrorAction SilentlyContinue omnigraph-out\.omnigraph_cached.json, omnigraph-out\.omnigraph_uncached.txt, omnigraph-out\.omnigraph_semantic_new.json`
 
 #### Part C - Merge AST + semantic into final extraction
 
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import sys, json
 from pathlib import Path
 
-ast = json.loads(Path('omnigraph-out/.omnigraph_ast.json').read_text(encoding=\"utf-8\"))
-sem = json.loads(Path('omnigraph-out/.omnigraph_semantic.json').read_text(encoding=\"utf-8\"))
+ast = json.loads(Path('omnigraph-out/.omnigraph_ast.json').read_text(encoding="utf-8"))
+sem = json.loads(Path('omnigraph-out/.omnigraph_semantic.json').read_text(encoding="utf-8"))
 
 # Merge: AST nodes first, semantic nodes deduplicated by id
 seen = {n['id'] for n in ast['nodes']}
@@ -402,20 +405,20 @@ merged = {
     'input_tokens': sem.get('input_tokens', 0),
     'output_tokens': sem.get('output_tokens', 0),
 }
-Path('omnigraph-out/.omnigraph_extract.json').write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding=\"utf-8\")
+Path('omnigraph-out/.omnigraph_extract.json').write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
 total = len(merged_nodes)
 edges = len(merged_edges)
-print(f'Merged: {total} nodes, {edges} edges ({len(ast[\"nodes\"])} AST + {len(sem[\"nodes\"])} semantic)')
-"
+print(f'Merged: {total} nodes, {edges} edges ({len(ast["nodes"])} AST + {len(sem["nodes"])} semantic)')
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 ### Step 4 - Build graph, cluster, analyze, generate outputs
 
 **Before starting:** the code blocks below pass `directed=IS_DIRECTED` to `build_from_json()`. Replace `IS_DIRECTED` with `True` if `--directed` was given (builds a `DiGraph` preserving edge direction source→target), otherwise `False` (the default undirected `Graph`). Substitute it the same way you substitute `INPUT_PATH` — do not leave the literal `IS_DIRECTED` in the code.
 
-```bash
-mkdir -p omnigraph-out
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+New-Item -ItemType Directory -Force -Path omnigraph-out | Out-Null
+@'
 import sys, json
 from omnigraph.build import build_from_json
 from omnigraph.cluster import cluster, score_all
@@ -424,8 +427,8 @@ from omnigraph.report import generate
 from omnigraph.export import to_json
 from pathlib import Path
 
-extraction = json.loads(Path('omnigraph-out/.omnigraph_extract.json').read_text(encoding=\"utf-8\"))
-detection  = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding=\"utf-8\"))
+extraction = json.loads(Path('omnigraph-out/.omnigraph_extract.json').read_text(encoding="utf-8"))
+detection  = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding="utf-8"))
 
 # root= mirrors the --update runbook (#1361): relativize source_file to the same
 # base so the full build and incremental --update never drift apart on re-extract.
@@ -455,7 +458,7 @@ if not wrote:
     print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
     raise SystemExit(1)
 report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, 'INPUT_PATH', suggested_questions=questions)
-Path('omnigraph-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
+Path('omnigraph-out/GRAPH_REPORT.md').write_text(report, encoding="utf-8")
 analysis = {
     'communities': {str(k): v for k, v in communities.items()},
     'cohesion': {str(k): v for k, v in cohesion.items()},
@@ -463,9 +466,9 @@ analysis = {
     'surprises': surprises,
     'questions': questions,
 }
-Path('omnigraph-out/.omnigraph_analysis.json').write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding=\"utf-8\")
+Path('omnigraph-out/.omnigraph_analysis.json').write_text(json.dumps(analysis, indent=2, ensure_ascii=False), encoding="utf-8")
 print(f'Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges, {len(communities)} communities')
-"
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 If this step prints `ERROR: Graph is empty`, stop and tell the user what happened - do not proceed to labeling or visualization.
@@ -476,13 +479,13 @@ Replace INPUT_PATH with the actual path.
 
 A non-destructive diagnostic on the extraction, before labeling. It surfaces edge collapse, dangling/missing endpoints, and self-loops — the silent-corruption modes of incremental updates and AST/LLM id mismatches. Read-only; never aborts.
 
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import json
 from pathlib import Path
 from omnigraph.diagnostics import diagnose_extraction, format_diagnostic_report
 
-extraction = json.loads(Path('omnigraph-out/.omnigraph_extract.json').read_text(encoding=\"utf-8\"))
+extraction = json.loads(Path('omnigraph-out/.omnigraph_extract.json').read_text(encoding="utf-8"))
 summary = diagnose_extraction(extraction, directed=IS_DIRECTED, root='INPUT_PATH')
 print(format_diagnostic_report(summary))
 flags = [f'{summary[k]} {label}' for k, label in (
@@ -493,7 +496,7 @@ flags = [f'{summary[k]} {label}' for k, label in (
     ('undirected_same_endpoint_collapsed_edges', 'collapsed (undirected) edges'),
 ) if summary.get(k, 0)]
 print('GRAPH HEALTH WARNING: ' + '; '.join(flags) + ' - graph may be incomplete/corrupt.' if flags else 'Graph health: OK (no dangling/missing/collapsed edges).')
-"
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 Substitute `IS_DIRECTED` and `INPUT_PATH` as in Step 4. If a `GRAPH HEALTH WARNING` prints, surface it in the final summary (do not abort — the graph is still usable, but the integrity issue must be visible, per the Honesty Rules).
@@ -504,18 +507,19 @@ Read `omnigraph-out/.omnigraph_analysis.json`. For each community key, look at i
 
 Then regenerate the report and save the labels for the visualizer:
 
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import sys, json
 from omnigraph.build import build_from_json
 from omnigraph.cluster import score_all
 from omnigraph.analyze import god_nodes, surprising_connections, suggest_questions
 from omnigraph.report import generate
+from omnigraph.export import to_json
 from pathlib import Path
 
-extraction = json.loads(Path('omnigraph-out/.omnigraph_extract.json').read_text(encoding=\"utf-8\"))
-detection  = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding=\"utf-8\"))
-analysis   = json.loads(Path('omnigraph-out/.omnigraph_analysis.json').read_text(encoding=\"utf-8\"))
+extraction = json.loads(Path('omnigraph-out/.omnigraph_extract.json').read_text(encoding="utf-8"))
+detection  = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding="utf-8"))
+analysis   = json.loads(Path('omnigraph-out/.omnigraph_analysis.json').read_text(encoding="utf-8"))
 
 # root= as in Step 4 / the --update runbook (#1361) — same base for node-key parity.
 G = build_from_json(extraction, root='INPUT_PATH', directed=IS_DIRECTED)
@@ -530,10 +534,17 @@ labels = LABELS_DICT
 questions = suggest_questions(G, communities, labels)
 
 report = generate(G, communities, cohesion, labels, analysis['gods'], analysis['surprises'], detection, tokens, 'INPUT_PATH', suggested_questions=questions)
-Path('omnigraph-out/GRAPH_REPORT.md').write_text(report, encoding=\"utf-8\")
-Path('omnigraph-out/.omnigraph_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding=\"utf-8\")
+Path('omnigraph-out/GRAPH_REPORT.md').write_text(report, encoding="utf-8")
+Path('omnigraph-out/.omnigraph_labels.json').write_text(json.dumps({str(k): v for k, v in labels.items()}, ensure_ascii=False), encoding="utf-8")
+# Re-export so graph.json nodes carry the curated community_name (#2490).
+# Same extraction as Step 4, so the #479 shrink-guard passes on node count;
+# if it still refuses, surface the guard message - do not force past it.
+wrote = to_json(G, communities, 'omnigraph-out/graph.json', community_labels=labels)
+if not wrote:
+    print('ERROR: refused to shrink omnigraph-out/graph.json (existing graph has more nodes; #479).')
+    print('If this shrink is intentional (you deleted files), re-run a full build with --force.')
 print('Report updated with community labels')
-"
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
 ```
 
 Replace `LABELS_DICT` with the actual dict you constructed (e.g. `{0: "Attention Mechanism", 1: "Training Pipeline"}`).
@@ -547,14 +558,14 @@ If `--obsidian` was given:
 
 - If `--obsidian-dir <path>` was also given, pass it via `--dir`. Otherwise defaults to `omnigraph-out/obsidian`.
 
-```bash
+```powershell
 omnigraph export obsidian
 # or with custom dir: omnigraph export obsidian --dir ~/vaults/my-project
 ```
 
 Generate the HTML graph (always, unless `--no-viz`):
 
-```bash
+```powershell
 omnigraph export html  # auto-aggregates to community view if graph > 5000 nodes
 # or: omnigraph export html --no-viz
 ```
@@ -567,16 +578,16 @@ These run only when their flag is present (`--wiki`, `--neo4j`/`--neo4j-push`, `
 
 ### Step 9 - Save manifest, update cost tracker, clean up, and report
 
-```bash
-$(cat omnigraph-out/.omnigraph_python) -c "
+```powershell
+@'
 import json
 from pathlib import Path
 from datetime import datetime, timezone
 from omnigraph.detect import save_manifest
 
 # Save manifest for --update
-detect = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding=\"utf-8\"))
-extract = json.loads(Path('omnigraph-out/.omnigraph_extract.json').read_text(encoding=\"utf-8\"))
+detect = json.loads(Path('omnigraph-out/.omnigraph_detect.json').read_text(encoding="utf-8"))
+extract = json.loads(Path('omnigraph-out/.omnigraph_extract.json').read_text(encoding="utf-8"))
 # In --update mode, 'all_files' carries the full corpus; 'files' is the changed
 # subset. Full-rebuild mode populates only 'files', so the fallback handles that.
 # root= relativizes the manifest keys to the scan root (same base as the build),
@@ -612,7 +623,7 @@ output_tok = extract.get('output_tokens', 0)
 
 cost_path = Path('omnigraph-out/cost.json')
 if cost_path.exists():
-    cost = json.loads(cost_path.read_text(encoding=\"utf-8\"))
+    cost = json.loads(cost_path.read_text(encoding="utf-8"))
 else:
     cost = {'runs': [], 'total_input_tokens': 0, 'total_output_tokens': 0}
 
@@ -624,14 +635,14 @@ cost['runs'].append({
 })
 cost['total_input_tokens'] += input_tok
 cost['total_output_tokens'] += output_tok
-cost_path.write_text(json.dumps(cost, indent=2, ensure_ascii=False), encoding=\"utf-8\")
+cost_path.write_text(json.dumps(cost, indent=2, ensure_ascii=False), encoding="utf-8")
 
 print(f'This run: {input_tok:,} input tokens, {output_tok:,} output tokens')
-print(f'All time: {cost[\"total_input_tokens\"]:,} input, {cost[\"total_output_tokens\"]:,} output ({len(cost[\"runs\"])} runs)')
-"
-rm -f omnigraph-out/.omnigraph_detect.json omnigraph-out/.omnigraph_extract.json omnigraph-out/.omnigraph_ast.json omnigraph-out/.omnigraph_semantic.json omnigraph-out/.omnigraph_analysis.json
-find omnigraph-out -maxdepth 1 -name '.omnigraph_chunk_*.json' -delete 2>/dev/null
-rm -f omnigraph-out/.needs_update 2>/dev/null || true
+print(f'All time: {cost["total_input_tokens"]:,} input, {cost["total_output_tokens"]:,} output ({len(cost["runs"])} runs)')
+'@ | & (Get-Content omnigraph-out\.omnigraph_python) -
+Remove-Item -Force -ErrorAction SilentlyContinue omnigraph-out\.omnigraph_detect.json, omnigraph-out\.omnigraph_extract.json, omnigraph-out\.omnigraph_ast.json, omnigraph-out\.omnigraph_semantic.json, omnigraph-out\.omnigraph_analysis.json
+Get-ChildItem omnigraph-out -Filter '.omnigraph_chunk_*.json' -File -ErrorAction SilentlyContinue | Remove-Item -Force
+Remove-Item -Force -ErrorAction SilentlyContinue omnigraph-out\.needs_update
 ```
 
 Replace INPUT_PATH with the actual path (same value used in Steps 4-5) so the manifest is relativized to the scan root.
@@ -669,18 +680,20 @@ The graph is the map. Your job after the pipeline is to be the guide.
 
 Before running any subcommand below (`--update`, `--cluster-only`, `query`, `path`, `explain`, `add`), check that `.omnigraph_python` exists. If it's missing (e.g. user deleted `omnigraph-out/`), re-resolve the interpreter first:
 
-```bash
-if [ ! -f omnigraph-out/.omnigraph_python ]; then
-    OMNIGRAPH_BIN=$(which omnigraph 2>/dev/null)
-    if [ -n "$OMNIGRAPH_BIN" ]; then
-        PYTHON=$(head -1 "$OMNIGRAPH_BIN" | tr -d '#!')
-        case "$PYTHON" in *[!a-zA-Z0-9/_.@-]*) PYTHON="python3" ;; esac
-    else
-        PYTHON="python3"
-    fi
-    mkdir -p omnigraph-out
-    "$PYTHON" -c "import sys; open('omnigraph-out/.omnigraph_python', 'w', encoding='utf-8').write(sys.executable)"
-fi
+```powershell
+if (-not (Test-Path omnigraph-out\.omnigraph_python)) {
+    $OMNIGRAPH_PYTHON = $null
+    $omnigraphCmd = Get-Command omnigraph -ErrorAction SilentlyContinue
+    if ($omnigraphCmd) {
+        # The interpreter that owns the omnigraph entry point sits next to it
+        # (<env>\Scripts\python.exe for uv tool, pipx, and venv installs).
+        $py = Join-Path (Split-Path $omnigraphCmd.Source) "python.exe"
+        if (Test-Path $py) { $OMNIGRAPH_PYTHON = $py }
+    }
+    if (-not $OMNIGRAPH_PYTHON) { $OMNIGRAPH_PYTHON = "python" }
+    New-Item -ItemType Directory -Force -Path omnigraph-out | Out-Null
+    & $OMNIGRAPH_PYTHON -c "import sys; open('omnigraph-out/.omnigraph_python', 'w', encoding='utf-8').write(sys.executable)"
+}
 ```
 
 ## For --update and --cluster-only
@@ -693,7 +706,7 @@ Both are non-default subcommands. `--update` re-extracts only new or changed fil
 
 When `omnigraph-out/graph.json` already exists and the user asks a question about the corpus, answer from the graph rather than rebuilding it:
 
-```bash
+```powershell
 omnigraph query "<question>"
 ```
 

@@ -41,6 +41,6 @@ paper/
 # macOS Finder metadata
 .DS_Store
 
-# ferramental de manutenção do fork — fica só na máquina, não vai para o GitHub
+# ferramental de manutenção do fork — só local, não publicado
 .zespek/
 atualizar_upstream.py
