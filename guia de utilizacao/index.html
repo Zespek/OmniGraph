@@ -18,9 +18,11 @@
   body{
     background:radial-gradient(1200px 600px at 80% -10%,rgba(189,0,255,.10),transparent 60%),var(--bg);
     color:var(--txt);font-family:var(--sans);line-height:1.65;-webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
   }
+  img{max-width:100%;height:auto}
   a{color:var(--roxo-cl);text-decoration:none} a:hover{text-decoration:underline}
-  .wrap{max-width:760px;margin:0 auto;padding:56px 24px 90px}
+  .wrap{max-width:820px;margin:0 auto;padding:56px 24px 90px}
 
   .prompt{font-family:var(--mono);color:var(--roxo);font-size:15px;margin-bottom:14px}
   h1{font-size:38px;line-height:1.15;letter-spacing:-1px;margin-bottom:16px;font-weight:700}
@@ -36,6 +38,7 @@
   /* passos grandes */
   .passo{display:flex;gap:18px;align-items:flex-start;background:linear-gradient(160deg,var(--card),var(--card2));
     border:1px solid var(--border);border-radius:16px;padding:22px 24px;margin:16px 0}
+  .passo>div{flex:1;min-width:0}  /* min-width:0 deixa o bloco de comando encolher em vez de estourar a pagina */
   .passo .bola{flex:none;width:44px;height:44px;border-radius:50%;background:var(--roxo);color:#0d0714;
     font-family:var(--mono);font-weight:700;font-size:20px;display:flex;align-items:center;justify-content:center}
   .passo h3{font-size:18px;margin-bottom:5px}
@@ -44,10 +47,12 @@
     background:#0a0510;border:1px solid var(--border);border-radius:8px;padding:3px 10px;margin-top:2px}
 
   /* bloco de comando */
-  .code{background:#0a0510;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin:14px 0}
+  .code{background:#0a0510;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin:14px 0;max-width:100%}
   .code-head{padding:9px 14px;border-bottom:1px solid var(--border);background:var(--card);
     font-family:var(--mono);font-size:12px;color:var(--txt-mute)}
-  pre{padding:15px 18px;overflow-x:auto;font-family:var(--mono);font-size:14px;line-height:1.7}
+  /* comandos com URL longa: quebram a linha em vez de estourar a largura */
+  pre{padding:15px 18px;overflow-x:auto;font-family:var(--mono);font-size:14px;line-height:1.7;
+    white-space:pre-wrap;overflow-wrap:anywhere}
   .cp{color:var(--roxo);user-select:none} .cc{color:var(--txt)} .ca{color:var(--roxo-cl)} .cm{color:var(--txt-mute);font-style:italic}
 
   /* destaque IA local */
@@ -74,8 +79,22 @@
   details p.body{font-size:15px}
 
   footer{margin-top:60px;padding-top:24px;border-top:1px solid var(--border);color:var(--txt-mute);
-    font-size:13.5px;font-family:var(--mono)}
+    font-size:13.5px;font-family:var(--mono);overflow-wrap:anywhere}
   footer .b{color:var(--roxo)}
+
+  /* ---------- responsivo ---------- */
+  @media (max-width:640px){
+    .wrap{padding:40px 16px 70px}
+    h1{font-size:28px;letter-spacing:-.5px}
+    .lead{font-size:17px}
+    h2{font-size:22px;margin-top:44px}
+    .passo{flex-direction:column;gap:12px;padding:18px 18px}
+    .passo .bola{width:38px;height:38px;font-size:17px}
+    .destaque{padding:20px 18px}
+    pre{font-size:13px;padding:13px 14px}
+    table,td{font-size:14px}
+    td:first-child{white-space:normal}
+  }
 </style>
 </head>
 <body>
