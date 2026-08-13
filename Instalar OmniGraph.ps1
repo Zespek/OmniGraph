@@ -43,7 +43,11 @@ if ((Get-Command git -ErrorAction SilentlyContinue) -and (Test-Path .git)) {
 # 3) instalar a ferramenta ----------------------------------------------------
 Titulo "Instalando o OmniGraph"
 uv tool install --from . omnigraph --force
-if ($LASTEXITCODE -eq 0) { Ok "comandos 'omnigraph' e 'omnigraph-mcp' instalados" } else { Aviso "falha ao instalar a ferramenta" }
+if ($LASTEXITCODE -eq 0) {
+  Ok "comandos 'omnigraph' e 'omnigraph-mcp' instalados"
+  # garante que a pasta dos comandos fique no PATH de terminais futuros
+  uv tool update-shell 2>$null
+} else { Aviso "falha ao instalar a ferramenta" }
 
 # 4) IA local (Ollama) - sem gastar tokens de API -----------------------------
 Titulo "Configurando a IA local (Ollama)"
@@ -73,14 +77,25 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
   }
 }
 
-# 5) usar a IA local por padrao -----------------------------------------------
-Titulo "Definindo a IA local como padrao"
+# 5) PATH + IA local no ambiente do usuario -----------------------------------
+Titulo "Ajustando o terminal (PATH e IA local)"
+# garante ~\.local\bin no PATH do usuario (persistente) para terminais novos
+$binDir = "$env:USERPROFILE\.local\bin"
+$pathUsuario = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($pathUsuario -notlike "*$binDir*") {
+  [Environment]::SetEnvironmentVariable("Path", "$binDir;$pathUsuario", "User")
+  Ok "PATH configurado (comando 'omnigraph' disponivel em terminais novos)"
+} else { Ok "PATH ja configurado" }
 setx OLLAMA_HOST "localhost:11434" | Out-Null
-Ok "IA local definida como padrao (reabra o terminal)"
+Ok "IA local definida como padrao"
 
 Write-Host "`n================================================"
 Ok "Tudo pronto!"
-Write-Host "   - Abra um projeto no terminal e rode:  omnigraph extract ."
-Write-Host "   - Instrucoes: abra 'guia de utilizacao\index.html'"
+Write-Host ""
+Aviso "IMPORTANTE: feche este terminal e abra um NOVO antes de usar o comando."
+Write-Host "   (e o que carrega o 'omnigraph' no PATH - sem isso da 'command not found')."
+Write-Host ""
+Write-Host "   No terminal novo, dentro do seu projeto, rode:  omnigraph extract ."
+Write-Host "   Instrucoes: abra 'guia de utilizacao\index.html'"
 Write-Host "================================================`n"
 Read-Host "Pressione Enter para fechar"

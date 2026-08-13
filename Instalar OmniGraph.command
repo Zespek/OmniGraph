@@ -59,6 +59,8 @@ fi
 titulo "Instalando o OmniGraph"
 if uv tool install --from . omnigraph --force >/dev/null 2>&1; then
   ok "comandos 'omnigraph' e 'omnigraph-mcp' instalados"
+  # garante que a pasta dos comandos (~/.local/bin) fique no PATH de terminais futuros
+  uv tool update-shell >/dev/null 2>&1 || true
 else
   aviso "falha ao instalar a ferramenta"
 fi
@@ -97,29 +99,43 @@ if command -v ollama >/dev/null 2>&1; then
   fi
 fi
 
-# 5) usar a IA local por padrão ────────────────────────────────────────────────
-titulo "Definindo a IA local como padrão"
+# 5) persistir PATH + IA local no perfil ───────────────────────────────────────
+titulo "Ajustando o terminal (PATH e IA local)"
 case "$SO" in
   Darwin) perfil="$HOME/.zshrc" ;;
   Linux)  perfil="${SHELL##*/}" ; [ "$perfil" = "zsh" ] && perfil="$HOME/.zshrc" || perfil="$HOME/.bashrc" ;;
   *)      perfil="$HOME/.profile" ;;
 esac
+# garante que a pasta dos comandos esteja no PATH ao abrir um terminal novo
+if grep -q '.local/bin' "$perfil" 2>/dev/null; then
+  ok "PATH já configurado"
+else
+  {
+    echo ""
+    echo "# OmniGraph: deixar os comandos (omnigraph) acessíveis no terminal"
+    echo 'export PATH="$HOME/.local/bin:$PATH"'
+  } >> "$perfil"
+  ok "PATH configurado (comando 'omnigraph' disponível em terminais novos)"
+fi
 if grep -q "OLLAMA_HOST" "$perfil" 2>/dev/null; then
   ok "IA local já era o padrão"
 else
   {
-    echo ""
     echo "# OmniGraph: usar a IA local (Ollama) por padrão, sem gastar tokens de API"
     echo "export OLLAMA_HOST=localhost:11434"
   } >> "$perfil"
-  ok "IA local definida como padrão (reabra o terminal)"
+  ok "IA local definida como padrão"
 fi
 
 echo ""
 echo "════════════════════════════════════════════════"
 ok "Tudo pronto!"
-echo "   • Abra um projeto no terminal e rode:  omnigraph extract ."
-echo "   • Instruções: abra 'guia de utilizacao/index.html'"
+echo ""
+aviso "IMPORTANTE: feche este terminal e abra um NOVO antes de usar o comando."
+echo "   (é o que carrega o 'omnigraph' no PATH — sem isso dá 'command not found')."
+echo ""
+echo "   No terminal novo, dentro do seu projeto, rode:  omnigraph extract ."
+echo "   Instruções: abra 'guia de utilizacao/index.html'"
 echo "════════════════════════════════════════════════"
 echo ""
 printf "Pressione Enter para fechar. "; read -r _
