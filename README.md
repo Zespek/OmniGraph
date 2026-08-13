@@ -70,8 +70,8 @@ zespek@server:~$ cat ./funcionalidades.ini
 
 ```bash
 # Recomendado: duplo-clique em "Instalar OmniGraph.command" (faz tudo sozinho)
-# Ou, no terminal, a partir deste clone:
-uv tool install --from . omnigraph && omnigraph install
+# Ou, no terminal, a partir deste clone (os extras habilitam a IA local, PDFs, docs):
+uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force && omnigraph install
 
 # Gerar o mapa na pasta atual: extrai os dados e cria o graph.html
 omnigraph extract . && omnigraph cluster-only .

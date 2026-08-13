@@ -61,7 +61,9 @@ titulo "Instalando o OmniGraph"
 # pasta onde o uv coloca o executavel (fonte da verdade; cai pra ~/.local/bin)
 BIN="$(uv tool dir --bin 2>/dev/null)"; [ -z "$BIN" ] && BIN="$HOME/.local/bin"
 export PATH="$BIN:$PATH"
-inst_log="$(uv tool install --from . omnigraph --force 2>&1)"
+# [ollama] traz o pacote 'openai' que o backend local exige; os demais habilitam
+# PDFs, docs, .sql, watch e a integração com assistentes (mcp). Todos têm wheel.
+inst_log="$(uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force 2>&1)"
 uv tool update-shell >/dev/null 2>&1 || true
 if [ -x "$BIN/omnigraph" ]; then
   ok "comandos 'omnigraph' e 'omnigraph-mcp' instalados"
@@ -121,18 +123,21 @@ if command -v ollama >/dev/null 2>&1; then
     ollama pull qwen2.5-coder:7b && ok "modelo pronto" || aviso "falha ao baixar o modelo"
   fi
 
-  # TESTE REAL: o modelo responde pelo endpoint que o OmniGraph usa (/v1)?
-  aviso "testando a IA local (uma pergunta rápida)..."
-  if curl -s -m 60 http://localhost:11434/v1/chat/completions \
-        -H 'Content-Type: application/json' \
-        -d '{"model":"qwen2.5-coder:7b","messages":[{"role":"user","content":"responda: ok"}],"max_tokens":5}' \
-        2>/dev/null | grep -q '"content"'; then
+  # TESTE REAL de ponta a ponta: um mini-extract com Ollama num doc de exemplo.
+  # (passa pelo mesmo caminho do 'openai' que faltava — pega o problema de verdade.)
+  aviso "testando a IA local de verdade (pode levar ~30s na 1ª vez)..."
+  smoke_dir="$(mktemp -d 2>/dev/null || echo "$HOME/.omnigraph_smoke")"
+  mkdir -p "$smoke_dir"
+  export OLLAMA_HOST=localhost:11434 OLLAMA_API_KEY=ollama
+  printf '# Modulo de Pagamento\n\nEste modulo processa pagamentos e conversa com o Banco de Dados.\n' > "$smoke_dir/exemplo.md"
+  if "$BIN/omnigraph" extract "$smoke_dir" --backend ollama >/dev/null 2>&1; then
     ok "IA local respondeu — pronta para uso"
     ia_ok=1
   else
-    aviso "a IA local NÃO respondeu ao teste."
-    aviso "Você ainda pode usar o modo sem IA:  omnigraph extract . --code-only"
+    aviso "a IA local NÃO respondeu ao teste (o mapa ainda funciona sem ela)."
+    aviso "Use o modo sem IA:  omnigraph extract . --code-only"
   fi
+  rm -rf "$smoke_dir"
 fi
 
 # 5) persistir PATH + IA local (funciona em zsh E bash) ─────────────────────────
@@ -143,6 +148,7 @@ env_file="$HOME/.omnigraph_env"
   echo "# OmniGraph — ambiente (gerado pelo instalador). Nao edite."
   echo "export PATH=\"$BIN:\$PATH\""
   echo "export OLLAMA_HOST=localhost:11434"
+  echo "export OLLAMA_API_KEY=ollama   # valor qualquer: apenas silencia um aviso"
 } > "$env_file"
 # faz cada perfil de shell carregar esse arquivo (sem duplicar)
 linha_src='[ -f "$HOME/.omnigraph_env" ] && . "$HOME/.omnigraph_env"  # OmniGraph'

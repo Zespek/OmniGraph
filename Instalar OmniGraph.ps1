@@ -48,7 +48,9 @@ Titulo "Instalando o OmniGraph"
 $bin = (uv tool dir --bin 2>$null)
 if (-not $bin) { $bin = "$env:USERPROFILE\.local\bin" }
 $env:Path = "$bin;$env:Path"
-$instLog = (uv tool install --from . omnigraph --force 2>&1 | Out-String)
+# [ollama] traz o pacote 'openai' que o backend local exige; os demais habilitam
+# PDFs, docs, .sql, watch e a integracao com assistentes (mcp). Todos tem wheel.
+$instLog = (uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force 2>&1 | Out-String)
 uv tool update-shell 2>$null
 if (Test-Path "$bin\omnigraph.exe") {
   Ok "comandos 'omnigraph' e 'omnigraph-mcp' instalados"
@@ -89,17 +91,19 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
     ollama pull qwen2.5-coder:7b
     if ($LASTEXITCODE -eq 0) { Ok "modelo pronto" } else { Aviso "falha ao baixar o modelo" }
   }
-  # TESTE REAL: o modelo responde pelo endpoint que o OmniGraph usa (/v1)?
-  Aviso "testando a IA local (uma pergunta rapida)..."
-  try {
-    $body = '{"model":"qwen2.5-coder:7b","messages":[{"role":"user","content":"responda: ok"}],"max_tokens":5}'
-    $resp = Invoke-RestMethod "http://localhost:11434/v1/chat/completions" -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 60
-    if ($resp.choices[0].message.content) { Ok "IA local respondeu - pronta para uso"; $iaOk = $true }
-  } catch {}
-  if (-not $iaOk) {
-    Aviso "a IA local NAO respondeu ao teste."
-    Aviso "Voce ainda pode usar o modo sem IA:  omnigraph extract . --code-only"
+  # TESTE REAL de ponta a ponta: mini-extract com Ollama (passa pelo pacote 'openai').
+  Aviso "testando a IA local de verdade (pode levar ~30s na 1a vez)..."
+  $env:OLLAMA_HOST = "localhost:11434"; $env:OLLAMA_API_KEY = "ollama"
+  $smoke = Join-Path $env:TEMP ("omnigraph_smoke_" + $PID)
+  New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+  "# Modulo de Pagamento`n`nEste modulo processa pagamentos e conversa com o Banco de Dados." | Set-Content -Encoding UTF8 (Join-Path $smoke "exemplo.md")
+  & "$bin\omnigraph.exe" extract $smoke --backend ollama *> $null
+  if ($LASTEXITCODE -eq 0) { Ok "IA local respondeu - pronta para uso"; $iaOk = $true }
+  else {
+    Aviso "a IA local NAO respondeu ao teste (o mapa ainda funciona sem ela)."
+    Aviso "Use o modo sem IA:  omnigraph extract . --code-only"
   }
+  Remove-Item -Recurse -Force $smoke -ErrorAction SilentlyContinue
 }
 
 # 5) PATH + IA local no ambiente do usuario -----------------------------------
