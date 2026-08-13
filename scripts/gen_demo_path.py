@@ -26,9 +26,9 @@ HOLD_END = 0.96               # everything fades out over the last 0.4s
 FADE = 0.12                   # generic fade-in duration (fraction handled per item)
 
 # ---- paleta da marca (roxo #bd00ff, a mesma do README e dos logos) ---------
-# Os nomes GREEN* vieram do verde da upstream e ficaram: sao usados em dezenas
-# de pontos abaixo, e renomear tudo so para trocar tres valores seria um diff
-# enorme sem ganho. O que importa e o valor.
+# Os nomes GREEN* sao historicos e ficaram: aparecem em dezenas de pontos
+# abaixo, e renomear tudo so para trocar tres valores seria um diff enorme sem
+# ganho. O que importa e o valor.
 BG        = "#0d0714"         # roxo quase preto, fundo do cartao
 BG2       = "#16091f"         # parceiro do gradiente
 BORDER    = "#33184a"
