@@ -71,10 +71,15 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     Start-Process "https://ollama.com/download"
   }
 }
+$iaOk = $false
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
   Ok "Ollama instalado"
+  # garante o servidor no ar (o app do Ollama no Windows ja sobe sozinho no login)
   try { Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 2 | Out-Null }
-  catch { Aviso "iniciando o servico do Ollama..."; Start-Process ollama -ArgumentList "serve" -WindowStyle Hidden; Start-Sleep 3 }
+  catch { Aviso "iniciando o Ollama..."; Start-Process ollama -ArgumentList "serve" -WindowStyle Hidden }
+  for ($i=0; $i -lt 20; $i++) {
+    try { Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 1 }
+  }
   $tem = $false
   try { $tags = Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 3
         if ($tags.models.name -match "qwen2.5-coder:7b") { $tem = $true } } catch {}
@@ -83,6 +88,17 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
     Aviso "baixando o modelo qwen2.5-coder:7b (~4.7GB - pode demorar)..."
     ollama pull qwen2.5-coder:7b
     if ($LASTEXITCODE -eq 0) { Ok "modelo pronto" } else { Aviso "falha ao baixar o modelo" }
+  }
+  # TESTE REAL: o modelo responde pelo endpoint que o OmniGraph usa (/v1)?
+  Aviso "testando a IA local (uma pergunta rapida)..."
+  try {
+    $body = '{"model":"qwen2.5-coder:7b","messages":[{"role":"user","content":"responda: ok"}],"max_tokens":5}'
+    $resp = Invoke-RestMethod "http://localhost:11434/v1/chat/completions" -Method Post -ContentType 'application/json' -Body $body -TimeoutSec 60
+    if ($resp.choices[0].message.content) { Ok "IA local respondeu - pronta para uso"; $iaOk = $true }
+  } catch {}
+  if (-not $iaOk) {
+    Aviso "a IA local NAO respondeu ao teste."
+    Aviso "Voce ainda pode usar o modo sem IA:  omnigraph extract . --code-only"
   }
 }
 
@@ -116,7 +132,13 @@ Aviso "Para usar, feche este terminal e abra um NOVO (carrega o PATH)."
 Write-Host ""
 Write-Host "  Depois, entre no SEU projeto e gere o mapa (os DOIS passos):"
 Write-Host "      cd C:\caminho\do\seu\projeto"
-Write-Host "      omnigraph extract . ; omnigraph cluster-only ."
+if ($iaOk) {
+  Write-Host "      omnigraph extract . ; omnigraph cluster-only ."
+  Write-Host "  (com IA local. Se algum dia a IA falhar, use:  omnigraph extract . --code-only)"
+} else {
+  Write-Host "      omnigraph extract . --code-only ; omnigraph cluster-only ."
+  Write-Host "  (modo sem IA - sempre funciona. A IA local nao passou no teste desta vez.)"
+}
 Write-Host "  O grafico sai em:  omnigraph-out\graph.html"
 Write-Host ""
 Write-Host "  Instrucoes completas: abra 'guia de utilizacao\index.html'"

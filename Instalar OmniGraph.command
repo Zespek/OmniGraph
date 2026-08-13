@@ -91,17 +91,47 @@ if ! command -v ollama >/dev/null 2>&1; then
       ;;
   esac
 fi
+ia_ok=0
 if command -v ollama >/dev/null 2>&1; then
   ok "Ollama instalado"
-  if ! curl -s localhost:11434/api/tags >/dev/null 2>&1; then
-    aviso "iniciando o serviço do Ollama..."
-    (ollama serve >/dev/null 2>&1 &) ; sleep 3
-  fi
+  # sobe o Ollama como SERVIÇO PERSISTENTE (sobe sozinho no login) — antes ele
+  # morria ao fechar o instalador, e aí o extract falhava por servidor desligado.
+  case "$SO" in
+    Darwin)
+      if command -v brew >/dev/null 2>&1 && brew services start ollama >/dev/null 2>&1; then
+        ok "Ollama configurado para iniciar sozinho (brew services)"
+      else
+        (ollama serve >/dev/null 2>&1 &)   # reserva
+      fi ;;
+    Linux)
+      if command -v systemctl >/dev/null 2>&1 && systemctl enable --now ollama >/dev/null 2>&1; then
+        ok "Ollama configurado como serviço (systemd)"
+      else
+        (ollama serve >/dev/null 2>&1 &)   # reserva
+      fi ;;
+  esac
+  # espera o servidor responder (até ~20s)
+  for _ in $(seq 1 20); do curl -s localhost:11434/api/tags >/dev/null 2>&1 && break; sleep 1; done
+
+  # modelo
   if curl -s localhost:11434/api/tags 2>/dev/null | grep -q "qwen2.5-coder:7b"; then
     ok "modelo qwen2.5-coder:7b já baixado"
   else
     aviso "baixando o modelo qwen2.5-coder:7b (~4.7GB — pode demorar)..."
     ollama pull qwen2.5-coder:7b && ok "modelo pronto" || aviso "falha ao baixar o modelo"
+  fi
+
+  # TESTE REAL: o modelo responde pelo endpoint que o OmniGraph usa (/v1)?
+  aviso "testando a IA local (uma pergunta rápida)..."
+  if curl -s -m 60 http://localhost:11434/v1/chat/completions \
+        -H 'Content-Type: application/json' \
+        -d '{"model":"qwen2.5-coder:7b","messages":[{"role":"user","content":"responda: ok"}],"max_tokens":5}' \
+        2>/dev/null | grep -q '"content"'; then
+    ok "IA local respondeu — pronta para uso"
+    ia_ok=1
+  else
+    aviso "a IA local NÃO respondeu ao teste."
+    aviso "Você ainda pode usar o modo sem IA:  omnigraph extract . --code-only"
   fi
 fi
 
@@ -145,7 +175,13 @@ echo "    • rode agora, neste mesmo terminal:   source \"\$HOME/.omnigraph_env
 echo ""
 echo "  Depois, entre no SEU projeto e gere o mapa (os DOIS passos):"
 echo "      cd /caminho/do/seu/projeto"
-echo "      omnigraph extract . && omnigraph cluster-only ."
+if [ "${ia_ok:-0}" = 1 ]; then
+  echo "      omnigraph extract . && omnigraph cluster-only ."
+  echo "  (com IA local. Se algum dia a IA falhar, use:  omnigraph extract . --code-only)"
+else
+  echo "      omnigraph extract . --code-only && omnigraph cluster-only ."
+  echo "  (modo sem IA — sempre funciona. A IA local não passou no teste desta vez.)"
+fi
 echo "  O gráfico sai em:  omnigraph-out/graph.html"
 echo ""
 echo "  Instruções completas: abra 'guia de utilizacao/index.html'"
