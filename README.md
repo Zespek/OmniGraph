@@ -38,11 +38,14 @@ zespek@server:~$ ./abrir_o_guia.sh
   - "Outros : abra no navegador       →  guia de utilizacao/index.html"
 
 [Instalar_Tudo_de_Uma_Vez]  # ferramenta + IA local (Ollama) + modelo
-  - "macOS   : duplo-clique em  Instalar OmniGraph.command"
-  - "          bloqueou? no Terminal:  bash \"Instalar OmniGraph.command\""
-  - "Linux   : no terminal:            bash \"Instalar OmniGraph.command\""
-  - "Windows : botão direito >         Executar com PowerShell (Instalar OmniGraph.ps1)"
+  - "macOS   : o sistema BLOQUEIA scripts baixados. No Terminal, cd na pasta e:"
+  - "          xattr -dr com.apple.quarantine . && bash \"Instalar OmniGraph.command\""
+  - "          (isso remove a trava; depois o duplo-clique tambem funciona)"
+  - "Linux   : no terminal, na pasta:  bash \"Instalar OmniGraph.command\""
+  - "Windows : botao direito no  Instalar OmniGraph.ps1  > Executar com PowerShell"
 ```
+
+> **macOS travou com "a Apple não pôde verificar…"?** É a segurança do sistema com arquivos baixados — não é erro do instalador. Rode pelo **Terminal** (comando acima) que passa direto.
 
 ---
 
