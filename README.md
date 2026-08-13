@@ -37,10 +37,11 @@ zespek@server:~$ ./abrir_o_guia.sh
   - "macOS  : dê um duplo-clique em   →  Abrir Guia.command"
   - "Outros : abra no navegador       →  guia de utilizacao/index.html"
 
-[Instalar_Tudo_com_um_Duplo-Clique]
-  - "macOS  : duplo-clique em          →  Instalar OmniGraph.command"
-  - "         instala a ferramenta + a IA local (Ollama) + o modelo,"
-  - "         e verifica atualizações. Roda de novo quando quiser."
+[Instalar_Tudo_de_Uma_Vez]  # ferramenta + IA local (Ollama) + modelo
+  - "macOS   : duplo-clique em  Instalar OmniGraph.command"
+  - "          bloqueou? no Terminal:  bash \"Instalar OmniGraph.command\""
+  - "Linux   : no terminal:            bash \"Instalar OmniGraph.command\""
+  - "Windows : botão direito >         Executar com PowerShell (Instalar OmniGraph.ps1)"
 ```
 
 ---

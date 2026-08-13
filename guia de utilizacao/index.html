@@ -92,10 +92,21 @@
   <div class="passo">
     <div class="bola">1</div>
     <div>
-      <h3>Instale com um duplo-clique</h3>
-      <p>Abra a pasta do OmniGraph no Finder e dê um duplo-clique em<br>
-      <span class="arq">Instalar OmniGraph.command</span></p>
-      <p style="margin-top:8px">Ele faz tudo sozinho: instala a ferramenta, a IA local e o modelo. Na primeira vez pode demorar (baixa alguns GB da IA). É só esperar.</p>
+      <h3>Instale — escolha o seu sistema</h3>
+      <p>O instalador faz tudo sozinho: a ferramenta, a IA local e o modelo. Na primeira vez pode demorar (baixa alguns GB da IA). É só esperar.</p>
+
+      <p style="margin-top:14px"><strong>🍎 macOS</strong></p>
+      <p>Dê um duplo-clique em <span class="arq">Instalar OmniGraph.command</span></p>
+      <p style="margin-top:6px;color:var(--txt-mute);font-size:14px">Se a Apple bloquear com <em>"não foi possível verificar…"</em> (arquivo baixado), abra o <strong>Terminal</strong> e rode — isso pula o bloqueio:</p>
+      <div class="code"><div class="code-head">Terminal (na pasta do OmniGraph)</div><pre><code><span class="cp">$</span> <span class="cc">bash</span> <span class="ca">"Instalar OmniGraph.command"</span></code></pre></div>
+
+      <p style="margin-top:14px"><strong>🐧 Linux</strong></p>
+      <p>No terminal, dentro da pasta do OmniGraph:</p>
+      <div class="code"><div class="code-head">Terminal</div><pre><code><span class="cp">$</span> <span class="cc">bash</span> <span class="ca">"Instalar OmniGraph.command"</span></code></pre></div>
+
+      <p style="margin-top:14px"><strong>🪟 Windows</strong></p>
+      <p>Clique com o botão direito em <span class="arq">Instalar OmniGraph.ps1</span> → <strong>Executar com PowerShell</strong>. Se o Windows bloquear, abra o PowerShell e rode:</p>
+      <div class="code"><div class="code-head">PowerShell (na pasta do OmniGraph)</div><pre><code><span class="cp">&gt;</span> <span class="cc">powershell -ExecutionPolicy Bypass -File</span> <span class="ca">"Instalar OmniGraph.ps1"</span></code></pre></div>
     </div>
   </div>
 

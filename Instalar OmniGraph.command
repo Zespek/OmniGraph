@@ -1,20 +1,28 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────────────────
-#  Instalador do OmniGraph — para usar, dê um duplo-clique no Finder.
+#  Instalador do OmniGraph — macOS e Linux.
+#
+#  macOS: duplo-clique no Finder. Se a Apple bloquear ("não foi possível
+#         verificar..."), é o Gatekeeper com arquivo baixado. Rode pelo Terminal:
+#             bash "Instalar OmniGraph.command"
+#         (rodar por dentro do Terminal pula o bloqueio).
+#  Linux: rode no terminal com:  bash "Instalar OmniGraph.command"
+#
 #  Faz tudo sozinho: instala a ferramenta, verifica atualizações, instala a IA
-#  local (Ollama) e baixa o modelo. Pode rodar de novo quando quiser — ele só
-#  atualiza o que faltar.
+#  local (Ollama) e baixa o modelo. Pode rodar de novo quando quiser.
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
 
+SO="$(uname -s)"   # Darwin (macOS) ou Linux
 roxo=$'\033[1;35m'; verde=$'\033[32m'; amarelo=$'\033[33m'; zero=$'\033[0m'
 titulo(){ printf "\n${roxo}▸ %s${zero}\n" "$1"; }
 ok(){ printf "  ${verde}✓${zero} %s\n" "$1"; }
 aviso(){ printf "  ${amarelo}!${zero} %s\n" "$1"; }
+abrir(){ case "$SO" in Darwin) open "$1";; Linux) xdg-open "$1";; esac >/dev/null 2>&1 || true; }
 
 echo "════════════════════════════════════════════════"
-echo "   OmniGraph — instalação e atualização"
+echo "   OmniGraph — instalação e atualização ($SO)"
 echo "════════════════════════════════════════════════"
 
 # 1) uv (gerenciador que roda tudo) ────────────────────────────────────────────
@@ -58,18 +66,25 @@ fi
 # 4) IA local (Ollama) — sem gastar tokens de API ─────────────────────────────
 titulo "Configurando a IA local (Ollama)"
 if ! command -v ollama >/dev/null 2>&1; then
-  if command -v brew >/dev/null 2>&1; then
-    aviso "instalando o Ollama via Homebrew..."
-    brew install ollama
-  else
-    aviso "Ollama não encontrado. Abrindo a página de download..."
-    aviso "Instale o Ollama e rode este instalador de novo."
-    open "https://ollama.com/download" 2>/dev/null || true
-  fi
+  case "$SO" in
+    Linux)
+      aviso "instalando o Ollama..."
+      curl -fsSL https://ollama.com/install.sh | sh
+      ;;
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then
+        aviso "instalando o Ollama via Homebrew..."
+        brew install ollama
+      else
+        aviso "Ollama não encontrado. Abrindo a página de download..."
+        aviso "Instale o Ollama e rode este instalador de novo."
+        abrir "https://ollama.com/download"
+      fi
+      ;;
+  esac
 fi
 if command -v ollama >/dev/null 2>&1; then
   ok "Ollama instalado"
-  # garante o servidor no ar
   if ! curl -s localhost:11434/api/tags >/dev/null 2>&1; then
     aviso "iniciando o serviço do Ollama..."
     (ollama serve >/dev/null 2>&1 &) ; sleep 3
@@ -84,7 +99,11 @@ fi
 
 # 5) usar a IA local por padrão ────────────────────────────────────────────────
 titulo "Definindo a IA local como padrão"
-perfil="$HOME/.zshrc"
+case "$SO" in
+  Darwin) perfil="$HOME/.zshrc" ;;
+  Linux)  perfil="${SHELL##*/}" ; [ "$perfil" = "zsh" ] && perfil="$HOME/.zshrc" || perfil="$HOME/.bashrc" ;;
+  *)      perfil="$HOME/.profile" ;;
+esac
 if grep -q "OLLAMA_HOST" "$perfil" 2>/dev/null; then
   ok "IA local já era o padrão"
 else
@@ -93,14 +112,14 @@ else
     echo "# OmniGraph: usar a IA local (Ollama) por padrão, sem gastar tokens de API"
     echo "export OLLAMA_HOST=localhost:11434"
   } >> "$perfil"
-  ok "IA local definida como padrão"
+  ok "IA local definida como padrão (reabra o terminal)"
 fi
 
 echo ""
 echo "════════════════════════════════════════════════"
 ok "Tudo pronto!"
 echo "   • Abra um projeto no terminal e rode:  omnigraph extract ."
-echo "   • Instruções: duplo-clique em 'Abrir Guia.command'"
+echo "   • Instruções: abra 'guia de utilizacao/index.html'"
 echo "════════════════════════════════════════════════"
 echo ""
 printf "Pressione Enter para fechar. "; read -r _
