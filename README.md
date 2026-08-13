@@ -83,6 +83,10 @@ omnigraph-mapa
 
 # O grafo interativo estará disponível localmente em:
 # ./omnigraph-out/graph.html
+
+# Perguntar, em português, como algo funciona (IA local sobre o mapa):
+omnigraph-perguntar "como funciona o pagamento?"
+# (a busca "Search nodes..." do gráfico só acha nós pelo nome; perguntas são aqui)
 ```
 
 ---

@@ -72,10 +72,14 @@ else
   printf '%s\n' "$inst_log" | tail -12 | sed 's/^/      /'
   aviso "Copie essas linhas e mande para o suporte."
 fi
-# comando amigável com barra de progresso
+# comandos amigáveis: barra de progresso e perguntar em português
 if [ -f scripts/omnigraph-mapa ]; then
   cp scripts/omnigraph-mapa "$BIN/omnigraph-mapa" 2>/dev/null && chmod +x "$BIN/omnigraph-mapa" 2>/dev/null \
     && ok "comando 'omnigraph-mapa' instalado (gera o mapa mostrando o progresso)"
+fi
+if [ -f scripts/omnigraph-perguntar ]; then
+  cp scripts/omnigraph-perguntar "$BIN/omnigraph-perguntar" 2>/dev/null && chmod +x "$BIN/omnigraph-perguntar" 2>/dev/null \
+    && ok "comando 'omnigraph-perguntar' instalado (pergunte como algo funciona)"
 fi
 
 # 4) IA local (Ollama) — sem gastar tokens de API ─────────────────────────────

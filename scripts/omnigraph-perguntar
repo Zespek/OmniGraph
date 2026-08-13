@@ -1,0 +1,65 @@
+#!/bin/bash
+# =============================================================================
+#  omnigraph-perguntar — pergunte, em português, como algo do projeto funciona.
+#  Usa a IA local sobre o mapa já gerado (não precisa saber de código).
+#
+#  Uso (na pasta do seu projeto):
+#      omnigraph-perguntar "como funciona o pagamento?"
+#      omnigraph-perguntar "onde o login valida a senha?" /caminho/do/projeto
+# =============================================================================
+set -uo pipefail
+
+# carrega PATH e IA local (OLLAMA_*) mesmo se o terminal não tiver recarregado
+[ -f "$HOME/.omnigraph_env" ] && . "$HOME/.omnigraph_env"
+
+pergunta="${1:-}"
+alvo="${2:-.}"
+
+roxo=$'\033[1;35m'; verde=$'\033[32m'; amarelo=$'\033[33m'; zero=$'\033[0m'
+
+if [ -z "$pergunta" ]; then
+  echo "Uso: omnigraph-perguntar \"sua pergunta\" [pasta do projeto]"
+  echo "Ex.: omnigraph-perguntar \"como funciona o pagamento?\""
+  exit 1
+fi
+
+OG="$(command -v omnigraph 2>/dev/null || true)"
+[ -z "$OG" ] && [ -x "$HOME/.local/bin/omnigraph" ] && OG="$HOME/.local/bin/omnigraph"
+if [ -z "$OG" ]; then
+  echo "omnigraph não encontrado. Rode o instalador primeiro (ou abra um terminal novo)." >&2
+  exit 1
+fi
+
+if [ ! -f "$alvo/omnigraph-out/graph.json" ]; then
+  printf "${amarelo}Ainda não há um mapa nesta pasta.${zero}\n"
+  echo "Gere o mapa primeiro (na pasta do projeto):"
+  echo "    omnigraph-mapa"
+  exit 1
+fi
+
+printf "${roxo}▸ Pergunta:${zero} %s\n" "$pergunta"
+
+# roda o query em segundo plano e mostra um \"pensando…\" enquanto a IA responde
+tmp="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_pergunta.tmp")"
+( cd "$alvo" && "$OG" query "$pergunta" ) >"$tmp" 2>&1 &
+pid=$!
+spin='|/-\'
+i=0
+while kill -0 "$pid" 2>/dev/null; do
+  i=$(( (i + 1) % 4 ))
+  printf "\r${roxo}%s${zero} a IA está pensando…" "${spin:$i:1}"
+  sleep 0.2
+done
+wait "$pid"; rc=$?
+printf "\r\033[K"
+
+if [ "$rc" -eq 0 ]; then
+  cat "$tmp"
+else
+  printf "${amarelo}Não consegui responder.${zero}\n"
+  cat "$tmp"
+  echo
+  echo "Dica: se falar em IA/backend, confirme a IA local rodando o instalador de novo,"
+  echo "ou gere o mapa sem IA com:  omnigraph-mapa --code-only"
+fi
+rm -f "$tmp"

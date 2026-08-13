@@ -158,22 +158,17 @@
   </div>
 
   <!-- USAR -->
-  <h2><span class="num">2</span>Perguntas ao mapa</h2>
-  <p class="sub">Em vez de procurar nos arquivos, pergunte.</p>
-  <div class="code"><div class="code-head">terminal</div><pre><code><span class="cm"># qual o caminho entre duas coisas do projeto</span>
-<span class="cp">$</span> <span class="cc">omnigraph</span> <span class="ca">path "Login" "Banco de Dados"</span>
-
-<span class="cm"># explicar o que uma parte faz, em linguagem simples</span>
-<span class="cp">$</span> <span class="cc">omnigraph</span> <span class="ca">explain "Pagamento"</span>
-
-<span class="cm"># atualizar o mapa depois de mexer no codigo (rapido, sem IA)</span>
-<span class="cp">$</span> <span class="cc">omnigraph</span> <span class="ca">update .</span></code></pre></div>
+  <h2><span class="num">2</span>Pergunte como algo funciona</h2>
+  <p class="sub">Em vez de abrir arquivo por arquivo, pergunte em português. A IA local responde olhando o mapa.</p>
+  <div class="code"><div class="code-head">terminal</div><pre><code><span class="cp">$</span> <span class="cc">omnigraph-perguntar</span> <span class="ca">"como funciona o pagamento?"</span>
+<span class="cp">$</span> <span class="cc">omnigraph-perguntar</span> <span class="ca">"onde o login valida a senha?"</span></code></pre></div>
+  <div class="nota"><b>Atenção:</b> a caixa <b>"Search nodes…"</b> lá no gráfico <b>não</b> responde perguntas — ela só <b>acha uma caixinha pelo nome</b> (uma função, um arquivo). Para perguntar <i>como algo funciona</i>, use o <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-perguntar</code> aqui no terminal.</div>
+  <p class="body">Também dá para pedir coisas mais específicas:</p>
   <table>
-    <tr><td><code>extract .</code></td><td>Lê o projeto e extrai os dados do mapa (gera <code>graph.json</code>)</td></tr>
-    <tr><td><code>cluster-only .</code></td><td>Desenha o gráfico visual (<code>graph.html</code>) e o relatório</td></tr>
-    <tr><td><code>update .</code></td><td>Atualiza o mapa depois de você mexer no código</td></tr>
-    <tr><td><code>path "A" "B"</code></td><td>Mostra como duas partes se ligam</td></tr>
-    <tr><td><code>explain "X"</code></td><td>Explica uma parte em português claro</td></tr>
+    <tr><td><code>omnigraph-perguntar "…"</code></td><td>Pergunta livre, em português, sobre como algo funciona</td></tr>
+    <tr><td><code>omnigraph explain "X"</code></td><td>Explica uma parte específica em linguagem simples</td></tr>
+    <tr><td><code>omnigraph path "A" "B"</code></td><td>Mostra como duas partes se ligam</td></tr>
+    <tr><td><code>omnigraph update .</code></td><td>Atualiza o mapa depois de você mexer no código</td></tr>
   </table>
 
   <!-- MANTER ATUALIZADO -->

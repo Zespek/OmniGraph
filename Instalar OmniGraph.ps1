@@ -59,11 +59,16 @@ if (Test-Path "$bin\omnigraph.exe") {
   ($instLog -split "`n" | Select-Object -Last 12) | ForEach-Object { Write-Host "      $_" }
   Aviso "Copie essas linhas e mande para o suporte."
 }
-# comando amigavel com barra de progresso
+# comandos amigaveis: barra de progresso e perguntar em portugues
 if (Test-Path "scripts\omnigraph-mapa.ps1") {
   Copy-Item "scripts\omnigraph-mapa.ps1" "$bin\omnigraph-mapa.ps1" -Force -ErrorAction SilentlyContinue
   Copy-Item "scripts\omnigraph-mapa.cmd" "$bin\omnigraph-mapa.cmd" -Force -ErrorAction SilentlyContinue
   if (Test-Path "$bin\omnigraph-mapa.cmd") { Ok "comando 'omnigraph-mapa' instalado (gera o mapa mostrando o progresso)" }
+}
+if (Test-Path "scripts\omnigraph-perguntar.ps1") {
+  Copy-Item "scripts\omnigraph-perguntar.ps1" "$bin\omnigraph-perguntar.ps1" -Force -ErrorAction SilentlyContinue
+  Copy-Item "scripts\omnigraph-perguntar.cmd" "$bin\omnigraph-perguntar.cmd" -Force -ErrorAction SilentlyContinue
+  if (Test-Path "$bin\omnigraph-perguntar.cmd") { Ok "comando 'omnigraph-perguntar' instalado (pergunte como algo funciona)" }
 }
 
 # 4) IA local (Ollama) - sem gastar tokens de API -----------------------------
