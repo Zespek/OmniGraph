@@ -1,0 +1,21 @@
+OmniGraph
+Copyright 2026 Zespek (José Felipe).
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+OmniGraph is a modified and localized distribution derived from Graphify.
+Significant changes from the original work:
+  - Rebranded to OmniGraph.
+  - Comments and documentation localized to Brazilian Portuguese.
+  - Added a cross-platform installer and local-AI (Ollama) integration.
+  - Dependency and security maintenance.
+
+-------------------------------------------------------------------------------
+Based on Graphify
+Copyright 2026 Safi Shamsi and the Graphify contributors.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Portions of this software were contributed under the MIT License prior to the
+relicensing and remain available under those terms. The original MIT license
+text is retained in LICENSE-MIT.

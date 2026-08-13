@@ -79,6 +79,24 @@ omnigraph .
 
 ---
 
+<div align="left">
+  <img src="https://readme-typing-svg.herokuapp.com/?font=Fira+Code&weight=600&size=22&pause=2500&duration=2000&color=bd00ff&vCenter=true&width=800&height=40&lines=>_+./creditos.sh" alt="Créditos" />
+</div>
+
+```ini
+zespek@server:~$ cat ./creditos.ini
+[Baseado_Em]
+  - "OmniGraph é uma distribuição adaptada e localizada do projeto open-source Graphify."
+  - "Licenciado sob a Apache License 2.0 — veja LICENSE e NOTICE."
+
+[Mudancas_Nesta_Distribuicao]
+  - "Rebranding para OmniGraph e tradução (comentários e docs) para pt-BR."
+  - "Instalador multiplataforma (macOS, Linux, Windows) e IA local (Ollama)."
+  - "Manutenção de dependências e segurança."
+```
+
+---
+
 <div align="center">
-  <p>Desenvolvido com foco em performance e privacidade por <b><a href="https://github.com/Zespek">Zespek (José Felipe)</a></b></p>
+  <p>Distribuição adaptada e mantida por <b><a href="https://github.com/Zespek">Zespek (José Felipe)</a></b> · baseada no projeto <b>Graphify</b> (Apache-2.0)</p>
 </div>
