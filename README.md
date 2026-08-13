@@ -37,15 +37,15 @@ zespek@server:~$ ./abrir_o_guia.sh
   - "macOS  : dê um duplo-clique em   →  Abrir Guia.command"
   - "Outros : abra no navegador       →  guia de utilizacao/index.html"
 
-[Instalar_Tudo_de_Uma_Vez]  # ferramenta + IA local (Ollama) + modelo
-  - "macOS   : o sistema BLOQUEIA scripts baixados. No Terminal, cd na pasta e:"
-  - "          xattr -dr com.apple.quarantine . && bash \"Instalar OmniGraph.command\""
-  - "          (isso remove a trava; depois o duplo-clique tambem funciona)"
-  - "Linux   : no terminal, na pasta:  bash \"Instalar OmniGraph.command\""
-  - "Windows : botao direito no  Instalar OmniGraph.ps1  > Executar com PowerShell"
+[Instalar_com_UM_Comando]  # sem baixar ZIP, sem bloqueio do macOS
+  - "macOS / Linux (no Terminal):"
+  - "  curl -fsSL https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.sh | bash"
+  - ""
+  - "Windows (no PowerShell):"
+  - "  powershell -c \"irm https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.ps1 | iex\""
 ```
 
-> **macOS travou com "a Apple não pôde verificar…"?** É a segurança do sistema com arquivos baixados — não é erro do instalador. Rode pelo **Terminal** (comando acima) que passa direto.
+> **Baixou o ZIP e o macOS travou com "a Apple não pôde verificar…"?** É a segurança do sistema com scripts baixados, não é erro do instalador. Prefira o comando acima (não usa ZIP). Se insistir no ZIP, no Terminal dentro da pasta: `xattr -dr com.apple.quarantine . && bash "Instalar OmniGraph.command"`
 
 ---
 
@@ -90,7 +90,7 @@ omnigraph .
 zespek@server:~$ cat ./creditos.ini
 [Baseado_Em]
   - "OmniGraph é uma distribuição adaptada e localizada do projeto open-source Graphify."
-  - "Licenciado sob a Apache License 2.0 — veja LICENSE e NOTICE."
+  - "Licenciado sob a Apache License 2.0. Veja LICENSE e NOTICE."
 
 [Mudancas_Nesta_Distribuicao]
   - "Rebranding para OmniGraph e tradução (comentários e docs) para pt-BR."

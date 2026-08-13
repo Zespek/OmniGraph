@@ -92,25 +92,17 @@
   <div class="passo">
     <div class="bola">1</div>
     <div>
-      <h3>Instale — escolha o seu sistema</h3>
-      <p>O instalador faz tudo sozinho: a ferramenta, a IA local e o modelo. Na primeira vez pode demorar (baixa alguns GB da IA). É só esperar.</p>
+      <h3>Instale com um comando</h3>
+      <p>O jeito recomendado — <strong>não precisa baixar ZIP</strong>, não pega o bloqueio do macOS. Cole <strong>uma linha</strong> no terminal e ele baixa e instala tudo (a ferramenta, a IA local e o modelo). Na primeira vez pode demorar (baixa alguns GB da IA).</p>
 
-      <p style="margin-top:14px"><strong>🍎 macOS — jeito confiável (Terminal)</strong></p>
-      <p>O macOS <strong>bloqueia todo script baixado</strong> ("a Apple não pôde verificar…") — não é erro do instalador, é a segurança do sistema. O duplo-clique num arquivo baixado sempre trava. Pelo Terminal funciona, e o comando abaixo ainda <strong>remove a trava de vez</strong>:</p>
-      <div class="code"><div class="code-head">Terminal</div><pre><code><span class="cm"># 1) abra o Terminal, digite  cd  (com espaço) e ARRASTE a pasta do OmniGraph pra cá, Enter</span>
-<span class="cp">$</span> <span class="cc">cd</span> <span class="ca">/caminho/para/OmniGraph</span>
+      <p style="margin-top:14px"><strong>🍎 macOS &nbsp;/&nbsp; 🐧 Linux</strong> — cole no Terminal:</p>
+      <div class="code"><div class="code-head">Terminal</div><pre><code><span class="cp">$</span> <span class="cc">curl -fsSL</span> <span class="ca">https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.sh</span> <span class="cc">| bash</span></code></pre></div>
 
-<span class="cm"># 2) remove a trava do macOS e roda o instalador</span>
-<span class="cp">$</span> <span class="cc">xattr -dr com.apple.quarantine .</span> <span class="cc">&amp;&amp; bash</span> <span class="ca">"Instalar OmniGraph.command"</span></code></pre></div>
-      <p style="margin-top:6px;color:var(--txt-mute);font-size:14px">Depois desse comando, o duplo-clique em <span class="arq">Instalar OmniGraph.command</span> também passa a funcionar. <br>(Se você clonou com <code style="color:var(--roxo-cl);font-family:var(--mono)">git clone</code> em vez de baixar o ZIP, o duplo-clique já funciona direto.)</p>
+      <p style="margin-top:14px"><strong>🪟 Windows</strong> — cole no PowerShell:</p>
+      <div class="code"><div class="code-head">PowerShell</div><pre><code><span class="cp">&gt;</span> <span class="cc">powershell -c "irm</span> <span class="ca">https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.ps1</span> <span class="cc">| iex"</span></code></pre></div>
 
-      <p style="margin-top:14px"><strong>🐧 Linux</strong></p>
-      <p>No terminal, dentro da pasta do OmniGraph:</p>
-      <div class="code"><div class="code-head">Terminal</div><pre><code><span class="cp">$</span> <span class="cc">bash</span> <span class="ca">"Instalar OmniGraph.command"</span></code></pre></div>
-
-      <p style="margin-top:14px"><strong>🪟 Windows</strong></p>
-      <p>Clique com o botão direito em <span class="arq">Instalar OmniGraph.ps1</span> → <strong>Executar com PowerShell</strong>. Se o Windows bloquear, abra o PowerShell e rode:</p>
-      <div class="code"><div class="code-head">PowerShell (na pasta do OmniGraph)</div><pre><code><span class="cp">&gt;</span> <span class="cc">powershell -ExecutionPolicy Bypass -File</span> <span class="ca">"Instalar OmniGraph.ps1"</span></code></pre></div>
+      <p style="margin-top:16px;color:var(--txt-mute);font-size:14px"><strong>Baixou o ZIP e quer o duplo-clique?</strong> O macOS bloqueia scripts baixados — é a segurança do sistema, não erro do instalador. Prefira o comando acima. Se insistir no ZIP, no Terminal, dentro da pasta:</p>
+      <div class="code"><div class="code-head">Terminal (pasta do OmniGraph, só para ZIP)</div><pre><code><span class="cp">$</span> <span class="cc">xattr -dr com.apple.quarantine .</span> <span class="cc">&amp;&amp; bash</span> <span class="ca">"Instalar OmniGraph.command"</span></code></pre></div>
     </div>
   </div>
 
