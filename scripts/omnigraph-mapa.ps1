@@ -21,7 +21,12 @@ if (-not (Test-Path $og)) { Write-Host "omnigraph nao encontrado. Rode o instala
 
 function Mostrar($p, $label) { Write-Progress -Activity "Gerando o mapa" -Status "$p% - $label" -PercentComplete $p }
 
-function RodarExtract($co) {
+function IaDisponivel {
+  $h = if ($env:OLLAMA_HOST) { $env:OLLAMA_HOST } else { "localhost:11434" }
+  try { Invoke-RestMethod "http://$h/api/tags" -TimeoutSec 3 | Out-Null; return $true } catch { return $false }
+}
+
+function RodarExtract($co, $mostrarErros) {
   $ogArgs = @("extract", $alvo)
   if ($co) { $ogArgs += "--code-only" }
   & $og @ogArgs 2>&1 | ForEach-Object {
@@ -34,7 +39,7 @@ function RodarExtract($co) {
       if ($y -gt 0) { Mostrar (22 + [int]($x*63/$y)) "IA processando (parte $x de $y)..." }
     }
     elseif ($line -match "wrote.*graph\.json")     { Mostrar 90 "dados do mapa prontos" }
-    elseif ($line -match "error:")                 { Write-Host $line -ForegroundColor Yellow }
+    elseif ($line -match "error:" -and $mostrarErros) { Write-Host $line -ForegroundColor Yellow }
   }
   return $LASTEXITCODE
 }
@@ -49,13 +54,21 @@ function RodarCluster {
 }
 
 Write-Host "> Gerando o mapa de: $alvo" -ForegroundColor Magenta
+
+# se a IA local nao esta de pe, ja vai direto pro modo codigo (sem erro feio)
+if (-not $codeOnly -and -not (IaDisponivel)) {
+  Write-Host "! IA local nao detectada - gerando o mapa direto do codigo (rapido)." -ForegroundColor Yellow
+  $codeOnly = $true
+}
+
 Mostrar 0 "iniciando..."
-$ex = RodarExtract $codeOnly
+# na 1a tentativa com IA nao mostro erros crus (ha fallback); no modo codigo, mostro
+$ex = RodarExtract $codeOnly $codeOnly
 
 if ($ex -ne 0 -and -not $codeOnly) {
   Write-Host "! A IA local falhou - gerando o mapa sem IA (modo seguro)..." -ForegroundColor Yellow
   $codeOnly = $true
-  $ex = RodarExtract $true
+  $ex = RodarExtract $true $true
 }
 if ($ex -ne 0) { Write-Progress -Activity "Gerando o mapa" -Completed; Write-Host "! Nao consegui extrair o mapa. Veja a mensagem acima." -ForegroundColor Yellow; exit 1 }
 

@@ -156,8 +156,12 @@ env_file="$HOME/.omnigraph_env"
 {
   echo "# OmniGraph — ambiente (gerado pelo instalador). Nao edite."
   echo "export PATH=\"$BIN:\$PATH\""
-  echo "export OLLAMA_HOST=localhost:11434"
-  echo "export OLLAMA_API_KEY=ollama   # valor qualquer: apenas silencia um aviso"
+  # Só aponta para a IA local se ela passou no teste. Sem isso, o tool nem
+  # tenta o Ollama (evita erro fatal em quem não tem a IA) e usa só o código.
+  if [ "${ia_ok:-0}" = 1 ]; then
+    echo "export OLLAMA_HOST=localhost:11434"
+    echo "export OLLAMA_API_KEY=ollama   # valor qualquer: apenas silencia um aviso"
+  fi
 } > "$env_file"
 # faz cada perfil de shell carregar esse arquivo (sem duplicar)
 linha_src='[ -f "$HOME/.omnigraph_env" ] && . "$HOME/.omnigraph_env"  # OmniGraph'
@@ -188,14 +192,17 @@ aviso "Para usar, ative o comando de uma destas formas:"
 echo "    • feche este terminal e abra um NOVO   (mais simples), ou"
 echo "    • rode agora, neste mesmo terminal:   source \"\$HOME/.omnigraph_env\""
 echo ""
-echo "  Depois, entre no SEU projeto e gere o mapa com UM comando:"
+echo "  Depois, entre no SEU projeto e use estes comandos:"
 echo "      cd /caminho/do/seu/projeto"
-if [ "${ia_ok:-0}" = 1 ]; then
-  echo "      omnigraph-mapa            (com IA local, mostra a % de progresso)"
-else
-  echo "      omnigraph-mapa --code-only   (sem IA — a IA não passou no teste desta vez)"
+echo "      omnigraph-mapa                              # gera o mapa (com % de progresso)"
+echo "      omnigraph-perguntar \"como funciona o login?\"  # pergunta em português"
+if [ "${ia_ok:-0}" != 1 ]; then
+  echo ""
+  echo "  Obs.: a IA local não ficou ativa nesta máquina — o 'omnigraph-mapa' gera o"
+  echo "  mapa direto do código automaticamente (sem erro). Para ativar a IA depois,"
+  echo "  instale o Ollama e rode este instalador de novo."
 fi
-echo "  Ele mostra a barra de progresso e abre o gráfico (omnigraph-out/graph.html) sozinho."
+echo "  O 'omnigraph-mapa' mostra a barra e abre o gráfico (omnigraph-out/graph.html) sozinho."
 echo ""
 echo "  Instruções completas: abra 'guia de utilizacao/index.html'"
 echo "════════════════════════════════════════════════"

@@ -125,8 +125,16 @@ if ($pathUsuario -notlike "*$bin*") {
   [Environment]::SetEnvironmentVariable("Path", "$bin;$pathUsuario", "User")
   Ok "PATH configurado (comando 'omnigraph' disponivel em terminais novos)"
 } else { Ok "PATH ja configurado" }
-setx OLLAMA_HOST "localhost:11434" | Out-Null
-Ok "IA local definida como padrao"
+# So aponta para a IA local se ela passou no teste (senao o tool nem tenta o
+# Ollama e usa so o codigo, evitando erro fatal em quem nao tem a IA).
+if ($iaOk) {
+  setx OLLAMA_HOST "localhost:11434" | Out-Null
+  setx OLLAMA_API_KEY "ollama" | Out-Null
+  Ok "IA local definida como padrao"
+} else {
+  [Environment]::SetEnvironmentVariable("OLLAMA_HOST", $null, "User")
+  Ok "IA local nao ativada (o mapa vai funcionar so com o codigo)"
+}
 
 # 6) verificacao final --------------------------------------------------------
 Titulo "Verificando a instalacao"
@@ -145,14 +153,17 @@ Write-Host "  voce NAO precisa estar dentro da pasta do OmniGraph."
 Write-Host ""
 Aviso "Para usar, feche este terminal e abra um NOVO (carrega o PATH)."
 Write-Host ""
-Write-Host "  Depois, entre no SEU projeto e gere o mapa com UM comando:"
+Write-Host "  Depois, entre no SEU projeto e use estes comandos:"
 Write-Host "      cd C:\caminho\do\seu\projeto"
-if ($iaOk) {
-  Write-Host "      omnigraph-mapa            (com IA local, mostra a % de progresso)"
-} else {
-  Write-Host "      omnigraph-mapa --code-only   (sem IA - a IA nao passou no teste desta vez)"
+Write-Host "      omnigraph-mapa                                 # gera o mapa (com % de progresso)"
+Write-Host '      omnigraph-perguntar "como funciona o login?"   # pergunta em portugues'
+if (-not $iaOk) {
+  Write-Host ""
+  Write-Host "  Obs.: a IA local nao ficou ativa - o 'omnigraph-mapa' gera o mapa direto do"
+  Write-Host "  codigo automaticamente (sem erro). Para ativar a IA depois, instale o Ollama"
+  Write-Host "  e rode este instalador de novo."
 }
-Write-Host "  Ele mostra a barra de progresso e abre o grafico (omnigraph-out\graph.html) sozinho."
+Write-Host "  O 'omnigraph-mapa' mostra a barra e abre o grafico (omnigraph-out\graph.html) sozinho."
 Write-Host ""
 Write-Host "  Instrucoes completas: abra 'guia de utilizacao\index.html'"
 Write-Host "================================================`n"
