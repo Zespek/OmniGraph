@@ -109,7 +109,10 @@ if command -v ollama >/dev/null 2>&1; then
   # morria ao fechar o instalador, e aí o extract falhava por servidor desligado.
   case "$SO" in
     Darwin)
-      if command -v brew >/dev/null 2>&1 && brew services start ollama >/dev/null 2>&1; then
+      # abre o app (sobe o servidor e se registra no login); alternativas: brew/serve
+      if open -a Ollama >/dev/null 2>&1; then
+        ok "Ollama iniciado (app; sobe sozinho no login)"
+      elif command -v brew >/dev/null 2>&1 && brew services start ollama >/dev/null 2>&1; then
         ok "Ollama configurado para iniciar sozinho (brew services)"
       else
         (ollama serve >/dev/null 2>&1 &)   # reserva

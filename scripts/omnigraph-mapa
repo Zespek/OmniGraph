@@ -66,10 +66,29 @@ rodar_extract() {  # $1 = 1 para --code-only
   return "${PIPESTATUS[0]}"
 }
 
-# a IA local (Ollama) está de pé?  (evita tentar e falhar feio quando não há)
+# a IA local (Ollama) está respondendo?
 ia_disponivel() {
   h="${OLLAMA_HOST:-localhost:11434}"
   curl -s -m 3 "http://$h/api/tags" >/dev/null 2>&1
+}
+
+# garante a IA de pé: se estiver parada mas instalada, SOBE ela sozinha
+# (o usuário não precisa saber rodar 'ollama serve').
+garantir_ollama() {
+  ia_disponivel && return 0
+  command -v ollama >/dev/null 2>&1 || return 1   # nem instalada
+  printf "${roxo}▸${zero} iniciando a IA local (Ollama), aguarde"
+  case "$(uname -s)" in
+    Darwin) open -a Ollama >/dev/null 2>&1 || (ollama serve >/dev/null 2>&1 &) ;;  # o app gerencia o servidor
+    *)      (ollama serve >/dev/null 2>&1 &) ;;
+  esac
+  n=0
+  while [ "$n" -lt 30 ]; do
+    if ia_disponivel; then printf " ok\n"; return 0; fi
+    printf "."; sleep 1; n=$(( n + 1 ))
+  done
+  printf " (não subiu)\n"
+  return 1
 }
 
 rodar_cluster() {
@@ -85,9 +104,9 @@ rodar_cluster() {
 
 echo "${roxo}▸ Gerando o mapa de:${zero} $alvo"
 
-# se não pediram --code-only mas a IA local não está de pé, já vai direto pro
-# modo código (evita a tentativa que falha feio quando o Ollama não existe)
-if [ "$code_only" -ne 1 ] && ! ia_disponivel; then
+# se não pediram --code-only, tenta garantir a IA de pé (subindo o Ollama se
+# preciso). Se mesmo assim não houver IA, gera direto do código, sem erro.
+if [ "$code_only" -ne 1 ] && ! garantir_ollama; then
   printf "${amarelo}! IA local não detectada — gerando o mapa direto do código (rápido).${zero}\n"
   code_only=1
 fi

@@ -26,6 +26,16 @@ function IaDisponivel {
   try { Invoke-RestMethod "http://$h/api/tags" -TimeoutSec 3 | Out-Null; return $true } catch { return $false }
 }
 
+# se a IA estiver parada mas instalada, SOBE ela sozinha (o usuario nao precisa saber)
+function GarantirOllama {
+  if (IaDisponivel) { return $true }
+  if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) { return $false }
+  Write-Host "> iniciando a IA local (Ollama), aguarde..." -ForegroundColor Magenta
+  Start-Process ollama -ArgumentList "serve" -WindowStyle Hidden -ErrorAction SilentlyContinue
+  for ($i=0; $i -lt 30; $i++) { if (IaDisponivel) { return $true }; Start-Sleep 1 }
+  return $false
+}
+
 function RodarExtract($co, $mostrarErros) {
   $ogArgs = @("extract", $alvo)
   if ($co) { $ogArgs += "--code-only" }
@@ -55,8 +65,8 @@ function RodarCluster {
 
 Write-Host "> Gerando o mapa de: $alvo" -ForegroundColor Magenta
 
-# se a IA local nao esta de pe, ja vai direto pro modo codigo (sem erro feio)
-if (-not $codeOnly -and -not (IaDisponivel)) {
+# tenta garantir a IA de pe (subindo o Ollama se preciso); senao, modo codigo
+if (-not $codeOnly -and -not (GarantirOllama)) {
   Write-Host "! IA local nao detectada - gerando o mapa direto do codigo (rapido)." -ForegroundColor Yellow
   $codeOnly = $true
 }

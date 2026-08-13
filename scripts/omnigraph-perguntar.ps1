@@ -28,6 +28,20 @@ if (-not (Test-Path (Join-Path $alvo "omnigraph-out\graph.json"))) {
   exit 1
 }
 
+# se a IA estiver parada mas instalada, sobe sozinha
+function IaDisponivel {
+  $h = if ($env:OLLAMA_HOST) { $env:OLLAMA_HOST } else { "localhost:11434" }
+  try { Invoke-RestMethod "http://$h/api/tags" -TimeoutSec 3 | Out-Null; return $true } catch { return $false }
+}
+if (-not (IaDisponivel) -and (Get-Command ollama -ErrorAction SilentlyContinue)) {
+  Write-Host "> iniciando a IA local (Ollama), aguarde..." -ForegroundColor Magenta
+  Start-Process ollama -ArgumentList "serve" -WindowStyle Hidden -ErrorAction SilentlyContinue
+  for ($i=0; $i -lt 30; $i++) { if (IaDisponivel) { break }; Start-Sleep 1 }
+}
+if (-not (IaDisponivel)) {
+  Write-Host "A IA local nao esta ativa - a resposta pode ficar limitada." -ForegroundColor Yellow
+}
+
 Write-Host "> Pergunta: $pergunta" -ForegroundColor Magenta
 Write-Progress -Activity "Perguntando a IA local" -Status "a IA esta pensando..."
 Push-Location $alvo

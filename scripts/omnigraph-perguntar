@@ -37,6 +37,22 @@ if [ ! -f "$alvo/omnigraph-out/graph.json" ]; then
   exit 1
 fi
 
+# a IA local está de pé?  se instalada mas parada, sobe sozinha (não precisa saber rodar)
+ia_disponivel() { h="${OLLAMA_HOST:-localhost:11434}"; curl -s -m 3 "http://$h/api/tags" >/dev/null 2>&1; }
+if ! ia_disponivel && command -v ollama >/dev/null 2>&1; then
+  printf "${roxo}▸${zero} iniciando a IA local (Ollama), aguarde"
+  case "$(uname -s)" in
+    Darwin) open -a Ollama >/dev/null 2>&1 || (ollama serve >/dev/null 2>&1 &) ;;
+    *)      (ollama serve >/dev/null 2>&1 &) ;;
+  esac
+  n=0; while [ "$n" -lt 30 ]; do ia_disponivel && break; printf "."; sleep 1; n=$(( n + 1 )); done
+  printf "\n"
+fi
+if ! ia_disponivel; then
+  printf "${amarelo}A IA local não está ativa — a resposta pode ficar limitada.${zero}\n"
+  echo "Se não instalou o Ollama, rode o instalador de novo para ativar a IA."
+fi
+
 printf "${roxo}▸ Pergunta:${zero} %s\n" "$pergunta"
 
 # roda o query em segundo plano e mostra um \"pensando…\" enquanto a IA responde
