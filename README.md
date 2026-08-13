@@ -29,7 +29,7 @@ zespek@server:~$ cat ./omnigraph.ini
   <img src="https://readme-typing-svg.herokuapp.com/?font=Fira+Code&weight=600&size=22&pause=2500&duration=2000&color=bd00ff&vCenter=true&width=800&height=40&lines=>_+./abrir_o_guia.sh" alt="Abrir o Guia" />
 </div>
 
-> **Primeiro acesso? Comece pelo guia.** Passo a passo, para leigo usar.
+> **Primeiro acesso? Comece pelo guia.** Passo a passo, simples e direto.
 
 ```ini
 zespek@server:~$ ./abrir_o_guia.sh
