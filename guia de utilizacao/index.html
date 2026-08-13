@@ -129,11 +129,14 @@
     <div class="bola">2</div>
     <div>
       <h3>Aponte para o seu projeto</h3>
-      <p>Abra o Terminal na pasta do projeto que você quer mapear e rode <strong>este comando</strong> (são dois passos numa linha só: extrai os dados e depois desenha o gráfico):</p>
-      <div class="code"><div class="code-head">terminal</div><pre><code><span class="cp">$</span> <span class="cc">omnigraph</span> <span class="ca">extract .</span> <span class="cc">&amp;&amp;</span> <span class="cc">omnigraph</span> <span class="ca">cluster-only .</span></code></pre></div>
-      <p>Pronto — o gráfico é gerado em <span class="arq">omnigraph-out/graph.html</span>.</p>
-      <p style="margin-top:12px;color:var(--txt-mute);font-size:14px"><strong>Deu erro <code style="color:var(--roxo-cl);font-family:var(--mono)">semantic chunks failed ... 'ollama'</code>?</strong> É a IA local que não respondeu (Ollama desligado ou máquina sobrecarregada). Gere o mapa sem IA — funciona sempre:</p>
-      <div class="code"><div class="code-head">terminal (sem IA)</div><pre><code><span class="cp">$</span> <span class="cc">omnigraph</span> <span class="ca">extract . --code-only</span> <span class="cc">&amp;&amp;</span> <span class="cc">omnigraph</span> <span class="ca">cluster-only .</span></code></pre></div>
+      <p>Abra o Terminal na pasta do projeto que você quer mapear e rode <strong>um comando só</strong>. Ele mostra uma <strong>barra de progresso</strong>, gera o mapa e abre o gráfico sozinho no navegador:</p>
+      <div class="code"><div class="code-head">terminal</div><pre><code><span class="cp">$</span> <span class="cc">omnigraph-mapa</span></code></pre></div>
+      <p>Enquanto trabalha, aparece algo assim (a IA local pode levar alguns minutos):</p>
+      <div class="code"><div class="code-head">progresso</div><pre><code><span class="cm">[########------------]  42%  IA processando (parte 2 de 3)…</span></code></pre></div>
+      <p>Ao terminar, o gráfico abre em <span class="arq">omnigraph-out/graph.html</span>.</p>
+      <p style="margin-top:12px;color:var(--txt-mute);font-size:14px"><strong>Quer os passos separados?</strong> O <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-mapa</code> é só um atalho para <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph extract .</code> seguido de <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph cluster-only .</code>.</p>
+      <p style="margin-top:12px;color:var(--txt-mute);font-size:14px"><strong>A IA local falhou?</strong> Se o Ollama estiver desligado ou a máquina sobrecarregada, o <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-mapa</code> <strong>já refaz sozinho no modo sem IA</strong> — o mapa sai de qualquer jeito. Para forçar o modo sem IA (mais rápido):</p>
+      <div class="code"><div class="code-head">terminal (sem IA)</div><pre><code><span class="cp">$</span> <span class="cc">omnigraph-mapa</span> <span class="ca">--code-only</span></code></pre></div>
       <p style="margin-top:12px;color:var(--txt-mute);font-size:14px"><strong>Não apareceu o <code style="color:var(--roxo-cl);font-family:var(--mono)">graph.html</code>?</strong> O <code style="color:var(--roxo-cl);font-family:var(--mono)">extract</code> sozinho só cria os dados; é o <code style="color:var(--roxo-cl);font-family:var(--mono)">cluster-only</code> que desenha o gráfico. Rode <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph cluster-only .</code> na pasta do projeto.</p>
       <p style="margin-top:8px;color:var(--txt-mute);font-size:14px"><strong>Deu <code style="color:var(--roxo-cl);font-family:var(--mono)">command not found</code>?</strong> Feche o terminal e abra um <strong>novo</strong> — o comando só entra no PATH em terminais abertos depois da instalação.</p>
     </div>

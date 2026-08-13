@@ -59,6 +59,12 @@ if (Test-Path "$bin\omnigraph.exe") {
   ($instLog -split "`n" | Select-Object -Last 12) | ForEach-Object { Write-Host "      $_" }
   Aviso "Copie essas linhas e mande para o suporte."
 }
+# comando amigavel com barra de progresso
+if (Test-Path "scripts\omnigraph-mapa.ps1") {
+  Copy-Item "scripts\omnigraph-mapa.ps1" "$bin\omnigraph-mapa.ps1" -Force -ErrorAction SilentlyContinue
+  Copy-Item "scripts\omnigraph-mapa.cmd" "$bin\omnigraph-mapa.cmd" -Force -ErrorAction SilentlyContinue
+  if (Test-Path "$bin\omnigraph-mapa.cmd") { Ok "comando 'omnigraph-mapa' instalado (gera o mapa mostrando o progresso)" }
+}
 
 # 4) IA local (Ollama) - sem gastar tokens de API -----------------------------
 Titulo "Configurando a IA local (Ollama)"
@@ -134,16 +140,14 @@ Write-Host "  voce NAO precisa estar dentro da pasta do OmniGraph."
 Write-Host ""
 Aviso "Para usar, feche este terminal e abra um NOVO (carrega o PATH)."
 Write-Host ""
-Write-Host "  Depois, entre no SEU projeto e gere o mapa (os DOIS passos):"
+Write-Host "  Depois, entre no SEU projeto e gere o mapa com UM comando:"
 Write-Host "      cd C:\caminho\do\seu\projeto"
 if ($iaOk) {
-  Write-Host "      omnigraph extract . ; omnigraph cluster-only ."
-  Write-Host "  (com IA local. Se algum dia a IA falhar, use:  omnigraph extract . --code-only)"
+  Write-Host "      omnigraph-mapa            (com IA local, mostra a % de progresso)"
 } else {
-  Write-Host "      omnigraph extract . --code-only ; omnigraph cluster-only ."
-  Write-Host "  (modo sem IA - sempre funciona. A IA local nao passou no teste desta vez.)"
+  Write-Host "      omnigraph-mapa --code-only   (sem IA - a IA nao passou no teste desta vez)"
 }
-Write-Host "  O grafico sai em:  omnigraph-out\graph.html"
+Write-Host "  Ele mostra a barra de progresso e abre o grafico (omnigraph-out\graph.html) sozinho."
 Write-Host ""
 Write-Host "  Instrucoes completas: abra 'guia de utilizacao\index.html'"
 Write-Host "================================================`n"

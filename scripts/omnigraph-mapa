@@ -1,0 +1,108 @@
+#!/bin/bash
+# =============================================================================
+#  omnigraph-mapa — gera o mapa do projeto mostrando o progresso em %.
+#
+#  Uso (na pasta do seu projeto):
+#      omnigraph-mapa            # com IA local (padrão)
+#      omnigraph-mapa .          # igual ao de cima
+#      omnigraph-mapa --code-only  # sem IA (mais rápido, sempre funciona)
+#      omnigraph-mapa /caminho/do/projeto
+#
+#  Roda 'extract' + 'cluster-only' e desenha uma barra. Se a IA falhar,
+#  refaz sozinho no modo sem-IA para o mapa sair de qualquer jeito.
+# =============================================================================
+set -uo pipefail
+
+alvo="."
+code_only=0
+for a in "$@"; do
+  case "$a" in
+    --code-only) code_only=1 ;;
+    -*)          : ;;                 # ignora outras flags desconhecidas
+    *)           alvo="$a" ;;
+  esac
+done
+
+# acha o omnigraph mesmo se o PATH não estiver carregado nesta sessão
+OG="$(command -v omnigraph 2>/dev/null || true)"
+[ -z "$OG" ] && [ -x "$HOME/.local/bin/omnigraph" ] && OG="$HOME/.local/bin/omnigraph"
+if [ -z "$OG" ]; then
+  echo "omnigraph não encontrado. Rode o instalador primeiro (ou abra um terminal novo)." >&2
+  exit 1
+fi
+
+roxo=$'\033[1;35m'; verde=$'\033[32m'; amarelo=$'\033[33m'; zero=$'\033[0m'
+
+barra() {  # $1 = porcentagem  $2 = rótulo
+  p="$1"; label="$2"; n=$(( p / 5 ))
+  cheio=""; vazio=""; i=0
+  while [ "$i" -lt "$n" ];  do cheio="$cheio#"; i=$(( i + 1 )); done
+  while [ "$i" -lt 20 ]; do vazio="$vazio-"; i=$(( i + 1 )); done
+  printf "\r${roxo}[%s%s]${zero} %3d%%  %s\033[K" "$cheio" "$vazio" "$p" "$label"
+}
+
+# roda o extract traduzindo a saída em %.  Retorna o status real do extract.
+rodar_extract() {  # $1 = 1 para --code-only
+  co="$1"
+  if [ "$co" = 1 ]; then
+    "$OG" extract "$alvo" --code-only 2>&1
+  else
+    "$OG" extract "$alvo" 2>&1
+  fi | while IFS= read -r line; do
+        case "$line" in
+          *scanning*)                 barra 5   "lendo os arquivos do projeto…" ;;
+          *"AST extraction on"*)      barra 15  "analisando o código…" ;;
+          *"semantic extraction on"*) barra 22  "a IA está entendendo o projeto… (pode levar alguns minutos)" ;;
+          *chunk*done*)
+              xy="${line#*chunk }"; x="${xy%%/*}"; rest="${xy#*/}"; y="${rest%% *}"
+              case "$x$y" in
+                *[!0-9]*|"") : ;;
+                *) [ "$y" -gt 0 ] && barra $(( 22 + x * 63 / y )) "IA processando (parte $x de $y)…" ;;
+              esac ;;
+          *wrote*graph.json*)         barra 90  "dados do mapa prontos" ;;
+          *error:*)                   printf "\n${amarelo}%s${zero}\n" "$line" ;;
+        esac
+      done
+  return "${PIPESTATUS[0]}"
+}
+
+rodar_cluster() {
+  "$OG" cluster-only "$alvo" 2>&1 | while IFS= read -r line; do
+    case "$line" in
+      *Re-clustering*) barra 93  "montando o gráfico…" ;;
+      *Labeling*)      barra 96  "nomeando as áreas…" ;;
+      *Done*)          barra 100 "pronto!" ;;
+    esac
+  done
+  return "${PIPESTATUS[0]}"
+}
+
+echo "${roxo}▸ Gerando o mapa de:${zero} $alvo"
+barra 0 "iniciando…"
+
+rodar_extract "$code_only"; ex=$?
+
+# fallback: se tentou com IA e falhou, refaz sem IA para o mapa sair mesmo assim
+if [ "$ex" -ne 0 ] && [ "$code_only" -ne 1 ]; then
+  printf "\n${amarelo}! A IA local falhou — gerando o mapa sem IA (modo seguro)…${zero}\n"
+  code_only=1
+  barra 0 "iniciando (sem IA)…"
+  rodar_extract 1; ex=$?
+fi
+
+if [ "$ex" -ne 0 ]; then
+  printf "\n${amarelo}! Não consegui extrair o mapa. Veja a mensagem acima.${zero}\n" >&2
+  exit 1
+fi
+
+rodar_cluster
+printf "\n${verde}✓ Mapa pronto:${zero} %s/omnigraph-out/graph.html\n" "$alvo"
+
+# abre o gráfico no navegador
+html="$alvo/omnigraph-out/graph.html"
+if [ -f "$html" ]; then
+  case "$(uname -s)" in
+    Darwin) open "$html" >/dev/null 2>&1 || true ;;
+    Linux)  xdg-open "$html" >/dev/null 2>&1 || true ;;
+  esac
+fi

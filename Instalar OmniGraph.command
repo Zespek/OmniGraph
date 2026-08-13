@@ -72,6 +72,11 @@ else
   printf '%s\n' "$inst_log" | tail -12 | sed 's/^/      /'
   aviso "Copie essas linhas e mande para o suporte."
 fi
+# comando amigável com barra de progresso
+if [ -f scripts/omnigraph-mapa ]; then
+  cp scripts/omnigraph-mapa "$BIN/omnigraph-mapa" 2>/dev/null && chmod +x "$BIN/omnigraph-mapa" 2>/dev/null \
+    && ok "comando 'omnigraph-mapa' instalado (gera o mapa mostrando o progresso)"
+fi
 
 # 4) IA local (Ollama) — sem gastar tokens de API ─────────────────────────────
 titulo "Configurando a IA local (Ollama)"
@@ -179,16 +184,14 @@ aviso "Para usar, ative o comando de uma destas formas:"
 echo "    • feche este terminal e abra um NOVO   (mais simples), ou"
 echo "    • rode agora, neste mesmo terminal:   source \"\$HOME/.omnigraph_env\""
 echo ""
-echo "  Depois, entre no SEU projeto e gere o mapa (os DOIS passos):"
+echo "  Depois, entre no SEU projeto e gere o mapa com UM comando:"
 echo "      cd /caminho/do/seu/projeto"
 if [ "${ia_ok:-0}" = 1 ]; then
-  echo "      omnigraph extract . && omnigraph cluster-only ."
-  echo "  (com IA local. Se algum dia a IA falhar, use:  omnigraph extract . --code-only)"
+  echo "      omnigraph-mapa            (com IA local, mostra a % de progresso)"
 else
-  echo "      omnigraph extract . --code-only && omnigraph cluster-only ."
-  echo "  (modo sem IA — sempre funciona. A IA local não passou no teste desta vez.)"
+  echo "      omnigraph-mapa --code-only   (sem IA — a IA não passou no teste desta vez)"
 fi
-echo "  O gráfico sai em:  omnigraph-out/graph.html"
+echo "  Ele mostra a barra de progresso e abre o gráfico (omnigraph-out/graph.html) sozinho."
 echo ""
 echo "  Instruções completas: abra 'guia de utilizacao/index.html'"
 echo "════════════════════════════════════════════════"

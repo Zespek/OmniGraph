@@ -73,8 +73,13 @@ zespek@server:~$ cat ./funcionalidades.ini
 # Ou, no terminal, a partir deste clone (os extras habilitam a IA local, PDFs, docs):
 uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force && omnigraph install
 
-# Gerar o mapa na pasta atual: extrai os dados e cria o graph.html
-omnigraph extract . && omnigraph cluster-only .
+# Gerar o mapa na pasta atual (mostra a % de progresso e abre o gráfico):
+omnigraph-mapa
+
+# Sem IA (mais rápido, sempre funciona):
+#   omnigraph-mapa --code-only
+# Passos separados (o que o atalho faz por baixo):
+#   omnigraph extract . && omnigraph cluster-only .
 
 # O grafo interativo estará disponível localmente em:
 # ./omnigraph-out/graph.html
