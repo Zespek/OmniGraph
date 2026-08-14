@@ -130,10 +130,6 @@ if ia_disponivel && command -v python3 >/dev/null 2>&1 && tem_modelo; then
   if [ -s "$resp" ]; then
     printf "${verde}▸ Resposta:${zero}\n"
     cat "$resp"; echo
-    # mostra as fontes: se aparecer um arquivo que não faz sentido (ex.: um .md
-    # de termos), você vê na hora que a resposta pode estar contaminada.
-    fontes="$(grep -oE '^----- .+ -----$' "$ctx" 2>/dev/null | sed 's/^----- //; s/ -----$//' | sort -u | tr '\n' ' ')"
-    [ -n "$fontes" ] && printf "\n${roxo}▸ Baseado nestes arquivos:${zero} %s\n" "$fontes"
   else
     printf "${amarelo}A IA não redigiu a resposta — mostrando as partes do mapa:${zero}\n"
     cat "$ctx"
@@ -145,4 +141,10 @@ else
   echo
   echo "Para respostas em português, ative a IA (instale o Ollama e rode o instalador de novo)."
 fi
+
+# rodapé fixo: origem (de onde tirou) + foco (localização) + exemplo simples
+fontes="$(grep -oE '^----- .+ -----$' "$ctx" 2>/dev/null | sed 's/^----- //; s/ -----$//' | sort -u | tr '\n' ' ')"
+[ -n "$fontes" ] && printf "\n${roxo}▸ Origem (arquivos afins encontrados):${zero} %s\n" "$fontes"
+printf "\n${roxo}▸ Para que serve:${zero} o omnigraph-perguntar te ajuda a ${roxo}localizar${zero} — ele acha os arquivos ligados à sua pergunta e dá uma ideia geral. Para a resposta exata, abra esses arquivos ou pergunte à IA da sua IDE.\n"
+printf "  ${roxo}Exemplo simples:${zero} omnigraph-perguntar \"onde fica o login?\"\n"
 rm -f "$ctx"

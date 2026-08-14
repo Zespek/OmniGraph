@@ -99,8 +99,6 @@ RESPOSTA (em portugues):
     if ($r.response) {
       Write-Host "> Resposta:" -ForegroundColor Green
       Write-Host $r.response.Trim()
-      $fontes = (($ctx -split "`n" | Where-Object { $_ -match '^----- .+ -----$' } | ForEach-Object { $_ -replace '^----- ','' -replace ' -----$','' } | Sort-Object -Unique) -join ', ')
-      if ($fontes) { Write-Host "`n> Baseado nestes arquivos: $fontes" -ForegroundColor Magenta }
     } else {
       Write-Host "A IA nao redigiu a resposta - partes do mapa relacionadas:" -ForegroundColor Yellow
       Write-Host $ctx
@@ -115,3 +113,9 @@ RESPOSTA (em portugues):
   Write-Host $ctx
   Write-Host "Para respostas em portugues, ative a IA (instale o Ollama e rode o instalador de novo)."
 }
+
+# rodape fixo: origem (de onde tirou) + foco (localizacao) + exemplo simples
+$fontes = (($ctx -split "`n" | Where-Object { $_ -match '^----- .+ -----$' } | ForEach-Object { $_ -replace '^----- ','' -replace ' -----$','' } | Sort-Object -Unique) -join ', ')
+if ($fontes) { Write-Host "`n> Origem (arquivos afins encontrados): $fontes" -ForegroundColor Magenta }
+Write-Host "`n> Para que serve: o omnigraph-perguntar te ajuda a LOCALIZAR - acha os arquivos ligados a sua pergunta e da uma ideia geral. Para a resposta exata, abra esses arquivos ou pergunte a IA da sua IDE." -ForegroundColor Magenta
+Write-Host '  Exemplo simples: omnigraph-perguntar "onde fica o login?"'
