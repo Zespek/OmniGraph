@@ -36,10 +36,12 @@ function GarantirOllama {
   return $false
 }
 
-function RodarExtract($co, $mostrarErros) {
+$script:LOG = Join-Path $env:TEMP ("omnigraph_mapa_" + $PID + ".log")
+
+function RodarExtract($co) {
   $ogArgs = @("extract", $alvo)
   if ($co) { $ogArgs += "--code-only" }
-  & $og @ogArgs 2>&1 | ForEach-Object {
+  & $og @ogArgs 2>&1 | Tee-Object -FilePath $script:LOG | ForEach-Object {
     $line = "$_"
     if     ($line -match "scanning")               { Mostrar 5  "lendo os arquivos do projeto..." }
     elseif ($line -match "AST extraction on")      { Mostrar 15 "analisando o codigo..." }
@@ -49,9 +51,13 @@ function RodarExtract($co, $mostrarErros) {
       if ($y -gt 0) { Mostrar (22 + [int]($x*63/$y)) "IA processando (parte $x de $y)..." }
     }
     elseif ($line -match "wrote.*graph\.json")     { Mostrar 90 "dados do mapa prontos" }
-    elseif ($line -match "error:" -and $mostrarErros) { Write-Host $line -ForegroundColor Yellow }
   }
   return $LASTEXITCODE
+}
+
+function MostrarErroReal {
+  Write-Host "`nErro real do extract:" -ForegroundColor Yellow
+  if (Test-Path $script:LOG) { Get-Content $script:LOG -Tail 25 | ForEach-Object { Write-Host "    $_" } }
 }
 
 function RodarCluster {
@@ -72,15 +78,22 @@ if (-not $codeOnly -and -not (GarantirOllama)) {
 }
 
 Mostrar 0 "iniciando..."
-# na 1a tentativa com IA nao mostro erros crus (ha fallback); no modo codigo, mostro
-$ex = RodarExtract $codeOnly $codeOnly
+$ex = RodarExtract $codeOnly
 
 if ($ex -ne 0 -and -not $codeOnly) {
   Write-Host "! A IA local falhou - gerando o mapa sem IA (modo seguro)..." -ForegroundColor Yellow
   $codeOnly = $true
-  $ex = RodarExtract $true $true
+  $ex = RodarExtract $true
 }
-if ($ex -ne 0) { Write-Progress -Activity "Gerando o mapa" -Completed; Write-Host "! Nao consegui extrair o mapa. Veja a mensagem acima." -ForegroundColor Yellow; exit 1 }
+if ($ex -ne 0) {
+  Write-Progress -Activity "Gerando o mapa" -Completed
+  Write-Host "! Nao consegui gerar o mapa." -ForegroundColor Yellow
+  MostrarErroReal
+  Write-Host "`nCopie o 'Erro real' acima e me mande." -ForegroundColor Yellow
+  Remove-Item $script:LOG -ErrorAction SilentlyContinue
+  exit 1
+}
+Remove-Item $script:LOG -ErrorAction SilentlyContinue
 
 RodarCluster
 Write-Progress -Activity "Gerando o mapa" -Completed

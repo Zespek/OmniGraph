@@ -41,14 +41,15 @@ barra() {  # $1 = porcentagem  $2 = rótulo
   printf "\r${roxo}[%s%s]${zero} %3d%%  %s\033[K" "$cheio" "$vazio" "$p" "$label"
 }
 
-# roda o extract traduzindo a saída em %.  Retorna o status real do extract.
+# roda o extract: mostra a % e GRAVA toda a saída em $LOG (para mostrar o erro
+# real se falhar). Retorna o status real do extract.
 rodar_extract() {  # $1 = 1 para --code-only
   co="$1"
-  if [ "$co" = 1 ]; then
-    "$OG" extract "$alvo" --code-only 2>&1
-  else
-    "$OG" extract "$alvo" 2>&1
-  fi | while IFS= read -r line; do
+  {
+    if [ "$co" = 1 ]; then "$OG" extract "$alvo" --code-only
+    else                    "$OG" extract "$alvo"
+    fi
+  } 2>&1 | tee "$LOG" | while IFS= read -r line; do
         case "$line" in
           *scanning*)                 barra 5   "lendo os arquivos do projeto…" ;;
           *"AST extraction on"*)      barra 15  "analisando o código…" ;;
@@ -60,10 +61,15 @@ rodar_extract() {  # $1 = 1 para --code-only
                 *) [ "$y" -gt 0 ] && barra $(( 22 + x * 63 / y )) "IA processando (parte $x de $y)…" ;;
               esac ;;
           *wrote*graph.json*)         barra 90  "dados do mapa prontos" ;;
-          *error:*)                   [ "${mostrar_erros:-1}" = 1 ] && printf "\n${amarelo}%s${zero}\n" "$line" ;;
         esac
       done
   return "${PIPESTATUS[0]}"
+}
+
+# mostra o erro real (últimas linhas da saída do extract)
+mostrar_erro_real() {
+  printf "\n${amarelo}Erro real do extract:${zero}\n"
+  tail -n 25 "$LOG" 2>/dev/null | sed 's/^/    /'
 }
 
 # a IA local (Ollama) está respondendo?
@@ -102,6 +108,8 @@ rodar_cluster() {
   return "${PIPESTATUS[0]}"
 }
 
+LOG="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_mapa.log")"
+
 echo "${roxo}▸ Gerando o mapa de:${zero} $alvo"
 
 # se não pediram --code-only, tenta garantir a IA de pé (subindo o Ollama se
@@ -112,23 +120,25 @@ if [ "$code_only" -ne 1 ] && ! garantir_ollama; then
 fi
 
 barra 0 "iniciando…"
-# na 1ª tentativa com IA, não mostro erros crus (há fallback); no modo código, mostro
-if [ "$code_only" = 1 ]; then mostrar_erros=1; else mostrar_erros=0; fi
 rodar_extract "$code_only"; ex=$?
 
 # fallback: se tentou com IA e falhou, refaz sem IA para o mapa sair mesmo assim
 if [ "$ex" -ne 0 ] && [ "$code_only" -ne 1 ]; then
   printf "\n${amarelo}! A IA local falhou — gerando o mapa sem IA (modo seguro)…${zero}\n"
   code_only=1
-  mostrar_erros=1
   barra 0 "iniciando (sem IA)…"
   rodar_extract 1; ex=$?
 fi
 
 if [ "$ex" -ne 0 ]; then
-  printf "\n${amarelo}! Não consegui extrair o mapa. Veja a mensagem acima.${zero}\n" >&2
+  printf "\n${amarelo}! Não consegui gerar o mapa.${zero}\n" >&2
+  mostrar_erro_real >&2
+  echo >&2
+  echo "Copie o 'Erro real' acima e me mande." >&2
+  rm -f "$LOG"
   exit 1
 fi
+rm -f "$LOG"
 
 rodar_cluster
 printf "\n${verde}✓ Mapa pronto:${zero} %s/omnigraph-out/graph.html\n" "$alvo"
