@@ -13,10 +13,16 @@ Uso:
 import sys, os, json, math, argparse, urllib.request
 
 EMB_MODEL_DEFAULT = "bge-m3"
+RAG_VERSION = 2  # muda quando a forma de indexar muda -> força reindex
+# Só CÓDIGO por padrão. Docs/termos (.md, .txt) são prosa e poluem perguntas de
+# fluxo (ex.: texto de política de reembolso vencia o código real). Inclua-os
+# com OMNIGRAPH_RAG_DOCS=1 se quiser perguntar sobre a documentação.
 EXTS = {".py", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".go", ".java",
         ".kt", ".rb", ".php", ".cs", ".rs", ".c", ".cc", ".cpp", ".h", ".hpp",
         ".swift", ".m", ".mm", ".scala", ".dart", ".vue", ".svelte", ".sql",
-        ".md", ".graphql", ".prisma"}
+        ".graphql", ".prisma"}
+if os.environ.get("OMNIGRAPH_RAG_DOCS"):
+    EXTS |= {".md", ".txt", ".rst", ".mdx"}
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", ".next",
              ".expo", "__pycache__", "omnigraph-out", ".turbo", "coverage",
              ".idea", ".gradle", "Pods", "vendor"}
@@ -82,8 +88,11 @@ def cmd_fresh(root):
     if not os.path.exists(ip):
         return 1
     try:
+        idx = json.load(open(ip))
+        if idx.get("v") != RAG_VERSION:      # formato mudou -> reindexar
+            return 1
         return 0 if os.path.getmtime(ip) >= _newest_source(root) else 1
-    except OSError:
+    except Exception:
         return 1
 
 
@@ -102,7 +111,7 @@ def cmd_index(root, model, host):
         sys.stderr.write("\r  indexando %d/%d arquivos (%d trechos)..." % (n + 1, len(files), len(items)))
     sys.stderr.write("\n")
     os.makedirs(os.path.dirname(_idx_path(root)), exist_ok=True)
-    json.dump({"model": model, "items": items}, open(_idx_path(root), "w"))
+    json.dump({"v": RAG_VERSION, "model": model, "items": items}, open(_idx_path(root), "w"))
     return 0
 
 
