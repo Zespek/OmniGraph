@@ -55,27 +55,69 @@ fi
 
 printf "${roxo}▸ Pergunta:${zero} %s\n" "$pergunta"
 
-# roda o query em segundo plano e mostra um \"pensando…\" enquanto a IA responde
-tmp="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_pergunta.tmp")"
-( cd "$alvo" && "$OG" query "$pergunta" ) >"$tmp" 2>&1 &
-pid=$!
-spin='|/-\'
-i=0
-while kill -0 "$pid" 2>/dev/null; do
-  i=$(( (i + 1) % 4 ))
-  printf "\r${roxo}%s${zero} a IA está pensando…" "${spin:$i:1}"
-  sleep 0.2
-done
-wait "$pid"; rc=$?
-printf "\r\033[K"
+# roda uma tarefa em segundo plano mostrando um spinner. $1 = arquivo de saída, resto = comando
+com_spinner() {
+  saida="$1"; shift
+  "$@" >"$saida" 2>/dev/null &
+  pid=$!; spin='|/-\'; i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    i=$(( (i + 1) % 4 )); printf "\r${roxo}%s${zero} a IA está pensando…" "${spin:$i:1}"; sleep 0.2
+  done
+  wait "$pid"; rc=$?; printf "\r\033[K"; return "$rc"
+}
 
-if [ "$rc" -eq 0 ]; then
-  cat "$tmp"
-else
-  printf "${amarelo}Não consegui responder.${zero}\n"
-  cat "$tmp"
-  echo
-  echo "Dica: se falar em IA/backend, confirme a IA local rodando o instalador de novo,"
-  echo "ou gere o mapa sem IA com:  omnigraph-mapa --code-only"
+# 1) recupera do mapa o trecho relevante (nós/arestas) para a pergunta
+ctx="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_ctx.tmp")"
+( cd "$alvo" && "$OG" query "$pergunta" ) >"$ctx" 2>/dev/null
+if [ ! -s "$ctx" ] || grep -qi "No matching nodes" "$ctx"; then
+  printf "${amarelo}Não encontrei nada relacionado a isso no mapa.${zero}\n"
+  echo "Tente outras palavras — um nome de função, arquivo ou tela do projeto."
+  rm -f "$ctx"; exit 0
 fi
-rm -f "$tmp"
+
+# 2) a IA local redige a resposta em português a partir desse contexto
+modelo="${OLLAMA_MODEL:-qwen2.5-coder:7b}"
+tem_modelo() { curl -s -m 3 "http://${OLLAMA_HOST:-localhost:11434}/api/tags" 2>/dev/null | grep -q "${modelo%%:*}"; }
+
+# chama a IA local pela API (texto limpo, sem os artefatos do 'ollama run')
+sintetizar() {  # $1 = arquivo com o prompt ; imprime a resposta
+  python3 - "$modelo" "${OLLAMA_HOST:-localhost:11434}" "$1" <<'PY' 2>/dev/null
+import sys, json, urllib.request
+model, host, pf = sys.argv[1], sys.argv[2], sys.argv[3]
+prompt = open(pf, encoding="utf-8").read()
+data = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
+req = urllib.request.Request("http://%s/api/generate" % host, data=data,
+                            headers={"Content-Type": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=180) as r:
+        sys.stdout.write(json.load(r).get("response", "").strip())
+except Exception:
+    sys.exit(1)
+PY
+}
+
+if ia_disponivel && command -v python3 >/dev/null 2>&1 && tem_modelo; then
+  pf="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_prompt.tmp")"
+  {
+    printf '%s\n\n' "Você é um assistente que explica projetos de software em português claro e simples, para uma pessoa não técnica. Responda à PERGUNTA usando SOMENTE o CONTEXTO abaixo (um trecho do mapa do projeto: NODE = uma parte do código, EDGE = uma ligação entre partes; \"calls\" = uma função chama outra, \"contains\" = um arquivo contém algo). Seja direto, de 2 a 5 frases, sem jargão. Se o contexto não bastar, diga o que dá para afirmar."
+    printf 'PERGUNTA: %s\n\nCONTEXTO:\n' "$pergunta"
+    cat "$ctx"
+    printf '\n\nRESPOSTA (em português):'
+  } > "$pf"
+  resp="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_resp.tmp")"
+  com_spinner "$resp" sintetizar "$pf"
+  if [ -s "$resp" ]; then
+    printf "${verde}▸ Resposta:${zero}\n"
+    cat "$resp"; echo
+  else
+    printf "${amarelo}A IA não redigiu a resposta — mostrando as partes do mapa:${zero}\n"
+    cat "$ctx"
+  fi
+  rm -f "$resp" "$pf"
+else
+  printf "${amarelo}A IA local não está ativa — mostrando as partes do mapa relacionadas:${zero}\n"
+  cat "$ctx"
+  echo
+  echo "Para respostas em português, ative a IA (instale o Ollama e rode o instalador de novo)."
+fi
+rm -f "$ctx"
