@@ -63,7 +63,7 @@ try { $tags = Invoke-RestMethod "http://$host2/api/tags" -TimeoutSec 3
 
 if ((IaDisponivel) -and $temModelo) {
   $prompt = @"
-Voce explica projetos de software em portugues claro, usando SOMENTE o CONTEXTO abaixo (trecho do mapa: NODE = parte do codigo, EDGE = ligacao; "calls" = uma funcao chama outra, "contains" = um arquivo contem algo). REGRAS: NAO invente fluxos, endpoints, telas ou regras que nao estejam no CONTEXTO. Se o contexto NAO contiver o que a pergunta pede, responda exatamente: 'Nao encontrei isso no mapa deste projeto. Para perguntas de fluxo/regra de negocio, pergunte ao Claude na sua IDE (com o OmniGraph registrado) - ele le o codigo e responde melhor.' Quando houver contexto, seja direto, de 2 a 6 frases, citando as partes reais (nomes de funcoes/arquivos que aparecem no contexto).
+Voce explica projetos de software em portugues claro, usando SOMENTE o CONTEXTO abaixo (trecho do mapa: NODE = parte do codigo, EDGE = ligacao; "calls" = uma funcao chama outra, "contains" = um arquivo contem algo). REGRAS: NAO invente fluxos, endpoints, telas ou regras que nao estejam no CONTEXTO. Se o contexto NAO contiver o que a pergunta pede, responda exatamente: 'Nao encontrei isso no mapa deste projeto. Para perguntas de fluxo/regra de negocio, valide direto no codigo ou pergunte a IA da sua IDE (com o OmniGraph registrado), que le o codigo e responde melhor.' Quando houver contexto, seja direto, de 2 a 6 frases, citando as partes reais (nomes de funcoes/arquivos que aparecem no contexto).
 
 PERGUNTA: $pergunta
 

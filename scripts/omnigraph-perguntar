@@ -100,10 +100,15 @@ PY
 if ia_disponivel && command -v python3 >/dev/null 2>&1 && tem_modelo; then
   pf="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_prompt.tmp")"
   {
-    printf '%s\n\n' "Você explica projetos de software em português claro, usando SOMENTE o CONTEXTO abaixo (trecho do mapa: NODE = parte do código, EDGE = ligação; \"calls\" = uma função chama outra, \"contains\" = um arquivo contém algo). REGRAS: NÃO invente fluxos, endpoints, telas ou regras que não estejam no CONTEXTO. Se o contexto NÃO contiver o que a pergunta pede, responda exatamente: 'Não encontrei isso no mapa deste projeto. Para perguntas de fluxo/regra de negócio, pergunte ao Claude na sua IDE (com o OmniGraph registrado) — ele lê o código e responde melhor.' Quando houver contexto, seja direto, de 2 a 6 frases, citando as partes reais (nomes de funções/arquivos que aparecem no contexto)."
-    printf 'PERGUNTA: %s\n\nCONTEXTO:\n' "$pergunta"
+    printf '%s\n\n' "Você explica projetos de software em português claro. Baseie-se SOMENTE no MAPA e no CÓDIGO abaixo (MAPA: NODE = parte do código, EDGE = ligação; \"calls\" = uma função chama outra). REGRAS: NÃO invente fluxos, endpoints, telas ou regras que não estejam no CÓDIGO. Se o material não contiver o que a pergunta pede, responda exatamente: 'Não encontrei isso no mapa deste projeto. Para perguntas de fluxo/regra de negócio, valide direto no código ou pergunte à IA da sua IDE (com o OmniGraph registrado), que lê o código e responde melhor.' Caso contrário, responda em 2 a 6 frases, citando funções/arquivos reais do código."
+    printf 'PERGUNTA: %s\n\nMAPA (nós e ligações):\n' "$pergunta"
     cat "$ctx"
-    printf '\n\nRESPOSTA (em português):'
+    # inclui o CÓDIGO real dos arquivos que a busca apontou (o pulo do gato)
+    printf '\n\nCÓDIGO das partes citadas:\n'
+    grep -oE 'src=[^] ]+' "$ctx" 2>/dev/null | sed 's/src=//' | sort -u | head -6 | while IFS= read -r f; do
+      [ -n "$f" ] && [ -f "$alvo/$f" ] && { printf '\n----- %s -----\n' "$f"; sed -n '1,160p' "$alvo/$f"; }
+    done
+    printf '\n\nRESPOSTA (em português, baseada no código acima):'
   } > "$pf"
   resp="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_resp.tmp")"
   com_spinner "$resp" sintetizar "$pf"
