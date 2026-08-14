@@ -569,10 +569,15 @@ def _print_banner() -> None:
             ctypes.windll.kernel32.SetConsoleMode(
                 ctypes.windll.kernel32.GetStdHandle(-11), 7
             )
+        import shutil
+        cols = shutil.get_terminal_size((80, 24)).columns
         A = "\033[1;38;2;189;0;255m"   # roxo OmniGraph (#bd00ff)
         D = "\033[38;2;120;0;170m"     # roxo escuro
         R = "\033[0m"
-        print(f"""{A}
+        nome = f"""{A}
+  █▀█ █▀▄▀█ █▄ █ █ █▀▀ █▀█ ▄▀█ █▀█ █ █
+  █▄█ █ ▀ █ █ ▀█ █ █▄█ █▀▄ █▀█ █▀▀ █▀█{D}  v{__version__}{R}"""
+        caveira = f"""{A}
           .                                                      .
         .n                   .                 .                  n.
   .   .dP                  dP                   9b                 9b.    .
@@ -593,9 +598,12 @@ dX.    9Xb      .dXb    __                         __    dXb.     dXP     .Xb
                               XP^X'`b   d'`X^XX
                               X. 9  `   '  P )X
                               `b  `       '  d'
-                               `             '
-{A}                 O M N I G R A P H{D}  v{__version__}{R}
-""")
+                               `             '"""
+        # caveira só quando a janela é larga o bastante; senão, só o nome grande
+        if cols >= 80:
+            print(caveira + "\n" + nome + "\n")
+        else:
+            print(nome + "\n")
     except Exception:
         pass
 def install(platform: str = "claude", *, project: bool = False, project_dir: Path | None = None) -> None:
