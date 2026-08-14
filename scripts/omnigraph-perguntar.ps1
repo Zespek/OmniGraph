@@ -21,12 +21,7 @@ $og = (Get-Command omnigraph -ErrorAction SilentlyContinue).Source
 if (-not $og) { $og = "$env:USERPROFILE\.local\bin\omnigraph.exe" }
 if (-not (Test-Path $og)) { Write-Host "omnigraph nao encontrado. Rode o instalador primeiro."; exit 1 }
 
-if (-not (Test-Path (Join-Path $alvo "omnigraph-out\graph.json"))) {
-  Write-Host "Ainda nao ha um mapa nesta pasta." -ForegroundColor Yellow
-  Write-Host "Gere o mapa primeiro (na pasta do projeto):"
-  Write-Host "    omnigraph-mapa"
-  exit 1
-}
+# (a busca semantica indexa a propria pasta; o mapa so e exigido no modo de reserva)
 
 # se a IA estiver parada mas instalada, sobe sozinha
 function IaDisponivel {
@@ -65,6 +60,11 @@ if ((Test-Path $rag) -and $py -and $temEmb) {
   if ($ctx.Trim()) { $usouRag = $true }
 }
 if (-not $usouRag) {
+  if (-not (Test-Path (Join-Path $alvo "omnigraph-out\graph.json"))) {
+    Write-Host "Sem busca semantica e sem mapa nesta pasta." -ForegroundColor Yellow
+    Write-Host "Rode o instalador de novo (baixa o 'bge-m3'), ou gere o mapa:  omnigraph-mapa"
+    exit 1
+  }
   Push-Location $alvo
   try { $ctx = (& $og query $pergunta --budget 6000 2>$null | Out-String) } finally { Pop-Location }
 }
