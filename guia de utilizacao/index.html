@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OmniGraph — Guia de Utilização</title>
+<title>Guia do OmniGraph</title>
 <style>
   :root{
     --bg:#0d0714; --bg2:#16091f; --card:#160b20; --card2:#1c0f28;
@@ -102,7 +102,7 @@
 
   <div class="prompt">&gt;_ ./omnigraph.sh</div>
   <h1>Transforme qualquer projeto num <span class="g">mapa que você consulta</span> em vez de abrir arquivo por arquivo.</h1>
-  <p class="lead">O OmniGraph lê o seu código, documentos e PDFs e monta um mapa visual de tudo — o que existe, o que se conecta com o quê. Roda no seu computador, com uma IA local que <strong>não gasta tokens de API</strong>.</p>
+  <p class="lead">O OmniGraph lê o seu código, documentos e PDFs e monta um mapa visual de tudo: o que existe e o que se conecta com o quê. Roda no seu computador, com uma IA local que <strong>não gasta tokens de API</strong>.</p>
 
   <!-- COMECE AQUI -->
   <h2><span class="num">1</span>Comece aqui</h2>
@@ -112,16 +112,13 @@
     <div class="bola">1</div>
     <div>
       <h3>Instale com um comando</h3>
-      <p>O jeito recomendado — <strong>não precisa baixar ZIP</strong>, não pega o bloqueio do macOS. Cole <strong>uma linha</strong> no terminal e ele baixa e instala tudo (a ferramenta, a IA local e o modelo). Na primeira vez pode demorar (baixa alguns GB da IA).</p>
+      <p>Copie <strong>a linha do seu sistema</strong>, cole no terminal e aperte Enter. Ele baixa e instala tudo sozinho: a ferramenta, a IA local e o modelo. Na primeira vez pode demorar, porque baixa alguns GB da IA. <strong>Não precisa baixar ZIP</strong> nem lidar com o bloqueio do macOS.</p>
 
-      <p style="margin-top:14px"><strong>🍎 macOS &nbsp;/&nbsp; 🐧 Linux</strong> — cole no Terminal:</p>
+      <p style="margin-top:14px"><strong>🍎 macOS &nbsp;/&nbsp; 🐧 Linux</strong>, no app <strong>Terminal</strong>:</p>
       <div class="code"><div class="code-head">Terminal</div><pre><code><span class="cp">$</span> <span class="cc">curl -fsSL</span> <span class="ca">https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.sh</span> <span class="cc">| bash</span></code></pre></div>
 
-      <p style="margin-top:14px"><strong>🪟 Windows</strong> — cole no PowerShell:</p>
-      <div class="code"><div class="code-head">PowerShell</div><pre><code><span class="cp">&gt;</span> <span class="cc">powershell -c "irm</span> <span class="ca">https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.ps1</span> <span class="cc">| iex"</span></code></pre></div>
-
-      <p style="margin-top:16px;color:var(--txt-mute);font-size:14px"><strong>Baixou o ZIP e quer o duplo-clique?</strong> O macOS bloqueia scripts baixados — é a segurança do sistema, não erro do instalador. Prefira o comando acima. Se insistir no ZIP, no Terminal, dentro da pasta:</p>
-      <div class="code"><div class="code-head">Terminal (pasta do OmniGraph, só para ZIP)</div><pre><code><span class="cp">$</span> <span class="cc">xattr -dr com.apple.quarantine .</span> <span class="cc">&amp;&amp; bash</span> <span class="ca">"Instalar OmniGraph.command"</span></code></pre></div>
+      <p style="margin-top:14px"><strong>🪟 Windows</strong>, no <strong>PowerShell</strong>:</p>
+      <div class="code"><div class="code-head">PowerShell</div><pre><code><span class="cp">&gt;</span> <span class="cc">irm</span> <span class="ca">https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.ps1</span> <span class="cc">| iex</span></code></pre></div>
     </div>
   </div>
 
@@ -135,10 +132,10 @@
       <div class="code"><div class="code-head">progresso</div><pre><code><span class="cm">[########------------]  42%  IA processando (parte 2 de 3)…</span></code></pre></div>
       <p>Ao terminar, o gráfico abre em <span class="arq">omnigraph-out/graph.html</span>.</p>
       <p style="margin-top:12px;color:var(--txt-mute);font-size:14px"><strong>Quer os passos separados?</strong> O <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-mapa</code> é só um atalho para <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph extract .</code> seguido de <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph cluster-only .</code>.</p>
-      <p style="margin-top:12px;color:var(--txt-mute);font-size:14px"><strong>A IA local falhou?</strong> Se o Ollama estiver desligado ou a máquina sobrecarregada, o <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-mapa</code> <strong>já refaz sozinho no modo sem IA</strong> — o mapa sai de qualquer jeito. Para forçar o modo sem IA (mais rápido):</p>
+      <p style="margin-top:12px;color:var(--txt-mute);font-size:14px"><strong>A IA local falhou?</strong> Se o Ollama estiver desligado ou a máquina sobrecarregada, o <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-mapa</code> <strong>já refaz sozinho no modo sem IA</strong>, e o mapa sai de qualquer jeito. Para forçar o modo sem IA (mais rápido):</p>
       <div class="code"><div class="code-head">terminal (sem IA)</div><pre><code><span class="cp">$</span> <span class="cc">omnigraph-mapa</span> <span class="ca">--code-only</span></code></pre></div>
       <p style="margin-top:12px;color:var(--txt-mute);font-size:14px"><strong>Não apareceu o <code style="color:var(--roxo-cl);font-family:var(--mono)">graph.html</code>?</strong> O <code style="color:var(--roxo-cl);font-family:var(--mono)">extract</code> sozinho só cria os dados; é o <code style="color:var(--roxo-cl);font-family:var(--mono)">cluster-only</code> que desenha o gráfico. Rode <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph cluster-only .</code> na pasta do projeto.</p>
-      <p style="margin-top:8px;color:var(--txt-mute);font-size:14px"><strong>Deu <code style="color:var(--roxo-cl);font-family:var(--mono)">command not found</code>?</strong> Feche o terminal e abra um <strong>novo</strong> — o comando só entra no PATH em terminais abertos depois da instalação.</p>
+      <p style="margin-top:8px;color:var(--txt-mute);font-size:14px"><strong>Deu <code style="color:var(--roxo-cl);font-family:var(--mono)">command not found</code>?</strong> Feche o terminal e abra um <strong>novo</strong>. O comando só entra no PATH em terminais abertos depois da instalação.</p>
     </div>
   </div>
 
@@ -153,8 +150,8 @@
   <!-- IA LOCAL -->
   <div class="destaque">
     <h3>🔒 A IA roda no seu computador</h3>
-    <p>O OmniGraph já vem com o <strong>Ollama</strong> e um modelo de IA que roda 100% local. Nada é enviado para a nuvem e <strong>você não paga tokens de API</strong>. O instalador cuida disso — você não precisa configurar nada.</p>
-    <p style="margin-top:10px"><strong>Não precisa "rodar" o Ollama.</strong> Quando você usa o <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-mapa</code>, ele <strong>liga a IA sozinho</strong> se estiver parada. E se a IA não estiver disponível, ele gera o mapa direto do código — sem erro.</p>
+    <p>O OmniGraph já vem com o <strong>Ollama</strong> e um modelo de IA que roda 100% local. Nada é enviado para a nuvem e <strong>você não paga tokens de API</strong>. O instalador cuida disso; você não precisa configurar nada.</p>
+    <p style="margin-top:10px"><strong>Não precisa "rodar" o Ollama.</strong> Quando você usa o <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-mapa</code>, ele <strong>liga a IA sozinho</strong> se estiver parada. E se a IA não estiver disponível, ele gera o mapa direto do código, sem erro.</p>
     <span class="tag">local · privado · sem custo por uso</span>
   </div>
 
@@ -163,7 +160,7 @@
   <p class="sub">Em vez de abrir arquivo por arquivo, pergunte em português. A IA local responde olhando o mapa.</p>
   <div class="code"><div class="code-head">terminal</div><pre><code><span class="cp">$</span> <span class="cc">omnigraph-perguntar</span> <span class="ca">"como funciona o pagamento?"</span>
 <span class="cp">$</span> <span class="cc">omnigraph-perguntar</span> <span class="ca">"onde o login valida a senha?"</span></code></pre></div>
-  <div class="nota"><b>Atenção:</b> a caixa <b>"Search nodes…"</b> lá no gráfico <b>não</b> responde perguntas — ela só <b>acha uma caixinha pelo nome</b> (uma função, um arquivo). Para perguntar <i>como algo funciona</i>, use o <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-perguntar</code> aqui no terminal.</div>
+  <div class="nota"><b>Atenção:</b> a caixa <b>"Search nodes…"</b> lá no gráfico <b>não</b> responde perguntas; ela só <b>acha uma caixinha pelo nome</b> (uma função, um arquivo). Para perguntar <i>como algo funciona</i>, use o <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-perguntar</code> aqui no terminal.</div>
   <p class="body">Também dá para pedir coisas mais específicas:</p>
   <table>
     <tr><td><code>omnigraph-perguntar "…"</code></td><td>Pergunta livre, em português, sobre como algo funciona</td></tr>
@@ -174,11 +171,13 @@
 
   <!-- MANTER ATUALIZADO -->
   <h2><span class="num">3</span>Manter atualizado</h2>
-  <p class="body">Sempre que quiser, dê de novo um duplo-clique em <span class="arq">Instalar OmniGraph.command</span>. Ele verifica se há uma versão nova, atualiza o que precisar e não baixa de novo o que já está pronto. Pode rodar quantas vezes quiser — é seguro.</p>
+  <p class="body">Para pegar a versão mais nova, rode <strong>um comando</strong> (de qualquer pasta):</p>
+  <div class="code"><div class="code-head">terminal</div><pre><code><span class="cp">$</span> <span class="cc">omnigraph-atualizar</span></code></pre></div>
+  <p class="body">Ele baixa a última versão e atualiza tudo em poucos segundos, sem baixar de novo o que já está pronto. Pode rodar quantas vezes quiser, é seguro.</p>
 
   <!-- AVANCADO -->
   <h2><span class="num">4</span>Para quem quer mais</h2>
-  <p class="sub">Opcional — o básico acima já resolve o dia a dia.</p>
+  <p class="sub">Opcional. O básico acima já resolve o dia a dia.</p>
 
   <details>
     <summary>Usar com um assistente de IA (Claude, Cursor…)</summary>
@@ -192,10 +191,10 @@
     <p class="body"><b>Exposto na rede?</b> Proteja com uma chave: <code style="color:var(--roxo-cl);font-family:var(--mono)">--api-key</code> (ou a variável <code style="color:var(--roxo-cl);font-family:var(--mono)">OMNIGRAPH_API_KEY</code>).</p>
   </details>
 
-  <div class="nota"><b>Preferir uma IA da nuvem?</b> Se você tiver uma chave de API (OpenAI, Anthropic…) configurada, o OmniGraph a usa no lugar do Ollama. Sem chave, ele usa a IA local — o padrão, sem custo.</div>
+  <div class="nota"><b>Preferir uma IA da nuvem?</b> Se você tiver uma chave de API (OpenAI, Anthropic…) configurada, o OmniGraph a usa no lugar do Ollama. Sem chave, ele usa a IA local, que é o padrão, sem custo.</div>
 
   <footer>
-    <span class="b">&gt;_ omnigraph</span> — guia de utilização · projeto de <b>Zespek&nbsp;(José&nbsp;Felipe)</b> · local &amp; privativo
+    <span class="b">&gt;_ omnigraph</span> · guia de utilização · projeto de <b>Zespek&nbsp;(José&nbsp;Felipe)</b> · local &amp; privativo
   </footer>
 </div>
 </body>

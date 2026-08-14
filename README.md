@@ -87,6 +87,9 @@ omnigraph-mapa
 # Perguntar, em português, como algo funciona (IA local sobre o mapa):
 omnigraph-perguntar "como funciona o pagamento?"
 # (a busca "Search nodes..." do gráfico só acha nós pelo nome; perguntas são aqui)
+
+# Atualizar tudo para a última versão (rápido):
+omnigraph-atualizar
 ```
 
 ---
