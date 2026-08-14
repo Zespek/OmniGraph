@@ -70,6 +70,11 @@ if (Test-Path "scripts\omnigraph-perguntar.ps1") {
   Copy-Item "scripts\omnigraph-perguntar.cmd" "$bin\omnigraph-perguntar.cmd" -Force -ErrorAction SilentlyContinue
   if (Test-Path "$bin\omnigraph-perguntar.cmd") { Ok "comando 'omnigraph-perguntar' instalado (pergunte como algo funciona)" }
 }
+if (Test-Path "scripts\omnigraph-atualizar.ps1") {
+  Copy-Item "scripts\omnigraph-atualizar.ps1" "$bin\omnigraph-atualizar.ps1" -Force -ErrorAction SilentlyContinue
+  Copy-Item "scripts\omnigraph-atualizar.cmd" "$bin\omnigraph-atualizar.cmd" -Force -ErrorAction SilentlyContinue
+  if (Test-Path "$bin\omnigraph-atualizar.cmd") { Ok "comando 'omnigraph-atualizar' instalado (atualiza tudo rapido)" }
+}
 
 # 4) IA local (Ollama) - sem gastar tokens de API -----------------------------
 Titulo "Configurando a IA local (Ollama)"

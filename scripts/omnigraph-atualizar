@@ -1,0 +1,37 @@
+#!/bin/bash
+# =============================================================================
+#  omnigraph-atualizar — pega a última versão do OmniGraph, rápido.
+#  (git pull + reinstala a ferramenta + atualiza os comandos amigáveis)
+# =============================================================================
+set -uo pipefail
+[ -f "$HOME/.omnigraph_env" ] && . "$HOME/.omnigraph_env"
+
+roxo=$'\033[1;35m'; verde=$'\033[32m'; amarelo=$'\033[33m'; zero=$'\033[0m'
+
+DIR="${OMNIGRAPH_DIR:-$HOME/OmniGraph}"
+if [ ! -d "$DIR/.git" ]; then
+  printf "${amarelo}Projeto não encontrado em %s.${zero}\n" "$DIR"
+  echo "Rode o instalador uma vez:"
+  echo "  curl -fsSL https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.sh | bash"
+  exit 1
+fi
+
+printf "${roxo}▸ Atualizando o OmniGraph…${zero}\n"
+git -C "$DIR" fetch origin --quiet && git -C "$DIR" reset --hard origin/main --quiet \
+  && printf "  ${verde}✓${zero} última versão baixada\n" \
+  || { printf "${amarelo}  ! sem internet para atualizar${zero}\n"; exit 1; }
+
+BIN="$(uv tool dir --bin 2>/dev/null)"; [ -z "$BIN" ] && BIN="$HOME/.local/bin"
+
+# reinstala a ferramenta (pega mudanças do núcleo, se houver)
+( cd "$DIR" && uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force >/dev/null 2>&1 ) \
+  && printf "  ${verde}✓${zero} ferramenta atualizada\n" \
+  || printf "${amarelo}  ! não consegui reinstalar a ferramenta${zero}\n"
+
+# atualiza os comandos amigáveis (é o que mais muda)
+for c in omnigraph-mapa omnigraph-perguntar omnigraph-atualizar; do
+  [ -f "$DIR/scripts/$c" ] && cp "$DIR/scripts/$c" "$BIN/$c" 2>/dev/null && chmod +x "$BIN/$c" 2>/dev/null
+done
+printf "  ${verde}✓${zero} comandos atualizados (omnigraph-mapa, omnigraph-perguntar)\n"
+
+printf "${verde}✓ Pronto!${zero} Use na pasta do seu projeto:  omnigraph-mapa  /  omnigraph-perguntar \"...\"\n"

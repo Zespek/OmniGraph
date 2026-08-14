@@ -81,6 +81,10 @@ if [ -f scripts/omnigraph-perguntar ]; then
   cp scripts/omnigraph-perguntar "$BIN/omnigraph-perguntar" 2>/dev/null && chmod +x "$BIN/omnigraph-perguntar" 2>/dev/null \
     && ok "comando 'omnigraph-perguntar' instalado (pergunte como algo funciona)"
 fi
+if [ -f scripts/omnigraph-atualizar ]; then
+  cp scripts/omnigraph-atualizar "$BIN/omnigraph-atualizar" 2>/dev/null && chmod +x "$BIN/omnigraph-atualizar" 2>/dev/null \
+    && ok "comando 'omnigraph-atualizar' instalado (atualiza tudo rápido)"
+fi
 
 # 4) IA local (Ollama) — sem gastar tokens de API ─────────────────────────────
 titulo "Configurando a IA local (Ollama)"
