@@ -61,7 +61,7 @@ if ((Test-Path $rag) -and $py -and $temEmb) {
     Write-Host "> indexando o codigo para busca semantica (1a vez / apos mudancas)..." -ForegroundColor Magenta
     & $py $rag index $alvo | Out-Null
   }
-  $ctx = (& $py $rag search $alvo $pergunta --k 8 2>$null | Out-String)
+  $ctx = (& $py $rag search $alvo $pergunta --k 14 2>$null | Out-String)
   if ($ctx.Trim()) { $usouRag = $true }
 }
 if (-not $usouRag) {
@@ -82,7 +82,7 @@ try { $tags = Invoke-RestMethod "http://$host2/api/tags" -TimeoutSec 3
 
 if ((IaDisponivel) -and $temModelo) {
   $prompt = @"
-Voce explica projetos de software em portugues claro, baseando-se SOMENTE nos TRECHOS DE CODIGO abaixo. REGRAS: NAO invente fluxos, endpoints, telas ou regras que nao estejam no codigo. Analise os trechos (nomes de funcoes, endpoints, status, entidades) e descreva o que a pergunta pede passo a passo. Se os trechos realmente nao cobrirem a pergunta, responda: 'Nao encontrei isso no codigo indexado. Aponte a pasta do modulo (omnigraph-perguntar "..." <pasta>) ou pergunte a IA da sua IDE.' Caso contrario, responda em ate 8 frases, citando funcoes/arquivos reais que aparecem no codigo.
+Voce explica projetos de software em portugues claro, baseando-se nos TRECHOS DE CODIGO abaixo (os mais relevantes para a pergunta). Analise-os (funcoes, endpoints, status, entidades, comentarios) e MONTE o passo a passo que der para deduzir, mesmo que parcial, citando funcoes/arquivos reais que aparecem nos trechos. Ao final, se faltar alguma etapa, diga em uma linha 'o que faltaria confirmar'. NAO invente nomes que nao estejam nos trechos. So responda 'Nao encontrei isso no codigo indexado' se os trechos forem totalmente sem relacao com a pergunta.
 
 PERGUNTA: $pergunta
 

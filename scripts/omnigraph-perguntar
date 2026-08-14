@@ -78,7 +78,7 @@ if [ -f "$RAG" ] && command -v python3 >/dev/null 2>&1 && tem_emb; then
     printf "${roxo}▸${zero} indexando o código para busca semântica (1ª vez / após mudanças)…\n"
     python3 "$RAG" index "$alvo" || true
   fi
-  python3 "$RAG" search "$alvo" "$pergunta" --k 8 >"$ctx" 2>/dev/null && [ -s "$ctx" ] && usou_rag=1
+  python3 "$RAG" search "$alvo" "$pergunta" --k 14 >"$ctx" 2>/dev/null && [ -s "$ctx" ] && usou_rag=1
 fi
 if [ "$usou_rag" != 1 ]; then
   ( cd "$alvo" && "$OG" query "$pergunta" --budget 6000 ) >"$ctx" 2>/dev/null
@@ -113,7 +113,7 @@ PY
 if ia_disponivel && command -v python3 >/dev/null 2>&1 && tem_modelo; then
   pf="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_prompt.tmp")"
   {
-    printf '%s\n\n' "Você explica projetos de software em português claro, baseando-se SOMENTE nos TRECHOS DE CÓDIGO abaixo. REGRAS: NÃO invente fluxos, endpoints, telas ou regras que não estejam no código. Analise os trechos (nomes de funções, endpoints, status, entidades) e descreva o que a pergunta pede passo a passo. Se os trechos realmente não cobrirem a pergunta, responda: 'Não encontrei isso no código indexado. Aponte a pasta do módulo (omnigraph-perguntar \"...\" <pasta>) ou pergunte à IA da sua IDE.' Caso contrário, responda em até 8 frases, citando funções/arquivos reais que aparecem no código."
+    printf '%s\n\n' "Você explica projetos de software em português claro, baseando-se nos TRECHOS DE CÓDIGO abaixo (os mais relevantes para a pergunta). Analise-os (funções, endpoints, status, entidades, comentários) e MONTE o passo a passo que der para deduzir, mesmo que parcial, citando funções/arquivos reais que aparecem nos trechos. Ao final, se faltar alguma etapa, diga em uma linha 'o que faltaria confirmar'. NÃO invente nomes que não estejam nos trechos. Só responda 'Não encontrei isso no código indexado' se os trechos forem totalmente sem relação com a pergunta."
     printf 'PERGUNTA: %s\n\nTRECHOS DE CÓDIGO DO PROJETO (mais relevantes para a pergunta):\n' "$pergunta"
     cat "$ctx"
     if [ "$usou_rag" != 1 ]; then

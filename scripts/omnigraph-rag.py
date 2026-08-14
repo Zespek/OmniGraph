@@ -123,13 +123,15 @@ def cmd_search(root, q, k, host):
     if not qv:
         return 3
     ranked = sorted(idx["items"], key=lambda it: _cos(qv, it["vec"]), reverse=True)
-    seen, shown = set(), 0
+    # diversidade: no máximo 2 trechos por arquivo, para cobrir fluxos espalhados
+    # em vários arquivos (proposal, offer, service-request...) em vez de 8 do mesmo.
+    perfile, shown = {}, 0
     for it in ranked:
-        key = (it["file"], it["off"])
-        if key in seen:
+        f = it["file"]
+        if perfile.get(f, 0) >= 2:
             continue
-        seen.add(key)
-        sys.stdout.write("----- %s -----\n%s\n\n" % (it["file"], it["text"]))
+        perfile[f] = perfile.get(f, 0) + 1
+        sys.stdout.write("----- %s -----\n%s\n\n" % (f, it["text"]))
         shown += 1
         if shown >= k:
             break
