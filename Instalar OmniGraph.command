@@ -89,22 +89,22 @@ fi
 # 4) IA local (Ollama) — sem gastar tokens de API ─────────────────────────────
 titulo "Configurando a IA local (Ollama)"
 if ! command -v ollama >/dev/null 2>&1; then
-  case "$SO" in
-    Linux)
-      aviso "instalando o Ollama..."
-      curl -fsSL https://ollama.com/install.sh | sh
-      ;;
-    Darwin)
-      if command -v brew >/dev/null 2>&1; then
-        aviso "instalando o Ollama via Homebrew..."
-        brew install ollama
-      else
-        aviso "Ollama não encontrado. Abrindo a página de download..."
-        aviso "Instale o Ollama e rode este instalador de novo."
-        abrir "https://ollama.com/download"
-      fi
-      ;;
-  esac
+  # Script OFICIAL do Ollama — funciona no macOS E no Linux, sem depender de
+  # Homebrew. No macOS pode pedir a senha do Mac (para instalar em /Applications).
+  aviso "instalando o Ollama automaticamente (no macOS pode pedir sua senha)..."
+  curl -fsSL https://ollama.com/install.sh | sh || true
+  export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+  # reservas caso o script oficial falhe
+  if ! command -v ollama >/dev/null 2>&1 && [ "$SO" = Darwin ]; then
+    if command -v brew >/dev/null 2>&1; then
+      aviso "tentando via Homebrew..."
+      brew install ollama
+    else
+      aviso "não consegui instalar automaticamente; abrindo a página de download..."
+      aviso "Instale o Ollama e rode este instalador de novo."
+      abrir "https://ollama.com/download"
+    fi
+  fi
 fi
 ia_ok=0
 if command -v ollama >/dev/null 2>&1; then

@@ -82,12 +82,19 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
   if (Get-Command winget -ErrorAction SilentlyContinue) {
     Aviso "instalando o Ollama via winget..."
     winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements
-    $env:Path = "$env:LOCALAPPDATA\Programs\Ollama;$env:Path"
   } else {
-    Aviso "Ollama nao encontrado. Abrindo a pagina de download..."
-    Aviso "Instale o Ollama e rode este instalador de novo."
-    Start-Process "https://ollama.com/download"
+    # sem winget: baixa e roda o instalador oficial em silencio (automatico)
+    Aviso "baixando e instalando o Ollama automaticamente..."
+    try {
+      $exe = Join-Path $env:TEMP "OllamaSetup.exe"
+      Invoke-WebRequest "https://ollama.com/download/OllamaSetup.exe" -OutFile $exe -UseBasicParsing
+      Start-Process $exe -ArgumentList "/VERYSILENT","/NORESTART" -Wait
+    } catch {
+      Aviso "nao consegui instalar automaticamente; abrindo a pagina de download..."
+      Start-Process "https://ollama.com/download"
+    }
   }
+  $env:Path = "$env:LOCALAPPDATA\Programs\Ollama;$env:Path"
 }
 $iaOk = $false
 if (Get-Command ollama -ErrorAction SilentlyContinue) {
