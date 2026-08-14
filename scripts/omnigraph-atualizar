@@ -28,10 +28,14 @@ BIN="$(uv tool dir --bin 2>/dev/null)"; [ -z "$BIN" ] && BIN="$HOME/.local/bin"
   && printf "  ${verde}✓${zero} ferramenta atualizada\n" \
   || printf "${amarelo}  ! não consegui reinstalar a ferramenta${zero}\n"
 
-# atualiza os comandos amigáveis (é o que mais muda)
-for c in omnigraph-mapa omnigraph-perguntar omnigraph-atualizar; do
-  [ -f "$DIR/scripts/$c" ] && cp "$DIR/scripts/$c" "$BIN/$c" 2>/dev/null && chmod +x "$BIN/$c" 2>/dev/null
+# atualiza TODOS os comandos amigáveis (copia qualquer scripts/omnigraph-*,
+# menos os wrappers de Windows). Assim, comando novo nunca fica de fora.
+for f in "$DIR"/scripts/omnigraph-*; do
+  case "$f" in *.ps1|*.cmd) continue ;; esac
+  [ -f "$f" ] || continue
+  b="$(basename "$f")"
+  cp "$f" "$BIN/$b" 2>/dev/null && chmod +x "$BIN/$b" 2>/dev/null
 done
-printf "  ${verde}✓${zero} comandos atualizados (omnigraph-mapa, omnigraph-perguntar)\n"
+printf "  ${verde}✓${zero} comandos atualizados (mapa, perguntar, ide, atualizar)\n"
 
 printf "${verde}✓ Pronto!${zero} Use na pasta do seu projeto:  omnigraph-mapa  /  omnigraph-perguntar \"...\"\n"

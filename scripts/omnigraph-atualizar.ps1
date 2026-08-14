@@ -21,11 +21,9 @@ Push-Location $dir
 try { uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force *> $null } finally { Pop-Location }
 Write-Host "  [ok] ferramenta atualizada" -ForegroundColor Green
 
-foreach ($c in @("omnigraph-mapa","omnigraph-perguntar","omnigraph-atualizar")) {
-  foreach ($ext in @(".ps1",".cmd")) {
-    $src = Join-Path $dir "scripts\$c$ext"
-    if (Test-Path $src) { Copy-Item $src (Join-Path $bin "$c$ext") -Force -ErrorAction SilentlyContinue }
-  }
-}
+# copia TODOS os comandos (scripts\omnigraph-*.ps1 e .cmd); comando novo nunca fica de fora
+Get-ChildItem (Join-Path $dir "scripts") -Filter "omnigraph-*" -ErrorAction SilentlyContinue |
+  Where-Object { $_.Extension -in ".ps1",".cmd" } |
+  ForEach-Object { Copy-Item $_.FullName (Join-Path $bin $_.Name) -Force -ErrorAction SilentlyContinue }
 Write-Host "  [ok] comandos atualizados" -ForegroundColor Green
 Write-Host "> Pronto! Use: omnigraph-mapa  /  omnigraph-perguntar `"...`"" -ForegroundColor Green
