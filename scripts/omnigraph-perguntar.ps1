@@ -44,30 +44,49 @@ if (-not (IaDisponivel)) {
 
 Write-Host "> Pergunta: $pergunta" -ForegroundColor Magenta
 
-# 1) recupera do mapa o trecho relevante (--budget maior traz mais contexto)
-Push-Location $alvo
-try { $ctx = (& $og query $pergunta --budget 6000 2>$null | Out-String) } finally { Pop-Location }
+$host2 = if ($env:OLLAMA_HOST) { $env:OLLAMA_HOST } else { "localhost:11434" }
 
-if (-not $ctx -or $ctx -match "No matching nodes") {
-  Write-Host "Nao encontrei nada relacionado a isso no mapa." -ForegroundColor Yellow
-  Write-Host "Tente outras palavras - um nome de funcao, arquivo ou tela do projeto."
+# 1) contexto: busca SEMANTICA no codigo (embeddings) - casa portugues com codigo
+#    em ingles. Reserva: busca do grafo por palavra-chave.
+$rag = Join-Path (Split-Path $og) "omnigraph-rag.py"
+$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $py) { $py = (Get-Command python3 -ErrorAction SilentlyContinue).Source }
+$embModel = if ($env:OMNIGRAPH_EMBED_MODEL) { $env:OMNIGRAPH_EMBED_MODEL } else { "bge-m3" }
+$temEmb = $false
+try { $t = Invoke-RestMethod "http://$host2/api/tags" -TimeoutSec 3; if ($t.models.name -match [regex]::Escape(($embModel -split ':')[0])) { $temEmb = $true } } catch {}
+$usouRag = $false; $ctx = ""
+if ((Test-Path $rag) -and $py -and $temEmb) {
+  & $py $rag fresh $alvo *> $null
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "> indexando o codigo para busca semantica (1a vez / apos mudancas)..." -ForegroundColor Magenta
+    & $py $rag index $alvo | Out-Null
+  }
+  $ctx = (& $py $rag search $alvo $pergunta --k 8 2>$null | Out-String)
+  if ($ctx.Trim()) { $usouRag = $true }
+}
+if (-not $usouRag) {
+  Push-Location $alvo
+  try { $ctx = (& $og query $pergunta --budget 6000 2>$null | Out-String) } finally { Pop-Location }
+}
+if (-not $ctx.Trim() -or $ctx -match "No matching nodes") {
+  Write-Host "Nao encontrei nada relacionado a isso no codigo." -ForegroundColor Yellow
+  Write-Host "Tente outras palavras, ou aponte a pasta:  omnigraph-perguntar '...' <pasta>"
   exit 0
 }
 
 # 2) a IA local redige a resposta em portugues a partir do contexto
 $modelo = if ($env:OLLAMA_MODEL) { $env:OLLAMA_MODEL } else { "qwen2.5-coder:7b" }
-$host2  = if ($env:OLLAMA_HOST) { $env:OLLAMA_HOST } else { "localhost:11434" }
 $temModelo = $false
 try { $tags = Invoke-RestMethod "http://$host2/api/tags" -TimeoutSec 3
       if ($tags.models.name -match [regex]::Escape(($modelo -split ':')[0])) { $temModelo = $true } } catch {}
 
 if ((IaDisponivel) -and $temModelo) {
   $prompt = @"
-Voce explica projetos de software em portugues claro, usando SOMENTE o CONTEXTO abaixo (trecho do mapa: NODE = parte do codigo, EDGE = ligacao; "calls" = uma funcao chama outra, "contains" = um arquivo contem algo). REGRAS: NAO invente fluxos, endpoints, telas ou regras que nao estejam no CONTEXTO. Se o contexto NAO contiver o que a pergunta pede, responda exatamente: 'Nao encontrei isso no mapa deste projeto. Para perguntas de fluxo/regra de negocio, valide direto no codigo ou pergunte a IA da sua IDE (com o OmniGraph registrado), que le o codigo e responde melhor.' Quando houver contexto, seja direto, de 2 a 6 frases, citando as partes reais (nomes de funcoes/arquivos que aparecem no contexto).
+Voce explica projetos de software em portugues claro, baseando-se SOMENTE nos TRECHOS DE CODIGO abaixo. REGRAS: NAO invente fluxos, endpoints, telas ou regras que nao estejam no codigo. Analise os trechos (nomes de funcoes, endpoints, status, entidades) e descreva o que a pergunta pede passo a passo. Se os trechos realmente nao cobrirem a pergunta, responda: 'Nao encontrei isso no codigo indexado. Aponte a pasta do modulo (omnigraph-perguntar "..." <pasta>) ou pergunte a IA da sua IDE.' Caso contrario, responda em ate 8 frases, citando funcoes/arquivos reais que aparecem no codigo.
 
 PERGUNTA: $pergunta
 
-CONTEXTO:
+TRECHOS DE CODIGO DO PROJETO (mais relevantes para a pergunta):
 $ctx
 
 RESPOSTA (em portugues):
