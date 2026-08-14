@@ -88,6 +88,10 @@ omnigraph-mapa
 omnigraph-perguntar "como funciona o pagamento?"
 # (a busca "Search nodes..." do gráfico só acha nós pelo nome; perguntas são aqui)
 
+# Usar na IDE (Claude, Cursor, Copilot...) gastando menos tokens:
+#   gera o mapa e registra o OmniGraph no seu assistente
+omnigraph-ide
+
 # Atualizar tudo para a última versão (rápido):
 omnigraph-atualizar
 ```

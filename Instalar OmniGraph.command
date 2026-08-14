@@ -85,6 +85,10 @@ if [ -f scripts/omnigraph-atualizar ]; then
   cp scripts/omnigraph-atualizar "$BIN/omnigraph-atualizar" 2>/dev/null && chmod +x "$BIN/omnigraph-atualizar" 2>/dev/null \
     && ok "comando 'omnigraph-atualizar' instalado (atualiza tudo rápido)"
 fi
+if [ -f scripts/omnigraph-ide ]; then
+  cp scripts/omnigraph-ide "$BIN/omnigraph-ide" 2>/dev/null && chmod +x "$BIN/omnigraph-ide" 2>/dev/null \
+    && ok "comando 'omnigraph-ide' instalado (usa na IDE gastando menos tokens)"
+fi
 
 # 4) IA local (Ollama) — sem gastar tokens de API ─────────────────────────────
 titulo "Configurando a IA local (Ollama)"

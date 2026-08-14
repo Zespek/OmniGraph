@@ -1,0 +1,47 @@
+#!/bin/bash
+# =============================================================================
+#  omnigraph-ide — prepara o projeto para usar com a IA da sua IDE gastando
+#  MENOS TOKENS. Gera o mapa e registra o OmniGraph no seu assistente
+#  (Claude, Cursor, Copilot, VSCode...). Depois, o assistente consulta o mapa
+#  em vez de ler todos os arquivos.
+#
+#  Uso (na pasta do seu projeto):  omnigraph-ide
+# =============================================================================
+set -uo pipefail
+[ -f "$HOME/.omnigraph_env" ] && . "$HOME/.omnigraph_env"
+
+alvo="${1:-.}"
+roxo=$'\033[1;35m'; verde=$'\033[32m'; amarelo=$'\033[33m'; zero=$'\033[0m'
+
+OG="$(command -v omnigraph 2>/dev/null || true)"
+[ -z "$OG" ] && [ -x "$HOME/.local/bin/omnigraph" ] && OG="$HOME/.local/bin/omnigraph"
+if [ -z "$OG" ]; then
+  echo "omnigraph não encontrado. Rode o instalador primeiro (ou abra um terminal novo)." >&2
+  exit 1
+fi
+MAPA="$(command -v omnigraph-mapa 2>/dev/null || echo "$HOME/.local/bin/omnigraph-mapa")"
+
+printf "${roxo}▸ Preparando o projeto para a IA da sua IDE${zero}\n"
+
+# 1) garante o mapa (usa o omnigraph-mapa: barra de progresso, IA e fallback)
+if [ -f "$alvo/omnigraph-out/graph.json" ]; then
+  printf "  ${verde}✓${zero} mapa já existe (use 'omnigraph-mapa' para atualizar)\n"
+else
+  if [ -x "$MAPA" ]; then
+    "$MAPA" "$alvo" || { printf "${amarelo}! não consegui gerar o mapa${zero}\n" >&2; exit 1; }
+  else
+    ( cd "$alvo" && "$OG" extract . >/dev/null 2>&1 && "$OG" cluster-only . >/dev/null 2>&1 ) \
+      || { printf "${amarelo}! não consegui gerar o mapa${zero}\n" >&2; exit 1; }
+  fi
+fi
+
+# 2) registra o OmniGraph no assistente/IDE
+printf "${roxo}▸ Registrando o OmniGraph no seu assistente…${zero}\n"
+( cd "$alvo" && "$OG" install )
+
+printf "\n${verde}✓ Pronto!${zero} Não precisa deixar nenhum servidor rodando.\n"
+echo "  Na sua IDE/assistente (Claude, Cursor, Copilot, VSCode...):"
+echo "    • pergunte sobre o projeto normalmente, ou digite  /omnigraph"
+echo "    • ele consulta o MAPA (poucos tokens) em vez de ler todos os arquivos"
+echo
+echo "  Mexeu bastante no código? Rode 'omnigraph-mapa' de novo para atualizar o mapa."

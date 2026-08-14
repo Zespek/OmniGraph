@@ -75,6 +75,11 @@ if (Test-Path "scripts\omnigraph-atualizar.ps1") {
   Copy-Item "scripts\omnigraph-atualizar.cmd" "$bin\omnigraph-atualizar.cmd" -Force -ErrorAction SilentlyContinue
   if (Test-Path "$bin\omnigraph-atualizar.cmd") { Ok "comando 'omnigraph-atualizar' instalado (atualiza tudo rapido)" }
 }
+if (Test-Path "scripts\omnigraph-ide.ps1") {
+  Copy-Item "scripts\omnigraph-ide.ps1" "$bin\omnigraph-ide.ps1" -Force -ErrorAction SilentlyContinue
+  Copy-Item "scripts\omnigraph-ide.cmd" "$bin\omnigraph-ide.cmd" -Force -ErrorAction SilentlyContinue
+  if (Test-Path "$bin\omnigraph-ide.cmd") { Ok "comando 'omnigraph-ide' instalado (usa na IDE gastando menos tokens)" }
+}
 
 # 4) IA local (Ollama) - sem gastar tokens de API -----------------------------
 Titulo "Configurando a IA local (Ollama)"
