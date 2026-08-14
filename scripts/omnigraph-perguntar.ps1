@@ -44,9 +44,9 @@ if (-not (IaDisponivel)) {
 
 Write-Host "> Pergunta: $pergunta" -ForegroundColor Magenta
 
-# 1) recupera do mapa o trecho relevante (contexto)
+# 1) recupera do mapa o trecho relevante (--budget maior traz mais contexto)
 Push-Location $alvo
-try { $ctx = (& $og query $pergunta 2>$null | Out-String) } finally { Pop-Location }
+try { $ctx = (& $og query $pergunta --budget 6000 2>$null | Out-String) } finally { Pop-Location }
 
 if (-not $ctx -or $ctx -match "No matching nodes") {
   Write-Host "Nao encontrei nada relacionado a isso no mapa." -ForegroundColor Yellow
@@ -63,7 +63,7 @@ try { $tags = Invoke-RestMethod "http://$host2/api/tags" -TimeoutSec 3
 
 if ((IaDisponivel) -and $temModelo) {
   $prompt = @"
-Voce e um assistente que explica projetos de software em portugues claro e simples, para uma pessoa nao tecnica. Responda a PERGUNTA usando SOMENTE o CONTEXTO abaixo (um trecho do mapa do projeto: NODE = uma parte do codigo, EDGE = uma ligacao entre partes; "calls" = uma funcao chama outra, "contains" = um arquivo contem algo). Seja direto, de 2 a 5 frases, sem jargao. Se o contexto nao bastar, diga o que da para afirmar.
+Voce explica projetos de software em portugues claro, usando SOMENTE o CONTEXTO abaixo (trecho do mapa: NODE = parte do codigo, EDGE = ligacao; "calls" = uma funcao chama outra, "contains" = um arquivo contem algo). REGRAS: NAO invente fluxos, endpoints, telas ou regras que nao estejam no CONTEXTO. Se o contexto NAO contiver o que a pergunta pede, responda exatamente: 'Nao encontrei isso no mapa deste projeto. Para perguntas de fluxo/regra de negocio, pergunte ao Claude na sua IDE (com o OmniGraph registrado) - ele le o codigo e responde melhor.' Quando houver contexto, seja direto, de 2 a 6 frases, citando as partes reais (nomes de funcoes/arquivos que aparecem no contexto).
 
 PERGUNTA: $pergunta
 

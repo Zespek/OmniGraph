@@ -66,9 +66,10 @@ com_spinner() {
   wait "$pid"; rc=$?; printf "\r\033[K"; return "$rc"
 }
 
-# 1) recupera do mapa o trecho relevante (nós/arestas) para a pergunta
+# 1) recupera do mapa o trecho relevante (nós/arestas) para a pergunta.
+#    --budget maior traz mais contexto (melhora a chance de pegar o certo).
 ctx="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_ctx.tmp")"
-( cd "$alvo" && "$OG" query "$pergunta" ) >"$ctx" 2>/dev/null
+( cd "$alvo" && "$OG" query "$pergunta" --budget 6000 ) >"$ctx" 2>/dev/null
 if [ ! -s "$ctx" ] || grep -qi "No matching nodes" "$ctx"; then
   printf "${amarelo}Não encontrei nada relacionado a isso no mapa.${zero}\n"
   echo "Tente outras palavras — um nome de função, arquivo ou tela do projeto."
@@ -99,7 +100,7 @@ PY
 if ia_disponivel && command -v python3 >/dev/null 2>&1 && tem_modelo; then
   pf="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_prompt.tmp")"
   {
-    printf '%s\n\n' "Você é um assistente que explica projetos de software em português claro e simples, para uma pessoa não técnica. Responda à PERGUNTA usando SOMENTE o CONTEXTO abaixo (um trecho do mapa do projeto: NODE = uma parte do código, EDGE = uma ligação entre partes; \"calls\" = uma função chama outra, \"contains\" = um arquivo contém algo). Seja direto, de 2 a 5 frases, sem jargão. Se o contexto não bastar, diga o que dá para afirmar."
+    printf '%s\n\n' "Você explica projetos de software em português claro, usando SOMENTE o CONTEXTO abaixo (trecho do mapa: NODE = parte do código, EDGE = ligação; \"calls\" = uma função chama outra, \"contains\" = um arquivo contém algo). REGRAS: NÃO invente fluxos, endpoints, telas ou regras que não estejam no CONTEXTO. Se o contexto NÃO contiver o que a pergunta pede, responda exatamente: 'Não encontrei isso no mapa deste projeto. Para perguntas de fluxo/regra de negócio, pergunte ao Claude na sua IDE (com o OmniGraph registrado) — ele lê o código e responde melhor.' Quando houver contexto, seja direto, de 2 a 6 frases, citando as partes reais (nomes de funções/arquivos que aparecem no contexto)."
     printf 'PERGUNTA: %s\n\nCONTEXTO:\n' "$pergunta"
     cat "$ctx"
     printf '\n\nRESPOSTA (em português):'
