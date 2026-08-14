@@ -25,11 +25,18 @@ if (Test-Path (Join-Path $alvo "omnigraph-out\graph.json")) {
 # 2) registra no assistente/IDE
 Write-Host "> Registrando o OmniGraph no seu assistente..." -ForegroundColor Magenta
 Push-Location $alvo
-try { & $og install } finally { Pop-Location }
+try {
+  & $og install
+  # 3) git hook: mantem o mapa atualizado sozinho a cada commit (se for repo git)
+  if (Test-Path (Join-Path $alvo ".git")) {
+    & $og hook install *> $null
+    if ($LASTEXITCODE -eq 0) { Write-Host "  [ok] o mapa vai se atualizar sozinho a cada commit" -ForegroundColor Green }
+  }
+} finally { Pop-Location }
 
 Write-Host "`n[ok] Pronto! Nao precisa deixar nenhum servidor rodando." -ForegroundColor Green
 Write-Host "  Na sua IDE/assistente (Claude, Cursor, Copilot, VSCode...):"
 Write-Host "    - pergunte sobre o projeto normalmente, ou digite  /omnigraph"
 Write-Host "    - ele consulta o MAPA (poucos tokens) em vez de ler todos os arquivos"
 Write-Host ""
-Write-Host "  Mexeu bastante no codigo? Rode 'omnigraph-mapa' de novo para atualizar o mapa."
+Write-Host "  Atualizar o mapa manualmente (depois de mexer no codigo):  omnigraph update ."

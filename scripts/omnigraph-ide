@@ -39,9 +39,15 @@ fi
 printf "${roxo}▸ Registrando o OmniGraph no seu assistente…${zero}\n"
 ( cd "$alvo" && "$OG" install )
 
+# 3) git hook: mantém o mapa atualizado sozinho a cada commit (se for repo git)
+if [ -d "$alvo/.git" ]; then
+  ( cd "$alvo" && "$OG" hook install ) >/dev/null 2>&1 \
+    && printf "  ${verde}✓${zero} o mapa vai se atualizar sozinho a cada commit\n"
+fi
+
 printf "\n${verde}✓ Pronto!${zero} Não precisa deixar nenhum servidor rodando.\n"
 echo "  Na sua IDE/assistente (Claude, Cursor, Copilot, VSCode...):"
 echo "    • pergunte sobre o projeto normalmente, ou digite  /omnigraph"
 echo "    • ele consulta o MAPA (poucos tokens) em vez de ler todos os arquivos"
 echo
-echo "  Mexeu bastante no código? Rode 'omnigraph-mapa' de novo para atualizar o mapa."
+echo "  Atualizar o mapa manualmente (depois de mexer no código):  omnigraph update ."
