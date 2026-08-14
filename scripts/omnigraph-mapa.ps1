@@ -10,8 +10,10 @@ $ErrorActionPreference = "Continue"
 
 $alvo = "."
 $codeOnly = $false
+$incluirTudo = $false
 foreach ($a in $args) {
-  if ($a -eq "--code-only") { $codeOnly = $true }
+  if     ($a -eq "--code-only") { $codeOnly = $true }
+  elseif ($a -eq "--tudo" -or $a -eq "--no-gitignore") { $incluirTudo = $true }
   elseif ($a -notlike "-*") { $alvo = $a }
 }
 
@@ -41,6 +43,7 @@ $script:LOG = Join-Path $env:TEMP ("omnigraph_mapa_" + $PID + ".log")
 function RodarExtract($co) {
   $ogArgs = @("extract", $alvo)
   if ($co) { $ogArgs += "--code-only" }
+  if ($incluirTudo) { $ogArgs += "--no-gitignore" }
   & $og @ogArgs 2>&1 | Tee-Object -FilePath $script:LOG | ForEach-Object {
     $line = "$_"
     if     ($line -match "scanning")               { Mostrar 5  "lendo os arquivos do projeto..." }
@@ -87,9 +90,19 @@ if ($ex -ne 0 -and -not $codeOnly) {
 }
 if ($ex -ne 0) {
   Write-Progress -Activity "Gerando o mapa" -Completed
-  Write-Host "! Nao consegui gerar o mapa." -ForegroundColor Yellow
-  MostrarErroReal
-  Write-Host "`nCopie o 'Erro real' acima e me mande." -ForegroundColor Yellow
+  $vazio = (Test-Path $script:LOG) -and (Select-String -Path $script:LOG -Pattern "graph is empty|found 0 code, 0 docs" -Quiet)
+  if ($vazio) {
+    Write-Host "! Nenhum arquivo de projeto reconhecido nesta pasta." -ForegroundColor Yellow
+    Write-Host "  Voce esta na pasta certa? Ela precisa conter o codigo-fonte."
+    Write-Host "    - veja o que tem aqui com:   dir"
+    Write-Host "    - se o codigo esta numa subpasta, entre nela e rode de novo"
+    Write-Host "    - se os arquivos existem mas ha um .gitignore, tente incluir tudo:"
+    Write-Host "        omnigraph-mapa --tudo"
+  } else {
+    Write-Host "! Nao consegui gerar o mapa." -ForegroundColor Yellow
+    MostrarErroReal
+    Write-Host "`nCopie o 'Erro real' acima e me mande." -ForegroundColor Yellow
+  }
   Remove-Item $script:LOG -ErrorAction SilentlyContinue
   exit 1
 }

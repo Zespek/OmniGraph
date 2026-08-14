@@ -15,11 +15,13 @@ set -uo pipefail
 
 alvo="."
 code_only=0
+incluir_tudo=0
 for a in "$@"; do
   case "$a" in
-    --code-only) code_only=1 ;;
-    -*)          : ;;                 # ignora outras flags desconhecidas
-    *)           alvo="$a" ;;
+    --code-only)          code_only=1 ;;
+    --tudo|--no-gitignore) incluir_tudo=1 ;;   # inclui arquivos que o .gitignore esconderia
+    -*)                    : ;;                 # ignora outras flags desconhecidas
+    *)                     alvo="$a" ;;
   esac
 done
 
@@ -45,11 +47,10 @@ barra() {  # $1 = porcentagem  $2 = rótulo
 # real se falhar). Retorna o status real do extract.
 rodar_extract() {  # $1 = 1 para --code-only
   co="$1"
-  {
-    if [ "$co" = 1 ]; then "$OG" extract "$alvo" --code-only
-    else                    "$OG" extract "$alvo"
-    fi
-  } 2>&1 | tee "$LOG" | while IFS= read -r line; do
+  set -- extract "$alvo"
+  [ "$co" = 1 ] && set -- "$@" --code-only
+  [ "${incluir_tudo:-0}" = 1 ] && set -- "$@" --no-gitignore
+  { "$OG" "$@"; } 2>&1 | tee "$LOG" | while IFS= read -r line; do
         case "$line" in
           *scanning*)                 barra 5   "lendo os arquivos do projeto…" ;;
           *"AST extraction on"*)      barra 15  "analisando o código…" ;;
@@ -131,10 +132,19 @@ if [ "$ex" -ne 0 ] && [ "$code_only" -ne 1 ]; then
 fi
 
 if [ "$ex" -ne 0 ]; then
-  printf "\n${amarelo}! Não consegui gerar o mapa.${zero}\n" >&2
-  mostrar_erro_real >&2
-  echo >&2
-  echo "Copie o 'Erro real' acima e me mande." >&2
+  if grep -qE "graph is empty|found 0 code, 0 docs" "$LOG" 2>/dev/null; then
+    printf "\n${amarelo}! Nenhum arquivo de projeto reconhecido nesta pasta.${zero}\n" >&2
+    echo "  Você está na pasta certa? Ela precisa conter o código-fonte." >&2
+    echo "    • veja o que tem aqui com:   ls" >&2
+    echo "    • se o código está numa subpasta, entre nela e rode de novo" >&2
+    echo "    • se os arquivos existem mas há um .gitignore, tente incluir tudo:" >&2
+    echo "        omnigraph-mapa --tudo" >&2
+  else
+    printf "\n${amarelo}! Não consegui gerar o mapa.${zero}\n" >&2
+    mostrar_erro_real >&2
+    echo >&2
+    echo "Copie o 'Erro real' acima e me mande." >&2
+  fi
   rm -f "$LOG"
   exit 1
 fi
