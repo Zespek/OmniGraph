@@ -560,7 +560,7 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
 
 
 def _print_banner() -> None:
-    """Amber brain banner on omnigraph install. TTY-only, never raises."""
+    """Purple skull banner on omnigraph install. TTY-only, never raises."""
     if not sys.stdout.isatty():
         return
     try:
@@ -569,21 +569,32 @@ def _print_banner() -> None:
             ctypes.windll.kernel32.SetConsoleMode(
                 ctypes.windll.kernel32.GetStdHandle(-11), 7
             )
-        A = "\033[38;5;214m"
-        D = "\033[38;5;130m"
+        A = "\033[1;38;2;189;0;255m"   # roxo OmniGraph (#bd00ff)
+        D = "\033[38;2;120;0;170m"     # roxo escuro
         R = "\033[0m"
         print(f"""{A}
-  ╭──◉──╮     ╭──◉──╮
- ╱  ◉   ◉ ╲ ╱ ◉   ◉  ╲
-│   ◉─◉─◉  ◉  ◉─◉─◉   │
-│    ◉   ◉ │ ◉   ◉    │
-│   ◉─◉─◉  ◉  ◉─◉─◉   │
- ╲  ◉   ◉ ╱ ╲ ◉   ◉  ╱
-  ╰──◉──╯     ╰──◉──╯
-           ◉
-
-  █▀▀ █▀█ ▄▀█ █▀█ █ █ █ █▀▀ █▄█
-  █▄█ █▀▄ █▀█ █▀▀ █▀█ █ █▀   █{D}  {__version__}{R}
+          .                                                      .
+        .n                   .                 .                  n.
+  .   .dP                  dP                   9b                 9b.    .
+ 4    qXb         .       dX                     Xb       .        dXp     t
+dX.    9Xb      .dXb    __                         __    dXb.     dXP     .Xb
+9XXb._       _.dXXXXb dXXXXbo.                 .odXXXXb dXXXXb._       _.dXXP
+ 9XXXXXXXXXXXXXXXXXXXVXXXXXXXXOo.           .oOXXXXXXXXVXXXXXXXXXXXXXXXXXXXP
+  `9XXXXXXXXXXXXXXXXXXXXX'~   ~`OOO8b   d8OOO'~   ~`XXXXXXXXXXXXXXXXXXXXXP'
+    `9XXXXXXXXXXXP' `9XX'   DIE    `98v8P'  HUMAN   `XXP' `9XXXXXXXXXXXP'
+        ~~~~~~~       9X.          .db|db.          .XP       ~~~~~~~
+                        )b.  .dbo.dP'`v'`9b.odb.  .dX(
+                      ,dXXXXXXXXXXXb     dXXXXXXXXXXXb.
+                     dXXXXXXXXXXXP'   .   `9XXXXXXXXXXXb
+                    dXXXXXXXXXXXXb   d|b   dXXXXXXXXXXXXb
+                    9XXb'   `XXXXXb.dX|Xb.dXXXXX'   `dXXP
+                     `'      9XXXXXX(   )XXXXXXP      `'
+                              XXXX X.`v'.X XXXX
+                              XP^X'`b   d'`X^XX
+                              X. 9  `   '  P )X
+                              `b  `       '  d'
+                               `             '
+{A}                 O M N I G R A P H{D}  v{__version__}{R}
 """)
     except Exception:
         pass
