@@ -130,6 +130,10 @@ if ia_disponivel && command -v python3 >/dev/null 2>&1 && tem_modelo; then
   if [ -s "$resp" ]; then
     printf "${verde}▸ Resposta:${zero}\n"
     cat "$resp"; echo
+    # mostra as fontes: se aparecer um arquivo que não faz sentido (ex.: um .md
+    # de termos), você vê na hora que a resposta pode estar contaminada.
+    fontes="$(grep -oE '^----- .+ -----$' "$ctx" 2>/dev/null | sed 's/^----- //; s/ -----$//' | sort -u | tr '\n' ' ')"
+    [ -n "$fontes" ] && printf "\n${roxo}▸ Baseado nestes arquivos:${zero} %s\n" "$fontes"
   else
     printf "${amarelo}A IA não redigiu a resposta — mostrando as partes do mapa:${zero}\n"
     cat "$ctx"

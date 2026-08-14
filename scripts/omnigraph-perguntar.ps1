@@ -99,6 +99,8 @@ RESPOSTA (em portugues):
     if ($r.response) {
       Write-Host "> Resposta:" -ForegroundColor Green
       Write-Host $r.response.Trim()
+      $fontes = (($ctx -split "`n" | Where-Object { $_ -match '^----- .+ -----$' } | ForEach-Object { $_ -replace '^----- ','' -replace ' -----$','' } | Sort-Object -Unique) -join ', ')
+      if ($fontes) { Write-Host "`n> Baseado nestes arquivos: $fontes" -ForegroundColor Magenta }
     } else {
       Write-Host "A IA nao redigiu a resposta - partes do mapa relacionadas:" -ForegroundColor Yellow
       Write-Host $ctx
