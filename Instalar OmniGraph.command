@@ -135,12 +135,25 @@ if command -v ollama >/dev/null 2>&1; then
   # espera o servidor responder (até ~20s)
   for _ in $(seq 1 20); do curl -s localhost:11434/api/tags >/dev/null 2>&1 && break; sleep 1; done
 
+  # escolhe o modelo pela RAM da máquina: o mais forte que ela aguenta
+  case "$SO" in
+    Darwin) ram_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1073741824 )) ;;
+    Linux)  ram_gb=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0) / 1048576 )) ;;
+    *)      ram_gb=8 ;;
+  esac
+  if   [ "${ram_gb:-0}" -ge 30 ]; then MODELO="qwen2.5-coder:32b"; tam="~20GB"
+  elif [ "${ram_gb:-0}" -ge 15 ]; then MODELO="qwen2.5-coder:14b"; tam="~9GB"
+  elif [ "${ram_gb:-0}" -ge 7  ]; then MODELO="qwen2.5-coder:7b";  tam="~4.7GB"
+  else                                 MODELO="qwen2.5-coder:3b";  tam="~2GB"
+  fi
+  ok "RAM detectada: ${ram_gb}GB  →  modelo ${MODELO} (o mais forte para esta máquina)"
+
   # modelo
-  if curl -s localhost:11434/api/tags 2>/dev/null | grep -q "qwen2.5-coder:7b"; then
-    ok "modelo qwen2.5-coder:7b já baixado"
+  if curl -s localhost:11434/api/tags 2>/dev/null | grep -q "$MODELO"; then
+    ok "modelo ${MODELO} já baixado"
   else
-    aviso "baixando o modelo qwen2.5-coder:7b (~4.7GB — pode demorar)..."
-    ollama pull qwen2.5-coder:7b && ok "modelo pronto" || aviso "falha ao baixar o modelo"
+    aviso "baixando o modelo ${MODELO} (${tam} — pode demorar)..."
+    ollama pull "$MODELO" && ok "modelo pronto" || aviso "falha ao baixar o modelo"
   fi
 
   # TESTE REAL de ponta a ponta: um mini-extract com Ollama num doc de exemplo.
@@ -148,7 +161,7 @@ if command -v ollama >/dev/null 2>&1; then
   aviso "testando a IA local de verdade (pode levar ~30s na 1ª vez)..."
   smoke_dir="$(mktemp -d 2>/dev/null || echo "$HOME/.omnigraph_smoke")"
   mkdir -p "$smoke_dir"
-  export OLLAMA_HOST=localhost:11434 OLLAMA_API_KEY=ollama
+  export OLLAMA_HOST=localhost:11434 OLLAMA_API_KEY=ollama OLLAMA_MODEL="$MODELO"
   printf '# Modulo de Pagamento\n\nEste modulo processa pagamentos e conversa com o Banco de Dados.\n' > "$smoke_dir/exemplo.md"
   if "$BIN/omnigraph" extract "$smoke_dir" --backend ollama >/dev/null 2>&1; then
     ok "IA local respondeu — pronta para uso"
@@ -172,6 +185,7 @@ env_file="$HOME/.omnigraph_env"
   if [ "${ia_ok:-0}" = 1 ]; then
     echo "export OLLAMA_HOST=localhost:11434"
     echo "export OLLAMA_API_KEY=ollama   # valor qualquer: apenas silencia um aviso"
+    echo "export OLLAMA_MODEL=${MODELO:-qwen2.5-coder:7b}   # modelo escolhido pela RAM da máquina"
   fi
 } > "$env_file"
 # faz cada perfil de shell carregar esse arquivo (sem duplicar)

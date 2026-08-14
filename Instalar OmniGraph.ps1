@@ -110,18 +110,26 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
   for ($i=0; $i -lt 20; $i++) {
     try { Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 1 }
   }
+  # escolhe o modelo pela RAM da maquina: o mais forte que ela aguenta
+  $ramGb = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+  if     ($ramGb -ge 30) { $modelo = "qwen2.5-coder:32b"; $tam = "~20GB" }
+  elseif ($ramGb -ge 15) { $modelo = "qwen2.5-coder:14b"; $tam = "~9GB" }
+  elseif ($ramGb -ge 7)  { $modelo = "qwen2.5-coder:7b";  $tam = "~4.7GB" }
+  else                   { $modelo = "qwen2.5-coder:3b";  $tam = "~2GB" }
+  Ok "RAM detectada: ${ramGb}GB  ->  modelo $modelo (o mais forte para esta maquina)"
+
   $tem = $false
   try { $tags = Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 3
-        if ($tags.models.name -match "qwen2.5-coder:7b") { $tem = $true } } catch {}
-  if ($tem) { Ok "modelo qwen2.5-coder:7b ja baixado" }
+        if ($tags.models.name -match [regex]::Escape($modelo)) { $tem = $true } } catch {}
+  if ($tem) { Ok "modelo $modelo ja baixado" }
   else {
-    Aviso "baixando o modelo qwen2.5-coder:7b (~4.7GB - pode demorar)..."
-    ollama pull qwen2.5-coder:7b
+    Aviso "baixando o modelo $modelo ($tam - pode demorar)..."
+    ollama pull $modelo
     if ($LASTEXITCODE -eq 0) { Ok "modelo pronto" } else { Aviso "falha ao baixar o modelo" }
   }
   # TESTE REAL de ponta a ponta: mini-extract com Ollama (passa pelo pacote 'openai').
   Aviso "testando a IA local de verdade (pode levar ~30s na 1a vez)..."
-  $env:OLLAMA_HOST = "localhost:11434"; $env:OLLAMA_API_KEY = "ollama"
+  $env:OLLAMA_HOST = "localhost:11434"; $env:OLLAMA_API_KEY = "ollama"; $env:OLLAMA_MODEL = $modelo
   $smoke = Join-Path $env:TEMP ("omnigraph_smoke_" + $PID)
   New-Item -ItemType Directory -Force -Path $smoke | Out-Null
   "# Modulo de Pagamento`n`nEste modulo processa pagamentos e conversa com o Banco de Dados." | Set-Content -Encoding UTF8 (Join-Path $smoke "exemplo.md")
@@ -147,6 +155,7 @@ if ($pathUsuario -notlike "*$bin*") {
 if ($iaOk) {
   setx OLLAMA_HOST "localhost:11434" | Out-Null
   setx OLLAMA_API_KEY "ollama" | Out-Null
+  if ($modelo) { setx OLLAMA_MODEL $modelo | Out-Null }
   Ok "IA local definida como padrao"
 } else {
   [Environment]::SetEnvironmentVariable("OLLAMA_HOST", $null, "User")
