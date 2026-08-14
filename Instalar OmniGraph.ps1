@@ -80,6 +80,8 @@ if (Test-Path "scripts\omnigraph-ide.ps1") {
   Copy-Item "scripts\omnigraph-ide.cmd" "$bin\omnigraph-ide.cmd" -Force -ErrorAction SilentlyContinue
   if (Test-Path "$bin\omnigraph-ide.cmd") { Ok "comando 'omnigraph-ide' instalado (usa na IDE gastando menos tokens)" }
 }
+# motor de busca semantica (usado pelo omnigraph-perguntar)
+if (Test-Path "scripts\omnigraph-rag.py") { Copy-Item "scripts\omnigraph-rag.py" "$bin\omnigraph-rag.py" -Force -ErrorAction SilentlyContinue }
 
 # 4) IA local (Ollama) - sem gastar tokens de API -----------------------------
 Titulo "Configurando a IA local (Ollama)"
@@ -126,6 +128,16 @@ if (Get-Command ollama -ErrorAction SilentlyContinue) {
     Aviso "baixando o modelo $modelo ($tam - pode demorar)..."
     ollama pull $modelo
     if ($LASTEXITCODE -eq 0) { Ok "modelo pronto" } else { Aviso "falha ao baixar o modelo" }
+  }
+  # modelo de EMBEDDINGS: busca semantica do omnigraph-perguntar (casa portugues com codigo em ingles)
+  $temEmb = $false
+  try { $tags = Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 3
+        if ($tags.models.name -match "bge-m3") { $temEmb = $true } } catch {}
+  if ($temEmb) { Ok "busca semantica (bge-m3) ja baixada" }
+  else {
+    Aviso "baixando o modelo de busca semantica bge-m3 (~1.2GB)..."
+    ollama pull bge-m3
+    if ($LASTEXITCODE -eq 0) { Ok "busca semantica pronta" } else { Aviso "falha no bge-m3 (perguntar usara a busca do grafo)" }
   }
   # TESTE REAL de ponta a ponta: mini-extract com Ollama (passa pelo pacote 'openai').
   Aviso "testando a IA local de verdade (pode levar ~30s na 1a vez)..."

@@ -23,7 +23,7 @@ Write-Host "  [ok] ferramenta atualizada" -ForegroundColor Green
 
 # copia TODOS os comandos (scripts\omnigraph-*.ps1 e .cmd); comando novo nunca fica de fora
 Get-ChildItem (Join-Path $dir "scripts") -Filter "omnigraph-*" -ErrorAction SilentlyContinue |
-  Where-Object { $_.Extension -in ".ps1",".cmd" } |
+  Where-Object { $_.Extension -in ".ps1",".cmd",".py" } |
   ForEach-Object { Copy-Item $_.FullName (Join-Path $bin $_.Name) -Force -ErrorAction SilentlyContinue }
 Write-Host "  [ok] comandos atualizados" -ForegroundColor Green
 Write-Host "> Pronto! Use: omnigraph-mapa  /  omnigraph-perguntar `"...`"" -ForegroundColor Green

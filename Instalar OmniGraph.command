@@ -89,6 +89,8 @@ if [ -f scripts/omnigraph-ide ]; then
   cp scripts/omnigraph-ide "$BIN/omnigraph-ide" 2>/dev/null && chmod +x "$BIN/omnigraph-ide" 2>/dev/null \
     && ok "comando 'omnigraph-ide' instalado (usa na IDE gastando menos tokens)"
 fi
+# motor de busca semântica (usado pelo omnigraph-perguntar)
+[ -f scripts/omnigraph-rag.py ] && cp scripts/omnigraph-rag.py "$BIN/omnigraph-rag.py" 2>/dev/null
 
 # 4) IA local (Ollama) — sem gastar tokens de API ─────────────────────────────
 titulo "Configurando a IA local (Ollama)"
@@ -154,6 +156,14 @@ if command -v ollama >/dev/null 2>&1; then
   else
     aviso "baixando o modelo ${MODELO} (${tam} — pode demorar)..."
     ollama pull "$MODELO" && ok "modelo pronto" || aviso "falha ao baixar o modelo"
+  fi
+  # modelo de EMBEDDINGS: busca semântica do 'omnigraph-perguntar' (casa
+  # português com código em inglês). Leve em RAM (~1-2GB só ao indexar).
+  if curl -s localhost:11434/api/tags 2>/dev/null | grep -q "bge-m3"; then
+    ok "busca semântica (bge-m3) já baixada"
+  else
+    aviso "baixando o modelo de busca semântica bge-m3 (~1.2GB)..."
+    ollama pull bge-m3 && ok "busca semântica pronta" || aviso "falha no bge-m3 (perguntar usará a busca do grafo)"
   fi
 
   # TESTE REAL de ponta a ponta: um mini-extract com Ollama num doc de exemplo.
