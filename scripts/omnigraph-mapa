@@ -151,13 +151,22 @@ fi
 rm -f "$LOG"
 
 rodar_cluster
-printf "\n${verde}✓ Mapa pronto:${zero} %s/omnigraph-out/graph.html\n" "$alvo"
-
-# abre o gráfico no navegador
 html="$alvo/omnigraph-out/graph.html"
+
+# grafo grande (>5000 nós): o cluster-only pula o graph.html. Gera então a
+# visão agregada por comunidades, que sempre produz um HTML utilizável.
+if [ ! -f "$html" ]; then
+  printf "\n${roxo}▸${zero} projeto grande: gerando a visão por comunidades…\n"
+  ( cd "$alvo" && "$OG" export html ) >/dev/null 2>&1 || true
+fi
+
 if [ -f "$html" ]; then
+  printf "\n${verde}✓ Mapa pronto:${zero} %s\n" "$html"
   case "$(uname -s)" in
     Darwin) open "$html" >/dev/null 2>&1 || true ;;
     Linux)  xdg-open "$html" >/dev/null 2>&1 || true ;;
   esac
+else
+  printf "\n${amarelo}! Os dados do mapa foram gerados (graph.json e GRAPH_REPORT.md), mas não consegui criar o graph.html.${zero}\n" >&2
+  echo "  Tente, na pasta do projeto:  omnigraph export html" >&2
 fi

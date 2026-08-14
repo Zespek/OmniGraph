@@ -111,5 +111,17 @@ Remove-Item $script:LOG -ErrorAction SilentlyContinue
 RodarCluster
 Write-Progress -Activity "Gerando o mapa" -Completed
 $html = Join-Path $alvo "omnigraph-out\graph.html"
-Write-Host "OK Mapa pronto: $html" -ForegroundColor Green
-if (Test-Path $html) { Start-Process $html }
+
+# grafo grande (>5000 nos): o cluster-only pula o graph.html; gera a visao agregada
+if (-not (Test-Path $html)) {
+  Write-Host "> projeto grande: gerando a visao por comunidades..." -ForegroundColor Magenta
+  Push-Location $alvo; try { & $og export html *> $null } finally { Pop-Location }
+}
+
+if (Test-Path $html) {
+  Write-Host "OK Mapa pronto: $html" -ForegroundColor Green
+  Start-Process $html
+} else {
+  Write-Host "! Os dados do mapa foram gerados, mas nao consegui criar o graph.html." -ForegroundColor Yellow
+  Write-Host "  Tente, na pasta do projeto:  omnigraph export html"
+}
