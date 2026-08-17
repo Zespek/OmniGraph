@@ -39,7 +39,7 @@ zespek@server:~$ ./abrir_o_guia.sh
 
 [Windows]  # sem terminal: duplo-clique e pronto
   - "1. Code -> Download ZIP  e extraia"
-  - "2. Duplo-clique em  ->  Instalar OmniGraph.cmd"
+  - "2. Entre na pasta  windows\  e duplo-clique em  Instalar OmniGraph.cmd"
   - "3. Na janela do OmniGraph, clique em 'Instalar'."
   - ""
   - "Esse arquivo tambem funciona sozinho: se voce salvar so ele,"
@@ -55,7 +55,7 @@ zespek@server:~$ ./abrir_o_guia.sh
 
 > **Baixou o ZIP e o macOS travou com "a Apple não pôde verificar…"?** É a segurança do sistema com scripts baixados, não é erro do instalador. Prefira o comando acima (não usa ZIP). Se insistir no ZIP, no Terminal dentro da pasta: `xattr -dr com.apple.quarantine . && bash "Instalar OmniGraph.command"`
 >
-> **No Windows, `.ps1` é bloqueado por padrão** ("a execução de scripts foi desabilitada neste sistema"). Por isso o ponto de entrada é o **`Instalar OmniGraph.cmd`**, e os comandos (`omnigraph-mapa`, `omnigraph-atualizar`…) são `.cmd` no PATH. Você **não** precisa rodar `Set-ExecutionPolicy` nem ser administrador.
+> **No Windows, `.ps1` é bloqueado por padrão** ("a execução de scripts foi desabilitada neste sistema"). Por isso o ponto de entrada é o **`windows/Instalar OmniGraph.cmd`**, e os comandos (`omnigraph-mapa`, `omnigraph-atualizar`…) são `.cmd` no PATH. Você **não** precisa rodar `Set-ExecutionPolicy` nem ser administrador.
 >
 > **Apareceu "O Windows protegeu o seu computador" (SmartScreen/Defender)?** É o padrão para qualquer arquivo baixado que não seja assinado digitalmente — não é vírus nem erro. Clique em **"Mais informações" → "Executar assim mesmo"**. Se preferir não ver esse aviso, use a linha única abaixo: ela não baixa arquivo nenhum para o disco.
 >
@@ -89,7 +89,7 @@ zespek@server:~$ cat ./funcionalidades.ini
 ```bash
 # Recomendado: duplo-clique no instalador (faz tudo sozinho)
 #   macOS / Linux : "Instalar OmniGraph.command"
-#   Windows       : "Instalar OmniGraph.cmd"   (abre a janela com o botão Instalar)
+#   Windows       : "windows/Instalar OmniGraph.cmd"  (abre a janela com o botão Instalar)
 # Ou, no terminal, a partir deste clone (os extras habilitam a IA local, PDFs, docs):
 uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force && omnigraph install
 

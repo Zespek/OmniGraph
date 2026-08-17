@@ -2,8 +2,8 @@
 #  Instalador do OmniGraph - Windows (PowerShell)
 #
 #  Como usar: de um duplo-clique em "Instalar OmniGraph.cmd" (abre a interface).
-#  Prefere o terminal? Rode:
-#      powershell -ExecutionPolicy Bypass -File "Instalar OmniGraph.ps1"
+#  Prefere o terminal? Rode, da raiz do projeto:
+#      powershell -ExecutionPolicy Bypass -File "windows\Instalar OmniGraph.ps1"
 #
 #  Faz tudo sozinho: instala a ferramenta, verifica atualizacoes, instala a IA
 #  local (Ollama) e baixa o modelo. Pode rodar de novo quando quiser.
@@ -15,7 +15,9 @@ param(
   [switch]$SemIA
 )
 $ErrorActionPreference = "Continue"
-Set-Location $PSScriptRoot
+# este script mora em windows\, mas trabalha na raiz do projeto (é de lá que saem
+# o 'scripts\', o '.git' e o 'pyproject.toml' que o uv instala)
+Set-Location (Split-Path $PSScriptRoot -Parent)
 
 function Titulo($t) { Write-Host "`n> $t" -ForegroundColor Magenta }
 function Ok($t)     { Write-Host "  [ok] $t" -ForegroundColor Green }

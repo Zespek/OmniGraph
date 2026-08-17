@@ -5,16 +5,18 @@ REM
 REM  DE UM DUPLO-CLIQUE NESTE ARQUIVO. So isso.
 REM
 REM  Este arquivo se vira sozinho nos dois casos:
-REM    - esta na pasta do OmniGraph (clone ou ZIP) -> instala dali;
-REM    - esta sozinho (voce baixou so ele)         -> baixa o projeto e instala.
+REM    - esta na pasta windows\ do projeto (clone ou ZIP) -> instala dali;
+REM    - esta sozinho (voce baixou so ele)                -> baixa e instala.
 REM
 REM  E um .cmd de proposito: arquivo .ps1 depende da politica de execucao do
 REM  Windows e trava com "a execucao de scripts foi desabilitada neste sistema".
 REM  O .cmd sempre roda, e chama o PowerShell com Bypass so para esta execucao -
 REM  sem mexer na politica da maquina (nada de Set-ExecutionPolicy global).
 REM =============================================================================
-cd /d "%~dp0"
 title Instalar OmniGraph
+
+REM sobe para a raiz do projeto (este arquivo mora em windows\)
+cd /d "%~dp0.."
 
 if exist "scripts\instalador-gui.ps1" goto :local
 
@@ -42,5 +44,5 @@ if errorlevel 2 (
   echo.
   echo Sem interface grafica neste Windows - seguindo pelo modo texto...
   echo.
-  powershell -NoProfile -ExecutionPolicy Bypass -File "Instalar OmniGraph.ps1"
+  powershell -NoProfile -ExecutionPolicy Bypass -File "windows\Instalar OmniGraph.ps1"
 )

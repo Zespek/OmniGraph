@@ -39,4 +39,4 @@ if ($env:OMNIGRAPH_GUI -eq "1" -and (Test-Path "scripts\instalador-gui.ps1")) {
   powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\instalador-gui.ps1"
   if ($LASTEXITCODE -ne 2) { exit $LASTEXITCODE }   # 2 = Windows sem interface grafica
 }
-powershell -NoProfile -ExecutionPolicy Bypass -File "Instalar OmniGraph.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "windows\Instalar OmniGraph.ps1"

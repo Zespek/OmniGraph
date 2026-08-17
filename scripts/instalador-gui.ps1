@@ -19,7 +19,7 @@ try {
 }
 
 $raiz = Split-Path $PSScriptRoot -Parent
-$instalador = Join-Path $raiz "Instalar OmniGraph.ps1"
+$instalador = Join-Path $raiz "windows\Instalar OmniGraph.ps1"
 if (-not (Test-Path $instalador)) {
   [System.Windows.Forms.MessageBox]::Show(
     "Nao encontrei o 'Instalar OmniGraph.ps1' em:`n$raiz`n`nUse a pasta completa do OmniGraph.",
