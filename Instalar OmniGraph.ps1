@@ -202,6 +202,26 @@ if (Test-Path "$bin\omnigraph.exe") {
 if ($okInstalou) { Ok "OK! o comando 'omnigraph' respondeu" }
 else { Aviso "o comando 'omnigraph' ainda nao respondeu (veja os erros acima)" }
 
+# Confere o que o PowerShell REALMENTE vai chamar. Se sobrar um .ps1 solto em
+# alguma pasta do PATH, ele sequestra o comando e o usuario leva o erro de
+# politica de execucao mesmo com a instalacao "concluida" - foi assim que o
+# problema passou batido antes.
+$sequestrado = @()
+foreach ($nome in $comandos.Keys) {
+  $achado = (Get-Command $nome -ErrorAction SilentlyContinue | Select-Object -First 1)
+  if ($achado -and $achado.Source -like "*.ps1") { $sequestrado += $achado.Source }
+}
+if ($sequestrado) {
+  Aviso "sobrou um .ps1 antigo no PATH - ele bloqueia os comandos:"
+  $sequestrado | ForEach-Object { Write-Host "      $_" }
+  $sequestrado | ForEach-Object { Remove-Item $_ -Force -ErrorAction SilentlyContinue }
+  $aindaLa = $sequestrado | Where-Object { Test-Path $_ }
+  if ($aindaLa) {
+    Aviso "nao consegui apagar. Apague esses arquivos a mao e rode o instalador de novo."
+    $okInstalou = $false
+  } else { Ok "arquivos antigos removidos - os comandos estao livres" }
+} else { Ok "comandos apontando para os atalhos .cmd (nao dependem da politica do Windows)" }
+
 Write-Host "`n================================================"
 if ($okInstalou) { Ok "Tudo pronto!" } else { Aviso "Instalacao incompleta - leia as mensagens acima." }
 Write-Host ""
