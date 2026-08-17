@@ -133,14 +133,17 @@
 
   <!-- WINDOWS: INSTALADOR COM INTERFACE -->
   <div class="destaque">
-    <h3>🪟 No Windows dá para instalar sem digitar nada</h3>
-    <p>Dê um <strong>duplo-clique</strong> em <span class="arq">Instalar OmniGraph.cmd</span> (está na pasta do OmniGraph, tanto no ZIP quanto no clone). Abre uma janela que faz tudo sozinha e mostra o progresso.</p>
-    <p style="margin-top:10px">Nela você ainda pode: <strong>desmarcar a IA local</strong>, se não quiser baixar alguns GB agora (o mapa continua saindo, direto do código); e, no fim, clicar em <strong>"Usar no meu projeto (IDE)"</strong> para escolher a pasta do seu projeto e já deixá-lo pronto para o assistente da sua IDE.</p>
+    <h3>🪟 No Windows: um duplo-clique, sem digitar nada</h3>
+    <p>Um arquivo só: <span class="arq">Instalar OmniGraph.cmd</span>. Dê um <strong>duplo-clique</strong> nele e clique em <strong>Instalar</strong> na janela que abrir. Ele mostra o progresso e faz o resto sozinho.</p>
+    <p style="margin-top:10px">Funciona nos dois casos: dentro da pasta do OmniGraph (ZIP ou clone), <strong>ou sozinho</strong> — se você salvar só esse arquivo, ele baixa o projeto e instala igual.</p>
+    <p style="margin-top:10px">Na janela você ainda pode: <strong>desmarcar a IA local</strong>, se não quiser baixar alguns GB agora (o mapa continua saindo, direto do código); e, no fim, clicar em <strong>"Usar no meu projeto (IDE)"</strong> para escolher a pasta do seu projeto e já deixá-lo pronto para o assistente da sua IDE.</p>
     <p style="margin-top:10px"><strong>Não precisa de administrador</strong> e <strong>não precisa mexer em política de execução</strong> do Windows.</p>
     <span class="tag">duplo-clique · sem terminal · sem admin</span>
   </div>
 
-  <div class="nota"><b>Deu "a execução de scripts foi desabilitada neste sistema"?</b> É o Windows bloqueando arquivos <code style="color:var(--roxo-cl);font-family:var(--mono)">.ps1</code>, e acontece em quem instalou uma <b>versão antiga</b> do OmniGraph. O <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-atualizar</code> não consegue se consertar sozinho (ele mesmo está bloqueado). Cole no PowerShell a <b>linha única de instalação</b> lá de cima <b>uma vez</b>: ela não é um arquivo, então passa por qualquer política e reinstala os comandos já corrigidos. Depois disso, <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-atualizar</code> volta a funcionar normalmente.</div>
+  <div class="nota"><b>Apareceu "O Windows protegeu o seu computador"?</b> É o SmartScreen, e ele mostra isso para <b>qualquer</b> arquivo baixado que não tenha assinatura digital paga — não é vírus nem erro. Clique em <b>"Mais informações"</b> e depois em <b>"Executar assim mesmo"</b>. Não gostou? Então use a <b>linha única</b> lá de cima: ela não baixa arquivo nenhum, então não passa pelo SmartScreen.</div>
+
+  <div class="nota"><b>Deu "a execução de scripts foi desabilitada neste sistema"?</b> É o Windows bloqueando arquivos <code style="color:var(--roxo-cl);font-family:var(--mono)">.ps1</code>, e acontece em quem instalou uma <b>versão antiga</b> do OmniGraph. O <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-atualizar</code> não consegue se consertar sozinho (ele mesmo está bloqueado). Cole no PowerShell a <b>linha única de instalação</b> lá de cima <b>uma vez</b>: ela não é um arquivo, então passa por qualquer política e reinstala os comandos já corrigidos. A partir da versão nova, o instalador <b>detecta e apaga</b> sozinho qualquer <code style="color:var(--roxo-cl);font-family:var(--mono)">.ps1</code> antigo que esteja sequestrando os comandos.</div>
 
   <div class="passo">
     <div class="bola">2</div>
