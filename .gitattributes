@@ -4,3 +4,7 @@
 worked/**/*.html linguist-vendored=true
 omnigraph-out/**/*.html linguist-vendored=true
 *.html linguist-detectable=false
+
+# Batch depende de CRLF: com LF o cmd.exe corta a ultima linha e quebra labels.
+# Sem isto, um clone no Linux/macOS geraria .cmd que falham ao voltar no Windows.
+*.cmd text eol=crlf

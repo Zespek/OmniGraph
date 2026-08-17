@@ -1,13 +1,19 @@
 # =============================================================================
 #  Instalador do OmniGraph - Windows (PowerShell)
 #
-#  Como usar: clique com o botao direito neste arquivo > "Executar com PowerShell".
-#  Se o Windows bloquear scripts, abra o PowerShell e rode:
+#  Como usar: de um duplo-clique em "Instalar OmniGraph.cmd" (abre a interface).
+#  Prefere o terminal? Rode:
 #      powershell -ExecutionPolicy Bypass -File "Instalar OmniGraph.ps1"
 #
 #  Faz tudo sozinho: instala a ferramenta, verifica atualizacoes, instala a IA
 #  local (Ollama) e baixa o modelo. Pode rodar de novo quando quiser.
 # =============================================================================
+param(
+  # sem perguntas e sem pausa no final (usado pela interface grafica)
+  [switch]$Auto,
+  # pula o Ollama e os modelos (instalacao leve, sem baixar GBs)
+  [switch]$SemIA
+)
 $ErrorActionPreference = "Continue"
 Set-Location $PSScriptRoot
 
@@ -36,7 +42,7 @@ if ((Get-Command git -ErrorAction SilentlyContinue) -and (Test-Path .git)) {
     Ok "ja esta na ultima versao"
   } else {
     Aviso "atualizacao disponivel"
-    $r = Read-Host "  Atualizar agora? [S/n]"
+    $r = if ($Auto) { "s" } else { Read-Host "  Atualizar agora? [S/n]" }
     # reset --hard resiste a historico reescrito (force-push) sem quebrar
     if ($r -ne "n" -and $r -ne "N") { git reset --hard origin/main --quiet; Ok "atualizado para a ultima versao" }
   }
@@ -59,99 +65,108 @@ if (Test-Path "$bin\omnigraph.exe") {
   ($instLog -split "`n" | Select-Object -Last 12) | ForEach-Object { Write-Host "      $_" }
   Aviso "Copie essas linhas e mande para o suporte."
 }
-# comandos amigaveis: barra de progresso e perguntar em portugues
-if (Test-Path "scripts\omnigraph-mapa.ps1") {
-  Copy-Item "scripts\omnigraph-mapa.ps1" "$bin\omnigraph-mapa.ps1" -Force -ErrorAction SilentlyContinue
-  Copy-Item "scripts\omnigraph-mapa.cmd" "$bin\omnigraph-mapa.cmd" -Force -ErrorAction SilentlyContinue
-  if (Test-Path "$bin\omnigraph-mapa.cmd") { Ok "comando 'omnigraph-mapa' instalado (gera o mapa mostrando o progresso)" }
+# comandos amigaveis: o .cmd (atalho) vai para o PATH e o .ps1 (o codigo de
+# verdade) fica FORA dele, em %LOCALAPPDATA%\OmniGraph\lib. Se o .ps1 ficasse no
+# PATH, o PowerShell chamaria ele direto e o Windows barraria com "a execucao de
+# scripts foi desabilitada neste sistema"; pelo .cmd, o Bypass ja vem junto.
+$lib = "$env:LOCALAPPDATA\OmniGraph\lib"
+New-Item -ItemType Directory -Force -Path $lib | Out-Null
+
+# limpa os .ps1 que versoes antigas deixaram no PATH (a causa do erro acima)
+Get-ChildItem $bin -Filter "omnigraph-*.ps1" -ErrorAction SilentlyContinue |
+  ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+Remove-Item "$bin\omnigraph-rag.py" -Force -ErrorAction SilentlyContinue
+
+$comandos = @{
+  "omnigraph-mapa"       = "gera o mapa mostrando o progresso"
+  "omnigraph-perguntar"  = "pergunte como algo funciona"
+  "omnigraph-atualizar"  = "atualiza tudo rapido"
+  "omnigraph-ide"        = "usa na IDE gastando menos tokens"
 }
-if (Test-Path "scripts\omnigraph-perguntar.ps1") {
-  Copy-Item "scripts\omnigraph-perguntar.ps1" "$bin\omnigraph-perguntar.ps1" -Force -ErrorAction SilentlyContinue
-  Copy-Item "scripts\omnigraph-perguntar.cmd" "$bin\omnigraph-perguntar.cmd" -Force -ErrorAction SilentlyContinue
-  if (Test-Path "$bin\omnigraph-perguntar.cmd") { Ok "comando 'omnigraph-perguntar' instalado (pergunte como algo funciona)" }
-}
-if (Test-Path "scripts\omnigraph-atualizar.ps1") {
-  Copy-Item "scripts\omnigraph-atualizar.ps1" "$bin\omnigraph-atualizar.ps1" -Force -ErrorAction SilentlyContinue
-  Copy-Item "scripts\omnigraph-atualizar.cmd" "$bin\omnigraph-atualizar.cmd" -Force -ErrorAction SilentlyContinue
-  if (Test-Path "$bin\omnigraph-atualizar.cmd") { Ok "comando 'omnigraph-atualizar' instalado (atualiza tudo rapido)" }
-}
-if (Test-Path "scripts\omnigraph-ide.ps1") {
-  Copy-Item "scripts\omnigraph-ide.ps1" "$bin\omnigraph-ide.ps1" -Force -ErrorAction SilentlyContinue
-  Copy-Item "scripts\omnigraph-ide.cmd" "$bin\omnigraph-ide.cmd" -Force -ErrorAction SilentlyContinue
-  if (Test-Path "$bin\omnigraph-ide.cmd") { Ok "comando 'omnigraph-ide' instalado (usa na IDE gastando menos tokens)" }
+foreach ($nome in $comandos.Keys) {
+  if (-not (Test-Path "scripts\$nome.ps1")) { continue }
+  Copy-Item "scripts\$nome.ps1" "$lib\$nome.ps1" -Force -ErrorAction SilentlyContinue
+  Copy-Item "scripts\$nome.cmd" "$bin\$nome.cmd" -Force -ErrorAction SilentlyContinue
+  if (Test-Path "$bin\$nome.cmd") { Ok "comando '$nome' instalado ($($comandos[$nome]))" }
 }
 # motor de busca semantica (usado pelo omnigraph-perguntar)
-if (Test-Path "scripts\omnigraph-rag.py") { Copy-Item "scripts\omnigraph-rag.py" "$bin\omnigraph-rag.py" -Force -ErrorAction SilentlyContinue }
+if (Test-Path "scripts\omnigraph-rag.py") { Copy-Item "scripts\omnigraph-rag.py" "$lib\omnigraph-rag.py" -Force -ErrorAction SilentlyContinue }
 
 # 4) IA local (Ollama) - sem gastar tokens de API -----------------------------
-Titulo "Configurando a IA local (Ollama)"
-if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-  if (Get-Command winget -ErrorAction SilentlyContinue) {
-    Aviso "instalando o Ollama via winget..."
-    winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements
-  } else {
-    # sem winget: baixa e roda o instalador oficial em silencio (automatico)
-    Aviso "baixando e instalando o Ollama automaticamente..."
-    try {
-      $exe = Join-Path $env:TEMP "OllamaSetup.exe"
-      Invoke-WebRequest "https://ollama.com/download/OllamaSetup.exe" -OutFile $exe -UseBasicParsing
-      Start-Process $exe -ArgumentList "/VERYSILENT","/NORESTART" -Wait
-    } catch {
-      Aviso "nao consegui instalar automaticamente; abrindo a pagina de download..."
-      Start-Process "https://ollama.com/download"
-    }
-  }
-  $env:Path = "$env:LOCALAPPDATA\Programs\Ollama;$env:Path"
-}
 $iaOk = $false
-if (Get-Command ollama -ErrorAction SilentlyContinue) {
-  Ok "Ollama instalado"
-  # garante o servidor no ar (o app do Ollama no Windows ja sobe sozinho no login)
-  try { Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 2 | Out-Null }
-  catch { Aviso "iniciando o Ollama..."; Start-Process ollama -ArgumentList "serve" -WindowStyle Hidden }
-  for ($i=0; $i -lt 20; $i++) {
-    try { Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 1 }
+if ($SemIA) {
+  Titulo "IA local"
+  Aviso "pulando o Ollama e os modelos (voce escolheu a instalacao leve)"
+  Aviso "o mapa sai direto do codigo; para ativar a IA depois, rode o instalador de novo"
+} else {
+  Titulo "Configurando a IA local (Ollama)"
+  if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+      Aviso "instalando o Ollama via winget..."
+      winget install --id Ollama.Ollama -e --accept-source-agreements --accept-package-agreements
+    } else {
+      # sem winget: baixa e roda o instalador oficial em silencio (automatico)
+      Aviso "baixando e instalando o Ollama automaticamente..."
+      try {
+        $exe = Join-Path $env:TEMP "OllamaSetup.exe"
+        Invoke-WebRequest "https://ollama.com/download/OllamaSetup.exe" -OutFile $exe -UseBasicParsing
+        Start-Process $exe -ArgumentList "/VERYSILENT","/NORESTART" -Wait
+      } catch {
+        Aviso "nao consegui instalar automaticamente; abrindo a pagina de download..."
+        Start-Process "https://ollama.com/download"
+      }
+    }
+    $env:Path = "$env:LOCALAPPDATA\Programs\Ollama;$env:Path"
   }
-  # escolhe o modelo pela RAM da maquina: o mais forte que ela aguenta
-  $ramGb = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
-  if     ($ramGb -ge 30) { $modelo = "qwen2.5-coder:32b"; $tam = "~20GB" }
-  elseif ($ramGb -ge 15) { $modelo = "qwen2.5-coder:14b"; $tam = "~9GB" }
-  elseif ($ramGb -ge 7)  { $modelo = "qwen2.5-coder:7b";  $tam = "~4.7GB" }
-  else                   { $modelo = "qwen2.5-coder:3b";  $tam = "~2GB" }
-  Ok "RAM detectada: ${ramGb}GB  ->  modelo $modelo (o mais forte para esta maquina)"
+  if (Get-Command ollama -ErrorAction SilentlyContinue) {
+    Ok "Ollama instalado"
+    # garante o servidor no ar (o app do Ollama no Windows ja sobe sozinho no login)
+    try { Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 2 | Out-Null }
+    catch { Aviso "iniciando o Ollama..."; Start-Process ollama -ArgumentList "serve" -WindowStyle Hidden }
+    for ($i=0; $i -lt 20; $i++) {
+      try { Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep 1 }
+    }
+    # escolhe o modelo pela RAM da maquina: o mais forte que ela aguenta
+    $ramGb = [math]::Floor((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
+    if     ($ramGb -ge 30) { $modelo = "qwen2.5-coder:32b"; $tam = "~20GB" }
+    elseif ($ramGb -ge 15) { $modelo = "qwen2.5-coder:14b"; $tam = "~9GB" }
+    elseif ($ramGb -ge 7)  { $modelo = "qwen2.5-coder:7b";  $tam = "~4.7GB" }
+    else                   { $modelo = "qwen2.5-coder:3b";  $tam = "~2GB" }
+    Ok "RAM detectada: ${ramGb}GB  ->  modelo $modelo (o mais forte para esta maquina)"
 
-  $tem = $false
-  try { $tags = Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 3
-        if ($tags.models.name -match [regex]::Escape($modelo)) { $tem = $true } } catch {}
-  if ($tem) { Ok "modelo $modelo ja baixado" }
-  else {
-    Aviso "baixando o modelo $modelo ($tam - pode demorar)..."
-    ollama pull $modelo
-    if ($LASTEXITCODE -eq 0) { Ok "modelo pronto" } else { Aviso "falha ao baixar o modelo" }
+    $tem = $false
+    try { $tags = Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 3
+          if ($tags.models.name -match [regex]::Escape($modelo)) { $tem = $true } } catch {}
+    if ($tem) { Ok "modelo $modelo ja baixado" }
+    else {
+      Aviso "baixando o modelo $modelo ($tam - pode demorar)..."
+      ollama pull $modelo
+      if ($LASTEXITCODE -eq 0) { Ok "modelo pronto" } else { Aviso "falha ao baixar o modelo" }
+    }
+    # modelo de EMBEDDINGS: busca semantica do omnigraph-perguntar (casa portugues com codigo em ingles)
+    $temEmb = $false
+    try { $tags = Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 3
+          if ($tags.models.name -match "bge-m3") { $temEmb = $true } } catch {}
+    if ($temEmb) { Ok "busca semantica (bge-m3) ja baixada" }
+    else {
+      Aviso "baixando o modelo de busca semantica bge-m3 (~1.2GB)..."
+      ollama pull bge-m3
+      if ($LASTEXITCODE -eq 0) { Ok "busca semantica pronta" } else { Aviso "falha no bge-m3 (perguntar usara a busca do grafo)" }
+    }
+    # TESTE REAL de ponta a ponta: mini-extract com Ollama (passa pelo pacote 'openai').
+    Aviso "testando a IA local de verdade (pode levar ~30s na 1a vez)..."
+    $env:OLLAMA_HOST = "localhost:11434"; $env:OLLAMA_API_KEY = "ollama"; $env:OLLAMA_MODEL = $modelo
+    $smoke = Join-Path $env:TEMP ("omnigraph_smoke_" + $PID)
+    New-Item -ItemType Directory -Force -Path $smoke | Out-Null
+    "# Modulo de Pagamento`n`nEste modulo processa pagamentos e conversa com o Banco de Dados." | Set-Content -Encoding UTF8 (Join-Path $smoke "exemplo.md")
+    & "$bin\omnigraph.exe" extract $smoke --backend ollama *> $null
+    if ($LASTEXITCODE -eq 0) { Ok "IA local respondeu - pronta para uso"; $iaOk = $true }
+    else {
+      Aviso "a IA local NAO respondeu ao teste (o mapa ainda funciona sem ela)."
+      Aviso "Use o modo sem IA:  omnigraph extract . --code-only"
+    }
+    Remove-Item -Recurse -Force $smoke -ErrorAction SilentlyContinue
   }
-  # modelo de EMBEDDINGS: busca semantica do omnigraph-perguntar (casa portugues com codigo em ingles)
-  $temEmb = $false
-  try { $tags = Invoke-RestMethod "http://localhost:11434/api/tags" -TimeoutSec 3
-        if ($tags.models.name -match "bge-m3") { $temEmb = $true } } catch {}
-  if ($temEmb) { Ok "busca semantica (bge-m3) ja baixada" }
-  else {
-    Aviso "baixando o modelo de busca semantica bge-m3 (~1.2GB)..."
-    ollama pull bge-m3
-    if ($LASTEXITCODE -eq 0) { Ok "busca semantica pronta" } else { Aviso "falha no bge-m3 (perguntar usara a busca do grafo)" }
-  }
-  # TESTE REAL de ponta a ponta: mini-extract com Ollama (passa pelo pacote 'openai').
-  Aviso "testando a IA local de verdade (pode levar ~30s na 1a vez)..."
-  $env:OLLAMA_HOST = "localhost:11434"; $env:OLLAMA_API_KEY = "ollama"; $env:OLLAMA_MODEL = $modelo
-  $smoke = Join-Path $env:TEMP ("omnigraph_smoke_" + $PID)
-  New-Item -ItemType Directory -Force -Path $smoke | Out-Null
-  "# Modulo de Pagamento`n`nEste modulo processa pagamentos e conversa com o Banco de Dados." | Set-Content -Encoding UTF8 (Join-Path $smoke "exemplo.md")
-  & "$bin\omnigraph.exe" extract $smoke --backend ollama *> $null
-  if ($LASTEXITCODE -eq 0) { Ok "IA local respondeu - pronta para uso"; $iaOk = $true }
-  else {
-    Aviso "a IA local NAO respondeu ao teste (o mapa ainda funciona sem ela)."
-    Aviso "Use o modo sem IA:  omnigraph extract . --code-only"
-  }
-  Remove-Item -Recurse -Force $smoke -ErrorAction SilentlyContinue
 }
 
 # 5) PATH + IA local no ambiente do usuario -----------------------------------
@@ -169,6 +184,10 @@ if ($iaOk) {
   setx OLLAMA_API_KEY "ollama" | Out-Null
   if ($modelo) { setx OLLAMA_MODEL $modelo | Out-Null }
   Ok "IA local definida como padrao"
+} elseif ($SemIA) {
+  # instalacao leve: nao mexe no que ja estava configurado (quem ja tinha a IA
+  # rodando nao pode perde-la so por desmarcar a caixinha)
+  Ok "IA local nao alterada (instalacao leve)"
 } else {
   [Environment]::SetEnvironmentVariable("OLLAMA_HOST", $null, "User")
   Ok "IA local nao ativada (o mapa vai funcionar so com o codigo)"
@@ -195,7 +214,7 @@ Write-Host "  Depois, entre no SEU projeto e use estes comandos:"
 Write-Host "      cd C:\caminho\do\seu\projeto"
 Write-Host "      omnigraph-mapa                                 # gera o mapa (com % de progresso)"
 Write-Host '      omnigraph-perguntar "como funciona o login?"   # pergunta em portugues'
-if (-not $iaOk) {
+if (-not $iaOk -and -not $SemIA) {
   Write-Host ""
   Write-Host "  Obs.: a IA local nao ficou ativa - o 'omnigraph-mapa' gera o mapa direto do"
   Write-Host "  codigo automaticamente (sem erro). Para ativar a IA depois, instale o Ollama"
@@ -205,4 +224,6 @@ Write-Host "  O 'omnigraph-mapa' mostra a barra e abre o grafico (omnigraph-out\
 Write-Host ""
 Write-Host "  Instrucoes completas: abra 'guia de utilizacao\index.html'"
 Write-Host "================================================`n"
-Read-Host "Pressione Enter para fechar"
+# no modo -Auto quem mostra o resultado e a interface grafica; pausar travaria ela
+if (-not $Auto) { Read-Host "Pressione Enter para fechar" }
+if (-not $okInstalou) { exit 1 }

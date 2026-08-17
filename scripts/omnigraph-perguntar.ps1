@@ -43,14 +43,20 @@ $host2 = if ($env:OLLAMA_HOST) { $env:OLLAMA_HOST } else { "localhost:11434" }
 
 # 1) contexto: busca SEMANTICA no codigo (embeddings) - casa portugues com codigo
 #    em ingles. Reserva: busca do grafo por palavra-chave.
-$rag = Join-Path (Split-Path $og) "omnigraph-rag.py"
+# procura na pasta instalada ($lib), depois ao lado do omnigraph.exe (instalacoes
+# antigas) e por fim ao lado deste script (quando rodado direto do clone)
+$rag = @(
+  (Join-Path "$env:LOCALAPPDATA\OmniGraph\lib" "omnigraph-rag.py"),
+  (Join-Path (Split-Path $og) "omnigraph-rag.py"),
+  (Join-Path $PSScriptRoot "omnigraph-rag.py")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
 $py = (Get-Command python -ErrorAction SilentlyContinue).Source
 if (-not $py) { $py = (Get-Command python3 -ErrorAction SilentlyContinue).Source }
 $embModel = if ($env:OMNIGRAPH_EMBED_MODEL) { $env:OMNIGRAPH_EMBED_MODEL } else { "bge-m3" }
 $temEmb = $false
 try { $t = Invoke-RestMethod "http://$host2/api/tags" -TimeoutSec 3; if ($t.models.name -match [regex]::Escape(($embModel -split ':')[0])) { $temEmb = $true } } catch {}
 $usouRag = $false; $ctx = ""
-if ((Test-Path $rag) -and $py -and $temEmb) {
+if ($rag -and $py -and $temEmb) {
   & $py $rag fresh $alvo *> $null
   if ($LASTEXITCODE -ne 0) {
     Write-Host "> indexando o codigo para busca semantica (1a vez / apos mudancas)..." -ForegroundColor Magenta

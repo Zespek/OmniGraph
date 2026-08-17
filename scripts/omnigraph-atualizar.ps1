@@ -17,13 +17,24 @@ git -C $dir reset --hard origin/main --quiet
 Write-Host "  [ok] ultima versao baixada" -ForegroundColor Green
 
 $bin = (uv tool dir --bin 2>$null); if (-not $bin) { $bin = "$env:USERPROFILE\.local\bin" }
+$lib = "$env:LOCALAPPDATA\OmniGraph\lib"
+New-Item -ItemType Directory -Force -Path $lib | Out-Null
 Push-Location $dir
 try { uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force *> $null } finally { Pop-Location }
 Write-Host "  [ok] ferramenta atualizada" -ForegroundColor Green
 
-# copia TODOS os comandos (scripts\omnigraph-*.ps1 e .cmd); comando novo nunca fica de fora
+# .ps1 no PATH faz o PowerShell chamar ELE em vez do atalho .cmd, e ai o Windows
+# barra por politica de execucao. Entao: .cmd no PATH, .ps1 fora dele (em $lib).
+Get-ChildItem $bin -Filter "omnigraph-*.ps1" -ErrorAction SilentlyContinue |
+  ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+Remove-Item "$bin\omnigraph-rag.py" -Force -ErrorAction SilentlyContinue
+
+# copia TODOS os comandos (scripts\omnigraph-*); comando novo nunca fica de fora
 Get-ChildItem (Join-Path $dir "scripts") -Filter "omnigraph-*" -ErrorAction SilentlyContinue |
   Where-Object { $_.Extension -in ".ps1",".cmd",".py" } |
-  ForEach-Object { Copy-Item $_.FullName (Join-Path $bin $_.Name) -Force -ErrorAction SilentlyContinue }
+  ForEach-Object {
+    $destino = if ($_.Extension -eq ".cmd") { $bin } else { $lib }
+    Copy-Item $_.FullName (Join-Path $destino $_.Name) -Force -ErrorAction SilentlyContinue
+  }
 Write-Host "  [ok] comandos atualizados" -ForegroundColor Green
 Write-Host "> Pronto! Use: omnigraph-mapa  /  omnigraph-perguntar `"...`"" -ForegroundColor Green
