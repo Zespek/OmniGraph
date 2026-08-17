@@ -14,7 +14,15 @@ $dir = if ($env:OMNIGRAPH_DIR) { $env:OMNIGRAPH_DIR } else { "$env:USERPROFILE\O
 Write-Host "OmniGraph  ->  instalando em: $dir"
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-  Write-Host "git nao encontrado. Instale o Git for Windows (https://git-scm.com/download/win) e tente de novo."
+  # tenta resolver sozinho: exigir que a pessoa instale o git a mao trava aqui
+  if (Get-Command winget -ErrorAction SilentlyContinue) {
+    Write-Host "git nao encontrado - instalando pelo winget..."
+    winget install --id Git.Git -e --source winget --accept-source-agreements --accept-package-agreements
+    $env:Path = "$env:ProgramFiles\Git\cmd;$env:Path"
+  }
+}
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+  Write-Host "Instale o Git for Windows (https://git-scm.com/download/win), abra um PowerShell NOVO e rode de novo."
   exit 1
 }
 
@@ -25,4 +33,4 @@ if (Test-Path "$dir\.git") {
 } else { git clone $repo $dir }
 
 Set-Location $dir
-powershell -ExecutionPolicy Bypass -File "Instalar OmniGraph.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "Instalar OmniGraph.ps1"
