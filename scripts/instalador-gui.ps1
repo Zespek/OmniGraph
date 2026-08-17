@@ -84,9 +84,10 @@ function Novo-Logo([int]$px) {
 }
 
 # --------------------------------------------------------------------- janela --
+$L = 660   # largura util; a altura sai do tamanho real que a arte ocupar
+
 $janela = New-Object System.Windows.Forms.Form
 $janela.Text = "OmniGraph - instalacao"
-$janela.ClientSize = New-Object System.Drawing.Size(660, 580)
 $janela.FormBorderStyle = 'FixedDialog'
 $janela.MaximizeBox = $false
 $janela.StartPosition = 'CenterScreen'
@@ -95,17 +96,65 @@ $janela.ForeColor = $corTexto
 $janela.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 try { $janela.Icon = [System.Drawing.Icon]::FromHandle((Novo-Logo 64).GetHicon()) } catch {}
 
-# cabecalho: logo + nome + subtitulo
+# cabecalho: a caveira roxa (a mesma arte do 'omnigraph install' e do instalador
+# de terminal), o logo do grafo e o nome. Toda a arte e ASCII puro de proposito:
+# o PowerShell 5.1 le .ps1 como ANSI e mastigaria caracteres especiais.
 $cabecalho = New-Object System.Windows.Forms.Panel
 $cabecalho.Location = New-Object System.Drawing.Point(0, 0)
-$cabecalho.Size = New-Object System.Drawing.Size(660, 104)
 $cabecalho.BackColor = $corCartao
 $janela.Controls.Add($cabecalho)
 
+# here-string de aspas SIMPLES: a caveira e cheia de crases, e entre aspas duplas
+# o PowerShell as trataria como escape e comeria pedacos do desenho
+$caveira = @'
+        .                                                      .
+      .n                   .                 .                  n.
+.   .dP                  dP                   9b                 9b.    .
+4    qXb         .       dX                     Xb       .        dXp     t
+dX.    9Xb      .dXb    __                         __    dXb.     dXP     .Xb
+9XXb._       _.dXXXXb dXXXXbo.                 .odXXXXb dXXXXb._       _.dXXP
+9XXXXXXXXXXXXXXXXXXXVXXXXXXXXOo.           .oOXXXXXXXXVXXXXXXXXXXXXXXXXXXXP
+ `9XXXXXXXXXXXXXXXXXXXXX'~   ~`OOO8b   d8OOO'~   ~`XXXXXXXXXXXXXXXXXXXXXP'
+   `9XXXXXXXXXXXP' `9XX'   DIE    `98v8P'  HUMAN   `XXP' `9XXXXXXXXXXXP'
+       ~~~~~~~       9X.          .db|db.          .XP       ~~~~~~~
+                       )b.  .dbo.dP'`v'`9b.odb.  .dX(
+                     ,dXXXXXXXXXXXb     dXXXXXXXXXXXb.
+                    dXXXXXXXXXXXP'   .   `9XXXXXXXXXXXb
+                   dXXXXXXXXXXXXb   d|b   dXXXXXXXXXXXXb
+                   9XXb'   `XXXXXb.dX|Xb.dXXXXX'   `dXXP
+                    `'      9XXXXXX(   )XXXXXXP      `'
+                             XXXX X.`v'.X XXXX
+                             XP^X'`b   d'`X^XX
+                             X. 9  `   '  P )X
+                             `b  `       '  d'
+                              `             '
+'@
+
+# sem uma fonte monoespacada a arte ASCII desmonta; Courier New existe em
+# qualquer Windows e serve de reserva
+$fonteArte = "Courier New"
+foreach ($f in @("Consolas", "Lucida Console")) {
+  # FontFamily lanca excecao quando a fonte nao existe, e aqui o preference e Stop
+  try { $familia = New-Object System.Drawing.FontFamily($f); $fonteArte = $familia.Name; break } catch {}
+}
+
+$arte = New-Object System.Windows.Forms.Label
+$arte.Text = $caveira
+$arte.Font = New-Object System.Drawing.Font($fonteArte, 7)
+$arte.ForeColor = $corRoxo
+$arte.BackColor = [System.Drawing.Color]::Transparent
+$arte.AutoSize = $true
+$cabecalho.Controls.Add($arte)
+$arte.Location = New-Object System.Drawing.Point([int](($L - $arte.Width) / 2), 10)
+
+# a partir daqui tudo se posiciona abaixo da arte: se a fonte render diferente
+# em outra maquina, o layout acompanha em vez de sobrepor
+$y = $arte.Bottom + 12
+
 $logo = New-Object System.Windows.Forms.PictureBox
-$logo.Image = Novo-Logo 64
-$logo.Size = New-Object System.Drawing.Size(64, 64)
-$logo.Location = New-Object System.Drawing.Point(26, 20)
+$logo.Image = Novo-Logo 56
+$logo.Size = New-Object System.Drawing.Size(56, 56)
+$logo.Location = New-Object System.Drawing.Point(26, $y)
 $logo.BackColor = [System.Drawing.Color]::Transparent
 $cabecalho.Controls.Add($logo)
 
@@ -114,21 +163,25 @@ $titulo.Text = "OmniGraph"
 $titulo.Font = New-Object System.Drawing.Font("Segoe UI", 22, [System.Drawing.FontStyle]::Bold)
 $titulo.ForeColor = $corRoxo
 $titulo.AutoSize = $true
-$titulo.Location = New-Object System.Drawing.Point(102, 22)
+$titulo.Location = New-Object System.Drawing.Point(96, $y)
 $cabecalho.Controls.Add($titulo)
 
 $subtitulo = New-Object System.Windows.Forms.Label
 $subtitulo.Text = "O mapa do seu projeto. Roda no seu computador, sem gastar tokens de API."
 $subtitulo.ForeColor = $corDim
 $subtitulo.AutoSize = $true
-$subtitulo.Location = New-Object System.Drawing.Point(106, 64)
+$subtitulo.Location = New-Object System.Drawing.Point(100, ($y + 42))
 $cabecalho.Controls.Add($subtitulo)
 
+$cabecalho.Size = New-Object System.Drawing.Size($L, ($y + 70))
+
 $risco = New-Object System.Windows.Forms.Panel
-$risco.Location = New-Object System.Drawing.Point(0, 104)
-$risco.Size = New-Object System.Drawing.Size(660, 2)
-$risco.BackColor = $corRoxo
+$risco.Location = New-Object System.Drawing.Point(0, $cabecalho.Bottom)
+$risco.Size = New-Object System.Drawing.Size($L, 2)
 $janela.Controls.Add($risco)
+$risco.BackColor = $corRoxo
+
+$y = $risco.Bottom + 18
 
 # opcao: instalacao leve (sem baixar GBs de modelo)
 $opcaoIA = New-Object System.Windows.Forms.CheckBox
@@ -136,7 +189,7 @@ $opcaoIA.Text = "Instalar a IA local (responde perguntas em portugues; baixa alg
 $opcaoIA.Checked = $true
 $opcaoIA.ForeColor = $corTexto
 $opcaoIA.AutoSize = $true
-$opcaoIA.Location = New-Object System.Drawing.Point(26, 124)
+$opcaoIA.Location = New-Object System.Drawing.Point(26, $y)
 $janela.Controls.Add($opcaoIA)
 
 # situacao + barra de progresso desenhada a mao (a nativa nao aceita a cor roxa)
@@ -144,13 +197,13 @@ $situacao = New-Object System.Windows.Forms.Label
 $situacao.Text = "Pronto para instalar."
 $situacao.ForeColor = $corDim
 $situacao.AutoSize = $false
-$situacao.Size = New-Object System.Drawing.Size(608, 20)
-$situacao.Location = New-Object System.Drawing.Point(26, 156)
+$situacao.Size = New-Object System.Drawing.Size(($L - 52), 20)
+$situacao.Location = New-Object System.Drawing.Point(26, ($y + 32))
 $janela.Controls.Add($situacao)
 
 $trilho = New-Object System.Windows.Forms.Panel
-$trilho.Location = New-Object System.Drawing.Point(26, 180)
-$trilho.Size = New-Object System.Drawing.Size(608, 8)
+$trilho.Location = New-Object System.Drawing.Point(26, ($y + 56))
+$trilho.Size = New-Object System.Drawing.Size(($L - 52), 8)
 $trilho.BackColor = $corBorda
 $janela.Controls.Add($trilho)
 
@@ -168,15 +221,24 @@ $log.ScrollBars = 'Vertical'
 $log.BackColor = $corTerm
 $log.ForeColor = $corDim
 $log.BorderStyle = 'FixedSingle'
-$log.Font = New-Object System.Drawing.Font("Consolas", 9)
-$log.Location = New-Object System.Drawing.Point(26, 202)
-$log.Size = New-Object System.Drawing.Size(608, 288)
+$log.Font = New-Object System.Drawing.Font($fonteArte, 9)
+$log.Location = New-Object System.Drawing.Point(26, ($y + 78))
+$log.Size = New-Object System.Drawing.Size(($L - 52), 190)
 $janela.Controls.Add($log)
+
+$dica = New-Object System.Windows.Forms.Label
+$dica.Text = "Instala so para o seu usuario. Nao precisa de administrador."
+$dica.ForeColor = $corMute
+$dica.AutoSize = $true
+$dica.Location = New-Object System.Drawing.Point(28, ($log.Bottom + 8))
+$janela.Controls.Add($dica)
+
+$yBotoes = $log.Bottom + 32
 
 function Novo-Botao($texto, $x, $largura, $principal) {
   $b = New-Object System.Windows.Forms.Button
   $b.Text = $texto
-  $b.Location = New-Object System.Drawing.Point($x, 522)
+  $b.Location = New-Object System.Drawing.Point($x, $yBotoes)
   $b.Size = New-Object System.Drawing.Size($largura, 36)
   $b.FlatStyle = 'Flat'
   $b.FlatAppearance.BorderSize = 1
@@ -195,16 +257,11 @@ function Novo-Botao($texto, $x, $largura, $principal) {
 
 $btInstalar = Novo-Botao "Instalar" 26 190 $true
 $btIde      = Novo-Botao "Usar no meu projeto (IDE)" 228 230 $false
-$btFechar   = Novo-Botao "Fechar" 534 100 $false
+$btFechar   = Novo-Botao "Fechar" ($L - 126) 100 $false
 $btIde.Enabled = $false
 $janela.Controls.AddRange(@($btInstalar, $btIde, $btFechar))
 
-$dica = New-Object System.Windows.Forms.Label
-$dica.Text = "Instala so para o seu usuario. Nao precisa de administrador."
-$dica.ForeColor = $corMute
-$dica.AutoSize = $true
-$dica.Location = New-Object System.Drawing.Point(28, 496)
-$janela.Controls.Add($dica)
+$janela.ClientSize = New-Object System.Drawing.Size($L, ($yBotoes + 58))
 
 # ------------------------------------------------------------------- execucao --
 $estado = [ordered]@{

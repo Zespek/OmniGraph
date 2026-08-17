@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 #  Instalador do OmniGraph - Windows (PowerShell)
 #
 #  Como usar: de um duplo-clique em "Instalar OmniGraph.cmd" (abre a interface).
@@ -21,9 +21,62 @@ function Titulo($t) { Write-Host "`n> $t" -ForegroundColor Magenta }
 function Ok($t)     { Write-Host "  [ok] $t" -ForegroundColor Green }
 function Aviso($t)  { Write-Host "  [!]  $t" -ForegroundColor Yellow }
 
-Write-Host "================================================"
-Write-Host "   OmniGraph - instalacao e atualizacao (Windows)"
-Write-Host "================================================"
+# Identidade do OmniGraph: a mesma caveira roxa que o 'omnigraph install' mostra.
+# As here-strings sao de aspas SIMPLES porque o desenho e cheio de crases, e entre
+# aspas duplas o PowerShell as leria como escape e comeria pedacos da arte.
+function Arte {
+  $caveira = @'
+          .                                                      .
+        .n                   .                 .                  n.
+  .   .dP                  dP                   9b                 9b.    .
+ 4    qXb         .       dX                     Xb       .        dXp     t
+dX.    9Xb      .dXb    __                         __    dXb.     dXP     .Xb
+9XXb._       _.dXXXXb dXXXXbo.                 .odXXXXb dXXXXb._       _.dXXP
+ 9XXXXXXXXXXXXXXXXXXXVXXXXXXXXOo.           .oOXXXXXXXXVXXXXXXXXXXXXXXXXXXXP
+  `9XXXXXXXXXXXXXXXXXXXXX'~   ~`OOO8b   d8OOO'~   ~`XXXXXXXXXXXXXXXXXXXXXP'
+    `9XXXXXXXXXXXP' `9XX'   DIE    `98v8P'  HUMAN   `XXP' `9XXXXXXXXXXXP'
+        ~~~~~~~       9X.          .db|db.          .XP       ~~~~~~~
+                        )b.  .dbo.dP'`v'`9b.odb.  .dX(
+                      ,dXXXXXXXXXXXb     dXXXXXXXXXXXb.
+                     dXXXXXXXXXXXP'   .   `9XXXXXXXXXXXb
+                    dXXXXXXXXXXXXb   d|b   dXXXXXXXXXXXXb
+                    9XXb'   `XXXXXb.dX|Xb.dXXXXX'   `dXXP
+                     `'      9XXXXXX(   )XXXXXXP      `'
+                              XXXX X.`v'.X XXXX
+                              XP^X'`b   d'`X^XX
+                              X. 9  `   '  P )X
+                              `b  `       '  d'
+                               `             '
+'@
+  # nome em blocos, como no 'omnigraph install'. Se o console nao aceitar os
+  # blocos (codepage antiga), eles virariam '?' - ai vale mais o nome simples.
+  $nome = @'
+  █▀█ █▀▄▀█ █▄ █ █ █▀▀ █▀█ ▄▀█ █▀█ █ █
+  █▄█ █ ▀ █ █ ▀█ █ █▄█ █▀▄ █▀█ █▀▀ █▀█
+'@
+  try {
+    $blocos = ([char]0x2588).ToString() + ([char]0x2580) + ([char]0x2584)
+    $volta = [Console]::OutputEncoding.GetString([Console]::OutputEncoding.GetBytes($blocos))
+    if ($volta -ne $blocos) { $nome = "  O M N I G R A P H" }
+  } catch { $nome = "  O M N I G R A P H" }
+
+  # a caveira so cabe em janela larga; na estreita fica so o nome
+  $largura = 80
+  try { $largura = $Host.UI.RawUI.WindowSize.Width } catch {}
+  $desenho = if ($largura -ge 80) { $caveira + "`n" + $nome } else { $nome }
+
+  # Windows Terminal e VSCode aceitam cor de 24 bits (o roxo exato #bd00ff); no
+  # console classico o Magenta do proprio PowerShell faz o papel do roxo
+  if ($env:WT_SESSION -or $env:TERM_PROGRAM) {
+    Write-Host ("$([char]27)[1;38;2;189;0;255m" + $desenho + "$([char]27)[0m")
+  } else {
+    Write-Host $desenho -ForegroundColor Magenta
+  }
+}
+
+# no modo -Auto quem mostra a arte e a janela do instalador, com a mesma caveira
+if (-not $Auto) { Arte }
+Write-Host "  instalacao e atualizacao (Windows)`n" -ForegroundColor DarkGray
 
 # 1) uv (gerenciador que roda tudo) -------------------------------------------
 Titulo "Preparando o ambiente"
