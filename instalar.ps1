@@ -33,4 +33,10 @@ if (Test-Path "$dir\.git") {
 } else { git clone $repo $dir }
 
 Set-Location $dir
+# OMNIGRAPH_GUI=1 vem do "Instalar OmniGraph.cmd" baixado avulso: quem deu um
+# duplo-clique num arquivo espera uma janela, nao um terminal rolando texto.
+if ($env:OMNIGRAPH_GUI -eq "1" -and (Test-Path "scripts\instalador-gui.ps1")) {
+  powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\instalador-gui.ps1"
+  if ($LASTEXITCODE -ne 2) { exit $LASTEXITCODE }   # 2 = Windows sem interface grafica
+}
 powershell -NoProfile -ExecutionPolicy Bypass -File "Instalar OmniGraph.ps1"
