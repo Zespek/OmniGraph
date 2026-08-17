@@ -37,6 +37,10 @@ zespek@server:~$ ./abrir_o_guia.sh
   - "macOS  : dê um duplo-clique em   →  Abrir Guia.command"
   - "Outros : abra no navegador       →  guia de utilizacao/index.html"
 
+[Windows]  # duplo-clique, com interface
+  - "Duplo-clique em  →  Instalar OmniGraph.cmd"
+  - "Abre uma janela com um botão 'Instalar'. Serve para o ZIP e para o clone."
+
 [Instalar_com_UM_Comando]  # sem baixar ZIP, sem bloqueio do macOS
   - "macOS / Linux (no Terminal):"
   - "  curl -fsSL https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.sh | bash"
@@ -46,6 +50,14 @@ zespek@server:~$ ./abrir_o_guia.sh
 ```
 
 > **Baixou o ZIP e o macOS travou com "a Apple não pôde verificar…"?** É a segurança do sistema com scripts baixados, não é erro do instalador. Prefira o comando acima (não usa ZIP). Se insistir no ZIP, no Terminal dentro da pasta: `xattr -dr com.apple.quarantine . && bash "Instalar OmniGraph.command"`
+>
+> **No Windows, `.ps1` é bloqueado por padrão** ("a execução de scripts foi desabilitada neste sistema"). Por isso o ponto de entrada é o **`Instalar OmniGraph.cmd`**, e os comandos (`omnigraph-mapa`, `omnigraph-atualizar`…) são `.cmd` no PATH. Você **não** precisa rodar `Set-ExecutionPolicy` nem ser administrador.
+>
+> **Instalou uma versão antiga e o `omnigraph-atualizar` deu esse erro?** Ele não consegue se consertar sozinho (o próprio atualizador está bloqueado). Rode a linha única de instalação **uma vez** — ela não é um arquivo `.ps1`, então passa por qualquer política, e já reinstala os comandos no formato novo:
+>
+> ```powershell
+> powershell -c "irm https://raw.githubusercontent.com/Zespek/OmniGraph/main/instalar.ps1 | iex"
+> ```
 
 ---
 
@@ -69,7 +81,9 @@ zespek@server:~$ cat ./funcionalidades.ini
 </div>
 
 ```bash
-# Recomendado: duplo-clique em "Instalar OmniGraph.command" (faz tudo sozinho)
+# Recomendado: duplo-clique no instalador (faz tudo sozinho)
+#   macOS / Linux : "Instalar OmniGraph.command"
+#   Windows       : "Instalar OmniGraph.cmd"   (abre a janela com o botão Instalar)
 # Ou, no terminal, a partir deste clone (os extras habilitam a IA local, PDFs, docs):
 uv tool install --from ".[ollama,mcp,pdf,office,watch,sql]" omnigraph --force && omnigraph install
 

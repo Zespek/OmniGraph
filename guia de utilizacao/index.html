@@ -122,14 +122,25 @@
 
       <div class="nota" style="margin-top:14px"><b>É o jeito garantido.</b> Colar e apertar Enter <b>não dá erro em nenhum sistema</b>: esse comando não usa ZIP, então não passa pelo bloqueio do macOS nem do Windows.</div>
 
-      <p style="margin-top:16px;color:var(--txt-mute);font-size:14px"><strong>Prefere baixar o ZIP?</strong> Funciona também, mas dá um passo a mais (o comando acima evita isso):</p>
+      <p style="margin-top:16px;color:var(--txt-mute);font-size:14px"><strong>Prefere baixar o ZIP?</strong> Funciona também:</p>
       <ul style="margin:6px 0 0 18px;color:var(--txt-mute);font-size:14px;line-height:1.7">
+        <li><strong>Windows:</strong> dê um <strong>duplo-clique</strong> em <span class="arq">Instalar OmniGraph.cmd</span>. Abre uma janela do OmniGraph com um botão <strong>Instalar</strong> — é só clicar e esperar.</li>
         <li><strong>macOS:</strong> abra o app <strong>Terminal</strong>, digite <code style="color:var(--roxo-cl);font-family:var(--mono)">bash</code> e um espaço, <strong>arraste</strong> o arquivo <span class="arq">Instalar OmniGraph.command</span> para a janela e aperte Enter. (O duplo-clique é bloqueado pela Apple; assim funciona sempre.)</li>
-        <li><strong>Windows:</strong> clique com o <strong>botão direito</strong> em <span class="arq">Instalar OmniGraph.ps1</span> → <strong>Executar com o PowerShell</strong>.</li>
         <li><strong>Linux:</strong> no Terminal, dentro da pasta: <code style="color:var(--roxo-cl);font-family:var(--mono)">bash "Instalar OmniGraph.command"</code></li>
       </ul>
     </div>
   </div>
+
+  <!-- WINDOWS: INSTALADOR COM INTERFACE -->
+  <div class="destaque">
+    <h3>🪟 No Windows dá para instalar sem digitar nada</h3>
+    <p>Dê um <strong>duplo-clique</strong> em <span class="arq">Instalar OmniGraph.cmd</span> (está na pasta do OmniGraph, tanto no ZIP quanto no clone). Abre uma janela que faz tudo sozinha e mostra o progresso.</p>
+    <p style="margin-top:10px">Nela você ainda pode: <strong>desmarcar a IA local</strong>, se não quiser baixar alguns GB agora (o mapa continua saindo, direto do código); e, no fim, clicar em <strong>"Usar no meu projeto (IDE)"</strong> para escolher a pasta do seu projeto e já deixá-lo pronto para o assistente da sua IDE.</p>
+    <p style="margin-top:10px"><strong>Não precisa de administrador</strong> e <strong>não precisa mexer em política de execução</strong> do Windows.</p>
+    <span class="tag">duplo-clique · sem terminal · sem admin</span>
+  </div>
+
+  <div class="nota"><b>Deu "a execução de scripts foi desabilitada neste sistema"?</b> É o Windows bloqueando arquivos <code style="color:var(--roxo-cl);font-family:var(--mono)">.ps1</code>, e acontece em quem instalou uma <b>versão antiga</b> do OmniGraph. O <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-atualizar</code> não consegue se consertar sozinho (ele mesmo está bloqueado). Cole no PowerShell a <b>linha única de instalação</b> lá de cima <b>uma vez</b>: ela não é um arquivo, então passa por qualquer política e reinstala os comandos já corrigidos. Depois disso, <code style="color:var(--roxo-cl);font-family:var(--mono)">omnigraph-atualizar</code> volta a funcionar normalmente.</div>
 
   <div class="passo">
     <div class="bola">2</div>
