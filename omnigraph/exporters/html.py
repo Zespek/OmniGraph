@@ -27,11 +27,46 @@ def _viz_node_limit() -> int:
     except ValueError:
         return MAX_NODES_FOR_VIZ
 
+# Ajuda do painel lateral. Numa constante porque aparece em dois lugares: no HTML
+# inicial e de volta pelo JS quando o usuário clica fora e desmarca o nó.
+_INFO_AJUDA = (
+    '<div class="ajuda"><b>Clique num nó</b> para ver o que ele é, de que arquivo veio'
+    ' e com quem se conecta.</div>'
+    '<div class="ajuda">A caixa <b>Search nodes</b> acha um nó <b>pelo nome</b>'
+    ' (um arquivo, uma função) — ela não responde perguntas. Para perguntar'
+    ' <i>como algo funciona</i>, use no terminal:'
+    '<br><code>omnigraph-perguntar "como funciona o login?"</code></div>'
+)
+
+_COMUNIDADES_AJUDA = (
+    '<div class="ajuda" id="legend-ajuda">Cada cor é um grupo de arquivos que o OmniGraph'
+    ' viu trabalhando juntos, batizado pelo arquivo mais central do grupo. O número é'
+    ' quantos nós o grupo tem. Desmarque um grupo para escondê-lo e enxergar o resto.</div>'
+)
+
+
 def _html_styles() -> str:
     return """<style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0d0714; color: #ede4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
-  #graph { flex: 1; }
+  /* Fundo de espaço: dois brilhos fixos (o roxo da identidade e um ciano frio) e
+     um campo de estrelas em tiles que se repetem. É tudo CSS de propósito — o
+     vis.js limpa o canvas a cada quadro, então qualquer estrela desenhada nele
+     sumiria; e pintar estrelas no canvas custaria FPS num grafo de milhares de
+     nós. Assim o custo é zero: o canvas é transparente e isto aparece atrás. */
+  #graph { flex: 1;
+    background-color: #0d0714;
+    background-image:
+      radial-gradient(900px 520px at 78% -10%, rgba(189,0,255,.18), transparent 62%),
+      radial-gradient(760px 460px at 6% 108%, rgba(0,229,255,.07), transparent 60%),
+      radial-gradient(1.3px 1.3px at 34px 26px, rgba(255,255,255,.55), transparent),
+      radial-gradient(1px 1px at 168px 92px, rgba(217,77,255,.60), transparent),
+      radial-gradient(1.5px 1.5px at 96px 178px, rgba(255,255,255,.38), transparent),
+      radial-gradient(1px 1px at 246px 138px, rgba(0,229,255,.45), transparent),
+      radial-gradient(1px 1px at 210px 232px, rgba(255,255,255,.30), transparent);
+    background-repeat: no-repeat, no-repeat, repeat, repeat, repeat, repeat, repeat;
+    background-size: auto, auto, 300px 260px, 300px 260px, 300px 260px, 300px 260px, 300px 260px;
+  }
   #sidebar { width: 280px; background: #160b20; border-left: 1px solid #33184a; display: flex; flex-direction: column; overflow: hidden; }
   #search-wrap { padding: 12px; border-bottom: 1px solid #33184a; }
   #search { width: 100%; background: #0d0714; border: 1px solid #432060; color: #ede4f5; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
@@ -45,6 +80,14 @@ def _html_styles() -> str:
   #info-content .field { margin-bottom: 5px; }
   #info-content .field b { color: #ede4f5; }
   #info-content .empty { color: #8a6fa8; font-style: italic; }
+  .ajuda { color: #b79fce; font-size: 12px; line-height: 1.55; }
+  .ajuda b { color: #ede4f5; }
+  .ajuda + .ajuda { margin-top: 9px; padding-top: 9px; border-top: 1px solid #33184a; }
+  /* block: o comando é longo e, inline, a borda quebrava em dois pedaços na virada da linha */
+  .ajuda code { display: block; margin-top: 5px; font-family: ui-monospace, Consolas, monospace;
+                font-size: 11.5px; color: #d94dff; background: #0d0714; border: 1px solid #33184a;
+                border-radius: 4px; padding: 4px 7px; overflow-wrap: anywhere; }
+  #legend-ajuda { margin-bottom: 12px; }
   .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #432060; }
   .neighbor-link:hover { background: #33184a; }
   #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
@@ -109,11 +152,13 @@ network.on('afterDrawing', function(ctx) {{
 }});
 </script>"""
 
-def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
+def _html_script(nodes_json: str, edges_json: str, legend_json: str, info_ajuda_json: str) -> str:
     return f"""<script>
 const RAW_NODES = {nodes_json};
 const RAW_EDGES = {edges_json};
 const LEGEND = {legend_json};
+// mesma ajuda do HTML inicial: volta quando o usuario clica fora e desmarca o no
+const INFO_AJUDA = {info_ajuda_json};
 
 // HTML-escape helper — prevents XSS when injecting graph data into innerHTML
 function esc(s) {{
@@ -226,7 +271,7 @@ network.on('click', params => {{
   if (params.nodes.length > 0) {{
     showInfo(params.nodes[0]);
   }} else if (hoveredNodeId === null) {{
-    document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
+    document.getElementById('info-content').innerHTML = INFO_AJUDA;
   }}
 }});
 
@@ -585,10 +630,11 @@ def to_html(
   </div>
   <div id="info-panel">
     <h3>Node Info</h3>
-    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+    <div id="info-content">{_INFO_AJUDA}</div>
   </div>
   <div id="legend-wrap">
     <h3>Communities</h3>
+    {_COMUNIDADES_AJUDA}
     <div id="legend-controls">
       <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
     </div>
@@ -596,7 +642,7 @@ def to_html(
   </div>
   <div id="stats">{stats}</div>
 </div>
-{_html_script(nodes_json, edges_json, legend_json)}
+{_html_script(nodes_json, edges_json, legend_json, _js_safe(_INFO_AJUDA))}
 {_hyperedge_script(hyperedges_json)}
 </body>
 </html>"""
