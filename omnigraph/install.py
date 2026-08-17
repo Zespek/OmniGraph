@@ -17,6 +17,7 @@ import os
 import platform
 import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -54,17 +55,6 @@ def _always_on(basename: str) -> str:
             f"omnigraph install is incomplete: missing always-on block '{basename}' "
             f"at {path}. Reinstall omnigraph (e.g. `uv tool install --reinstall omnigraph`)."
         ) from exc
-def _refresh_all_version_stamps() -> None:
-    """After a successful install, update .omnigraph_version in all other known skill dirs.
-
-    Prevents stale-version warnings from platforms that were installed previously
-    but not explicitly re-installed during this upgrade.
-    """
-    for name in _PLATFORM_CONFIG:
-        skill_dst = _platform_skill_destination(name)
-        vf = skill_dst.parent / ".omnigraph_version"
-        if skill_dst.exists():
-            vf.write_text(__version__, encoding="utf-8")
 def _platform_skill_destination(platform_name: str, *, project: bool = False, project_dir: Path | None = None) -> Path:
     """Return the skill destination for a platform and scope."""
     if platform_name == "gemini":
@@ -165,6 +155,8 @@ def _install_skill_references(skill_dst: Path, refs_src: Path) -> None:
         shutil.rmtree(refs_staged)
     try:
         shutil.copytree(refs_src, refs_staged)
+        for path in (refs_staged, *refs_staged.rglob("*")):
+            path.chmod(path.stat().st_mode | stat.S_IWUSR)
         if refs_dst.exists():
             shutil.rmtree(refs_dst)
         os.replace(refs_staged, refs_dst)
@@ -190,7 +182,6 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
     refs_src = _packaged_skill_refs_dir(platform_name)
     if refs_src is not None and not refs_src.exists():
         # A plataforma progressiva declarou um pacote de referências que está faltando
-        # o pacote. Falhe ruidosamente em vez de enviar silenciosamente um sidecar vazio.
         print(
             f"error: references for '{platform_name}' not found in package "
             f"({refs_src}) - reinstall omnigraph",
@@ -264,8 +255,6 @@ def _remove_claude_skill_registration(project_dir: Path) -> None:
     if not claude_md.exists():
         return
     content = claude_md.read_text(encoding="utf-8")
-    # Match the exact H1 `# omnigraph` registration heading, never a substring of a
-    # user's `## omnigraph`/`### omnigraph`. Section runs to the next H1.
     cleaned = _remove_marker_section(content, "# omnigraph", boundary_prefix="# ")
     if cleaned is None:
         return
@@ -378,14 +367,12 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_refs": "trae",
     },
     "trae-cn": {
-        # Reuses trae's split bundle (same skill body + references).
         "skill_file": "skill-trae.md",
         "skill_dst": Path(".trae-cn") / "skills" / "omnigraph" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "trae",
     },
     "hermes": {
-        # Reuses claw's split bundle.
         "skill_file": "skill-claw.md",
         "skill_dst": Path(".hermes") / "skills" / "omnigraph" / "SKILL.md",
         "claude_md": False,
@@ -404,21 +391,18 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_refs": "pi",
     },
     "codebuddy": {
-        # Reuses claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
         "skill_dst": Path(".codebuddy") / "skills" / "omnigraph" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "claude",
     },
     "antigravity": {
-        # Rides claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
         "skill_dst": Path(".agents") / "skills" / "omnigraph" / "SKILL.md",
         "claude_md": False,
         "skill_refs": "claude",
     },
     "antigravity-windows": {
-        # Rides windows' split bundle.
         "skill_file": "skill-windows.md",
         "skill_dst": Path(".agents") / "skills" / "omnigraph" / "SKILL.md",
         "claude_md": False,
@@ -431,7 +415,6 @@ _PLATFORM_CONFIG: dict[str, dict] = {
         "skill_refs": "windows",
     },
     "kimi": {
-        # Reuses claude's split bundle (shares skill.md).
         "skill_file": "skill.md",
         "skill_dst": Path(".kimi") / "skills" / "omnigraph" / "SKILL.md",
         "claude_md": False,
@@ -448,7 +431,6 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     "agents": {
         # O alvo genérico de habilidades de agente de estrutura cruzada. Global: ~/.agents/skills
         # (a localização global do usuário da especificação, lida por `npx skills` e compatível
-        # enquadramentos); projeto: ./.agentes/skills. A CLI aceita `skills` como um
         # alias (consulte _canonical_platform). Envia seu próprio pacote renderizado.
         "skill_file": "skill-agents.md",
         "skill_dst": Path(".agents") / "skills" / "omnigraph" / "SKILL.md",
@@ -458,15 +440,12 @@ _PLATFORM_CONFIG: dict[str, dict] = {
     "devin": {
         # Monolith: devin envia o SKILL.md completo inline, sem referências/sidecar.
         "skill_file": "skill-devin.md",
-        # User scope: ~/.config/devin/skills/omnigraph/SKILL.md
         # Escopo do projeto: .devin/skills/omnigraph/SKILL.md (substituído em _platform_skill_destination)
         "skill_dst": Path(".config") / "devin" / "skills" / "omnigraph" / "SKILL.md",
         "claude_md": False,
     },
 }
-# Aliases de plataforma somente CLI, resolvidos para uma chave _PLATFORM_CONFIG real antes
 # expedição. `skills` é o apelido amigável para a plataforma genérica de `agentes`
-# (o ecossistema Agent-Skills as chama de “habilidades”).
 _PLATFORM_ALIASES: dict[str, str] = {"skills": "agents"}
 def _canonical_platform(platform_name: str) -> str:
     """Resolve a CLI platform alias to its real _PLATFORM_CONFIG key."""
@@ -560,7 +539,7 @@ def _remove_marker_section(content: str, marker: str, boundary_prefix: str = "##
 
 
 def _print_banner() -> None:
-    """Purple skull banner on omnigraph install. TTY-only, never raises."""
+    """Amber brain banner on omnigraph install. TTY-only, never raises."""
     if not sys.stdout.isatty():
         return
     try:
@@ -571,8 +550,8 @@ def _print_banner() -> None:
             )
         import shutil
         cols = shutil.get_terminal_size((80, 24)).columns
-        A = "\033[1;38;2;189;0;255m"   # roxo OmniGraph (#bd00ff)
-        D = "\033[38;2;120;0;170m"     # roxo escuro
+        A = "\033[1;38;2;189;0;255m"
+        D = "\033[38;2;120;0;170m"
         R = "\033[0m"
         nome = f"""{A}
   █▀█ █▀▄▀█ █▄ █ █ █▀▀ █▀█ ▄▀█ █▀█ █ █
@@ -644,9 +623,17 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         print(f"  command installed ->  {command_dst}")
 
     if cfg["claude_md"]:
-        # Registre-se no escopo do Código Claude correspondente.
-        claude_md = (project_dir / ".claude" / "CLAUDE.md") if project else Path.home() / ".claude" / "CLAUDE.md"
-        registration = _skill_registration(".claude/skills/omnigraph/SKILL.md" if project else "~/.claude/skills/omnigraph/SKILL.md")
+        if project:
+            claude_md = project_dir / ".claude" / "CLAUDE.md"
+            skill_ref = ".claude/skills/omnigraph/SKILL.md"
+        elif os.environ.get("CLAUDE_CONFIG_DIR"):
+            config_dir = Path(os.environ["CLAUDE_CONFIG_DIR"])
+            claude_md = config_dir / "CLAUDE.md"
+            skill_ref = str(config_dir / "skills" / "omnigraph" / "SKILL.md")
+        else:
+            claude_md = Path.home() / ".claude" / "CLAUDE.md"
+            skill_ref = "~/.claude/skills/omnigraph/SKILL.md"
+        registration = _skill_registration(skill_ref)
         if claude_md.exists():
             content = claude_md.read_text(encoding="utf-8")
             if "omnigraph" in content:
@@ -660,7 +647,6 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
             print(f"  CLAUDE.md        ->  created at {claude_md}")
 
     if platform == "codebuddy":
-        # Registre-se em ~/.codebuddy/CODEBUDDY.md (somente CodeBuddy)
         codebuddy_md = Path.home() / ".codebuddy" / "CODEBUDDY.md"
         registration = _skill_registration("~/.codebuddy/skills/omnigraph/SKILL.md")
         if codebuddy_md.exists():
@@ -678,12 +664,8 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
 
-    # Atualize os carimbos de versão em todos os outros diretórios de habilidades instalados anteriormente para
-    # Os avisos de versão obsoleta não são acionados para plataformas não explicitamente reinstaladas.
     if project:
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
-    else:
-        _refresh_all_version_stamps()
 
     print()
     print("Done. Open your AI coding assistant and type:")
@@ -934,9 +916,6 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
         print(f"  {instructions}  ->  deleted (was empty after removal)")
 _ANTIGRAVITY_RULES_PATH = Path(".agents") / "rules" / "omnigraph.md"
 _ANTIGRAVITY_WORKFLOW_PATH = Path(".agents") / "workflows" / "omnigraph.md"
-# Names no SKILL.md location on purpose: this constant is shared by the global and
-# project-scoped installs, which put the skill in different places, so any hardcoded
-# path dangles for the other scope. Antigravity resolves the skill by frontmatter name.
 _ANTIGRAVITY_WORKFLOW = """\
 ---
 name: omnigraph
@@ -956,7 +935,6 @@ def _kiro_install(project_dir: Path) -> None:
     # Arquivo de habilidade + referências/ sidecar + carimbo .omnigraph_version por meio do compartilhamento
     # ajudante de divulgação progressiva.  Anteriormente, isso usava um write_text simples que
     # ignorou _copy_skill_file, então as referências/diretório e carimbo de versão foram
-    # never written even though kiro declares skill_refs: "kiro".
     _copy_skill_file("kiro", project=True, project_dir=project_dir)
 
     # Arquivo de direção → .kiro/steering/omnigraph.md (sempre ativo)
@@ -980,7 +958,6 @@ def _kiro_uninstall(project_dir: Path) -> None:
     project_dir = project_dir or Path(".")
     removed = []
 
-    # Skill + .omnigraph_version + references/ sidecar + empty-dir walk.
     skill_dst = _platform_skill_destination("kiro", project=True, project_dir=project_dir)
     if _remove_skill_file("kiro", project=True, project_dir=project_dir):
         removed.append(str(skill_dst.relative_to(project_dir)))
@@ -1000,14 +977,12 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
     project-scoped ``install --project --platform antigravity`` paths, so both lay
     down the rules/workflows that the uninstall path already expects to remove.
     """
-    # Injete frontmatter YAML para descoberta de ferramenta nativa de antigravidade.
     if skill_dst.exists():
         content = skill_dst.read_text(encoding="utf-8")
         if not content.startswith("---\n"):
             frontmatter = "---\nname: omnigraph-manager\ndescription: Rebuild the code graph or perform manual CLI queries when MCP server is offline.\n---\n\n"
             skill_dst.write_text(frontmatter + content, encoding="utf-8")
 
-    # .agents/rules/omnigraph.md
     rules_path = project_dir / _ANTIGRAVITY_RULES_PATH
     rules_path.parent.mkdir(parents=True, exist_ok=True)
     if rules_path.exists():
@@ -1021,7 +996,6 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
         rules_path.write_text(_always_on("antigravity-rules"), encoding="utf-8")
         print(f"omnigraph rule written to {rules_path.resolve()}")
 
-    # .agents/workflows/omnigraph.md
     wf_path = project_dir / _ANTIGRAVITY_WORKFLOW_PATH
     wf_path.parent.mkdir(parents=True, exist_ok=True)
     if wf_path.exists():
@@ -1036,7 +1010,6 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
         print(f"omnigraph workflow written to {wf_path.resolve()}")
 def _antigravity_install(project_dir: Path) -> None:
     """Install omnigraph for Google Antigravity (global skill + .agents/rules + .agents/workflows)."""
-    # Copie a habilidade para ~/.gemini/config/skills/omnigraph/SKILL.md (global) e, em seguida,
     # estabeleça as regras/fluxos de trabalho sempre ativos no diretório do projeto.
     install(platform="antigravity")
     _antigravity_finalize(_platform_skill_destination("antigravity"), project_dir)
@@ -1056,7 +1029,6 @@ def _antigravity_install(project_dir: Path) -> None:
     print("  }")
 def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
     """Remove omnigraph Antigravity rules, workflow, and skill files."""
-    # Remove rules file
     rules_path = project_dir / _ANTIGRAVITY_RULES_PATH
     if rules_path.exists():
         rules_path.unlink()
@@ -1064,13 +1036,11 @@ def _antigravity_uninstall(project_dir: Path, *, project: bool = False) -> None:
     else:
         print("No omnigraph Antigravity rule found - nothing to do")
 
-    # Remove workflow file
     wf_path = project_dir / _ANTIGRAVITY_WORKFLOW_PATH
     if wf_path.exists():
         wf_path.unlink()
         print(f"omnigraph workflow removed from {wf_path.resolve()}")
 
-    # Remove skill file
     skill_dst = _platform_skill_destination("antigravity", project=project, project_dir=project_dir)
     if skill_dst.exists():
         skill_dst.unlink()
@@ -1137,7 +1107,6 @@ def _cursor_uninstall(project_dir: Path) -> None:
         return
     rule_path.unlink()
     print(f"omnigraph Cursor rule removed from {rule_path.resolve()}")
-# Devin CLI — .windsurf/rules/omnigraph.md (contexto sempre ativo)
 # Devin lê arquivos .windsurf/rules/*.md da mesma forma que o Windsurf IDE.
 _DEVIN_RULES_PATH = Path(".windsurf") / "rules" / "omnigraph.md"
 _DEVIN_RULES = """\
@@ -1590,15 +1559,12 @@ def _project_install(platform_name: str, project_dir: Path | None = None, strict
         _devin_rules_install(project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".windsurf"])
     elif platform_name == "antigravity":
-        # Escopo do projeto: habilidade em .agents/skills/ MAIS o .agents/rules +
-        # Camada sempre ativa .agents/workflows (anteriormente, esse caminho gravava apenas a camada
         # habilidade, deixando as regras/fluxos de trabalho que o caminho de desinstalação remove não definidos).
         skill_dst = _copy_skill_file("antigravity", project=True, project_dir=project_dir)
         _antigravity_finalize(skill_dst, project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir), project_dir / ".agents"])
     elif platform_name in ("copilot", "pi", "kimi", "agents"):
         # Instalação de projeto somente para habilidades: coloque SKILL.md (+ referências) no escopo
-        # root. `agents` -> ./.agents/skills/omnigraph/SKILL.md.
         skill_dst = _copy_skill_file(platform_name, project=True, project_dir=project_dir)
         _print_project_git_add_hint([_project_scope_root(skill_dst, project_dir)])
     else:
@@ -1634,8 +1600,6 @@ def _project_uninstall(platform_name: str, project_dir: Path | None = None) -> N
         if not removed:
             print("nothing to remove")
     elif platform_name == "codebuddy":
-        # project=True keeps `uninstall --project` project-scoped; previously
-        # this deleted the user-global codebuddy skill.
         codebuddy_uninstall(project_dir, project=True)
     else:
         _remove_skill_file(platform_name, project=True, project_dir=project_dir)
@@ -1737,7 +1701,6 @@ def claude_install(project_dir: Path | None = None, strict: bool = False) -> Non
         target.write_text(new_content, encoding="utf-8")
         print(f"omnigraph section written to {target.resolve()}")
 
-    # Sempre reinstale o gancho Claude Code PreToolUse para um gancho antigo
     # a carga útil (por exemplo, texto pré-edição) é substituída na atualização.
     _install_claude_hook(project_dir or Path("."), strict=strict)
 
@@ -1796,9 +1759,6 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     pd = project_dir or Path(".")
     print("Uninstalling omnigraph from all detected platforms...\n")
 
-    # Skill-file / config-section uninstallers. remove_user_skill=True keeps the
-    # historical `omnigraph uninstall` behavior: global skill delete plus md/hook
-    # cleanup at the project dir.
     claude_uninstall(pd, remove_user_skill=True)
     codebuddy_uninstall(pd, remove_user_skill=True)
     gemini_uninstall(pd, remove_user_skill=True)
@@ -1806,7 +1766,6 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _cursor_uninstall(pd)
     _kiro_uninstall(pd)
     _antigravity_uninstall(pd)
-    # AGENTS.md covers: codex, aider, opencode, claw, droid, trae, trae-cn, hermes, copilot
     _agents_uninstall(pd)
     # Amp também elimina uma habilidade de escopo do usuário em ~/.config/agents/skills, que o
     # A limpeza de AGENTS.md acima não afeta.
@@ -1817,7 +1776,6 @@ def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:
     _uninstall_opencode_plugin(pd)
     _uninstall_codex_hook(pd)
 
-    # Git hook
     try:
         from omnigraph.hooks import uninstall as hook_uninstall
         result = hook_uninstall(pd)
@@ -1892,8 +1850,6 @@ def _strip_omnigraph_md_section(target: Path) -> bool:
         # Um arquivo ilegível/undecodificável no estilo CLAUDE.md (por exemplo, não UTF-8 ou um
         # diretório com esse nome) não deve abortar a desinstalação - nada para remover.
         return False
-    # Remove omnigraph's ## omnigraph section (heading matched exactly, never as a
-    # substring of a user's ### omnigraph) from the marker to the next H2 or EOF.
     cleaned = _remove_marker_section(content, _CLAUDE_MD_MARKER)
     if cleaned is None:
         return False

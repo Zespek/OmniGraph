@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 
+import hashlib
 from pathlib import Path
 from omnigraph.extractors.base import _LANGUAGE_BUILTIN_GLOBALS, _file_stem, _make_id, _read_text
 
@@ -12,29 +13,6 @@ _GO_PREDECLARED_TYPES = frozenset({
     "uint", "uint8", "uint16", "uint32", "uint64", "uintptr", "any", "comparable",
 })
 
-# Go predeclared functions, filtered only when the callee is a BARE identifier.
-# The Go resolver looks a callee up by name, so an unexported method that happens
-# to share a builtin's name (`func (h *history) append(...)`) absorbs every
-# builtin call in the corpus: on an 8.9k-node Go codebase one such method
-# collected 330 phantom inbound `calls` edges, inventing twelve database-layer ->
-# service-layer edges — a layering violation absent from the source.
-#
-# Deliberately language-local (mirroring _RUST_TRAIT_METHOD_BLOCKLIST) rather
-# than added to the shared _LANGUAGE_BUILTIN_GLOBALS: `new`, `close` and friends
-# are ordinary method names in the ~11 other languages that consult the shared
-# set — listing them there kills every in-file Rust `Type::new()` edge.
-#
-# Bare-identifier-only for the same reason within Go: `h.append(v)` and
-# `pkg.Delete(x)` are selector_expression callees and are genuine calls, so the
-# filter must not reach them. Builtin *types* stay out (see
-# _GO_PREDECLARED_TYPES): Go conversions are call-shaped too, but they produced
-# no phantom edges on that corpus and filtering them would suppress genuine
-# constructor-like calls.
-#
-# The set is the Go spec's predeclared function list in full. Being Go-local and
-# bare-identifier-only makes completeness safe here: `len`, `max`, `min` and
-# `print` carry the same shadowing hazard as `append`, and a principled boundary
-# (the spec list) beats a hand-picked subset.
 _GO_PREDECLARED_FUNCS = frozenset({
     "append", "cap", "clear", "close", "complex", "copy", "delete", "imag",
     "len", "make", "max", "min", "new", "panic", "print", "println", "real",
@@ -52,8 +30,6 @@ def _go_collect_type_refs(node, source: bytes, generic: bool, out: list[tuple[st
             out.append((text, "generic_arg" if generic else "type"))
         return
     if t == "qualified_type":
-        # Keep the package qualifier so the generic stub rewire cannot attach
-        # `testing.T` to an unrelated local type or function named T.
         text = _read_text(node, source)
         if text:
             out.append((text, "generic_arg" if generic else "type"))
@@ -107,7 +83,6 @@ def extract_go(path: Path) -> dict:
     edges: list[dict] = []
     seen_ids: set[str] = set()
     function_bodies: list[tuple[str, object]] = []
-    # local package name (including aliases) -> written Go import path
     go_imported_pkgs: dict[str, str] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
@@ -147,7 +122,6 @@ def extract_go(path: Path) -> dict:
         nid = _make_id(name)
         if nid not in seen_ids:
             # O nome não está declarado neste arquivo, então esta é uma referência entre arquivos
-            # (por exemplo, um tipo definido em outro arquivo do pacote). Emitir um SOURCELESS
             # stub - como o caminho base de herança nos outros extratores - então o
             # a religação em nível de corpus pode reduzi-la à definição real. Uma fonte
             # stub aqui faz _disambiguate_colliding_node_ids preparar a referência
@@ -206,6 +180,51 @@ def extract_go(path: Path) -> dict:
                     if tgt != func_nid:
                         add_edge(func_nid, tgt, "references", line, context=ctx)
 
+    case_groups: dict[str, set[str]] = {}
+
+    def _receiver_type_of(node) -> str | None:
+        receiver = node.child_by_field_name("receiver")
+        if not receiver:
+            return None
+        for param in receiver.children:
+            if param.type == "parameter_declaration":
+                type_node = param.child_by_field_name("type")
+                if type_node:
+                    return _read_text(type_node, source).lstrip("*").strip()
+                break
+        return None
+
+    def _plain_symbol_nid(node) -> tuple[str, str] | None:
+        name_node = node.child_by_field_name("name")
+        if not name_node:
+            return None
+        name = _read_text(name_node, source)
+        if node.type == "method_declaration":
+            receiver_type = _receiver_type_of(node)
+            base = _make_id(pkg_scope, receiver_type) if receiver_type else stem
+        else:
+            base = stem
+        return _make_id(base, name), name
+
+    def _scan_declarations(node) -> None:
+        if node.type in ("function_declaration", "method_declaration"):
+            found = _plain_symbol_nid(node)
+            if found:
+                case_groups.setdefault(found[0], set()).add(found[1])
+            return
+        for child in node.children:
+            _scan_declarations(child)
+
+    def symbol_nid(plain_nid: str, name: str) -> str:
+        names = case_groups.get(plain_nid) or set()
+        if len(names) < 2:
+            return plain_nid
+        exported = [n for n in names if n[:1].isupper()]
+        if len(exported) == 1 and name == exported[0]:
+            return plain_nid
+        salt = hashlib.sha1(name.encode("utf-8"), usedforsecurity=False).hexdigest()[:6]
+        return _make_id(plain_nid, salt)
+
     def walk(node) -> None:
         t = node.type
 
@@ -214,7 +233,7 @@ def extract_go(path: Path) -> dict:
             if name_node:
                 func_name = _read_text(name_node, source)
                 line = node.start_point[0] + 1
-                func_nid = _make_id(stem, func_name)
+                func_nid = symbol_nid(_make_id(stem, func_name), func_name)
                 add_node(func_nid, f"{func_name}()", line)
                 add_edge(file_nid, func_nid, "contains", line)
                 emit_go_method_refs(node, func_nid, line)
@@ -242,11 +261,11 @@ def extract_go(path: Path) -> dict:
             if receiver_type:
                 parent_nid = _make_id(pkg_scope, receiver_type)
                 add_node(parent_nid, receiver_type, line)
-                method_nid = _make_id(parent_nid, method_name)
+                method_nid = symbol_nid(_make_id(parent_nid, method_name), method_name)
                 add_node(method_nid, f".{method_name}()", line)
                 add_edge(parent_nid, method_nid, "method", line)
             else:
-                method_nid = _make_id(stem, method_name)
+                method_nid = symbol_nid(_make_id(stem, method_name), method_name)
                 add_node(method_nid, f"{method_name}()", line)
                 add_edge(file_nid, method_nid, "contains", line)
 
@@ -333,7 +352,6 @@ def extract_go(path: Path) -> dict:
                             path_node = spec.child_by_field_name("path")
                             if path_node:
                                 raw = _read_text(path_node, source).strip('"')
-                                # Prefixo com go_pkg_ para nomes stdlib (por exemplo, "contexto")
                                 # não colida com arquivos locais com o mesmo nome de base.
                                 tgt_nid = _make_id("go", "pkg", raw)
                                 add_edge(file_nid, tgt_nid, "imports_from", spec.start_point[0] + 1, context="import")
@@ -357,6 +375,7 @@ def extract_go(path: Path) -> dict:
         for child in node.children:
             walk(child)
 
+    _scan_declarations(root)
     walk(root)
 
     label_to_nid: dict[str, str] = {}
@@ -386,7 +405,6 @@ def extract_go(path: Path) -> dict:
                     field = func_node.child_by_field_name("field")
                     operand = func_node.child_by_field_name("operand")
                     receiver_name = _read_text(operand, source) if operand else ""
-                    # Package-qualified call (e.g. fmt.Println) → allow cross-file resolution.
                     # Chamada do método do receptor (por exemplo, s.logger.Log) → pular, nenhuma evidência de importação.
                     is_member_call = receiver_name not in go_imported_pkgs
                     if not is_member_call:
@@ -395,13 +413,8 @@ def extract_go(path: Path) -> dict:
                     if field:
                         callee_name = _read_text(field, source)
             if is_bare_identifier and callee_name in _GO_PREDECLARED_FUNCS:
-                # A bare `append(s, x)` is the builtin, never the same-named
-                # method a sibling file happens to declare. Skipping before both
-                # branches drops the in-file phantom edge and keeps the name out
-                # of raw_calls, so the cross-file pass cannot bind it either.
                 callee_name = None
             if callee_name and callee_name not in _LANGUAGE_BUILTIN_GLOBALS:
-                # Never resolve an imported selector through a bare local name.
                 tgt_nid = None if import_path else label_to_nid.get(callee_name)
                 if tgt_nid and tgt_nid != caller_nid:
                     pair = (caller_nid, tgt_nid)

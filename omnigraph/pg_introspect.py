@@ -19,9 +19,8 @@ def introspect_postgres(dsn: str | None = None) -> dict:
         )
 
     try:
-        conn = psycopg.connect(dsn or "")  # empty string = PG* env vars
+        conn = psycopg.connect(dsn or "")
     except psycopg.OperationalError as exc:
-        # Sanitizar: remova o DSN/credenciais que o psycopg pode incorporar no
         # Mensagem OperationalError (por exemplo, "conexão ao servidor… falhou: …\nDETAIL: …")
         msg = str(exc).split("\n")[0]
         raise ConnectionError(f"could not connect to PostgreSQL: {msg}") from None
@@ -29,7 +28,6 @@ def introspect_postgres(dsn: str | None = None) -> dict:
     try:
         conn.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE READ ONLY DEFERRABLE")
 
-        # 1. Query tables
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT table_schema, table_name, table_type
@@ -39,7 +37,6 @@ def introspect_postgres(dsn: str | None = None) -> dict:
             """)
             tables = cur.fetchall()
 
-            # 2. Query views
             cur.execute("""
                 SELECT table_schema, table_name, view_definition
                 FROM information_schema.views
@@ -48,7 +45,6 @@ def introspect_postgres(dsn: str | None = None) -> dict:
             """)
             views = cur.fetchall()
 
-            # 3. Query routines (functions/procedures), including language
             cur.execute("""
                 SELECT routine_schema, routine_name, routine_type,
                        routine_definition, external_language
@@ -113,13 +109,6 @@ def introspect_postgres(dsn: str | None = None) -> dict:
         else:
             ddl.append(f"CREATE VIEW {_quote_ident(schema)}.{_quote_ident(name)} AS SELECT 1;")
 
-    # FK edges — one ALTER TABLE per constraint (handles composite FKs correctly).
-    # Emitted BEFORE the function DDL: routine bodies the grammar can't parse
-    # (notably C-language extension functions, whose "body" is just the C symbol
-    # name) put tree-sitter into error recovery that consumes the statements
-    # after them — with FKs last, every 'references' edge is silently lost on
-    # any DB with a common extension installed. FK statements only
-    # reference tables, which are emitted first, so this order is always safe.
     for constraint_name, t_schema, t_name, cols, r_schema, r_name, r_cols in fks:
         col_list = ", ".join(_quote_ident(c) for c in cols)
         ref_col_list = ", ".join(_quote_ident(c) for c in r_cols)
@@ -146,7 +135,6 @@ def introspect_postgres(dsn: str | None = None) -> dict:
 
     ddl_string = "\n".join(ddl)
 
-    # Determinar host/nome do banco de dados para limpeza de DSN de caminho virtual
     info = psycopg.conninfo.conninfo_to_dict(dsn or "")
     host = info.get("host", "localhost")
     dbname = info.get("dbname", "db")

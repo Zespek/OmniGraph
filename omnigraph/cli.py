@@ -50,10 +50,6 @@ _READ_NUDGE_STALE = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
-# Strict-mode block (opt-in). Claude Code PreToolUse honors
-# hookSpecificOutput.permissionDecision == "deny" and shows permissionDecisionReason
-# to the model. Fires at most once per session (see _mark_session_denied) so it can
-# never strand an agent: the very next read proceeds with the soft nudge.
 _READ_DENY = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
@@ -209,7 +205,6 @@ def _stale_graph_sources(
         root_res = scan_root.resolve()
     except (OSError, RuntimeError):
         root_res = scan_root
-    # <out>/omnigraph-out/graph.json — source_files relativos podem ser ancorados aqui.
     out_base = graph_path.parent.parent
     try:
         out_base = out_base.resolve()
@@ -239,11 +234,6 @@ def _stale_graph_sources(
         except (OSError, RuntimeError):
             return False
 
-    # Provable-exclusion evidence from the scan that produced seen_files:
-    # individually ignored files are exact entries; ignored/noise-pruned
-    # directories are recorded once with a trailing separator and cover
-    # their whole subtree. skipped_sensitive entries may carry a
-    # " [reason]" suffix.
     excluded_exact: set[str] = set()
     excluded_prefixes: list[str] = []
     if detection:
@@ -304,9 +294,7 @@ def _stale_graph_sources(
         if not in_root:
             continue  # fora da raiz sob cada âncora: nunca podar
         if any(_in_seen(c) for c in in_root):
-            continue  # ainda faz parte do corpus da varredura
-        # Fail-closed liveness guard: absence from the corpus is
-        # only deletion evidence when the file is actually gone from disk.
+            continue
         alive = []
         for c in in_root:
             try:
@@ -316,13 +304,10 @@ def _stale_graph_sources(
                 pass
         if alive:
             if all(_provably_excluded(c) for c in alive):
-                stale.append(sf)  # alive but excluded under current rules
+                stale.append(sf)
             else:
                 kept_alive.append(sf)
             continue
-        # No anchored candidate exists, but a legacy bare-basename spelling
-        # can't be anchored reliably — a live corpus file with the same name
-        # means deletion is unproven; keep.
         rel_sf = sf.replace("\\", "/")
         if "/" not in rel_sf and nfc(rel_sf) in seen_basenames:
             kept_alive.append(sf)
@@ -373,8 +358,6 @@ def _zero_node_stamped_code_sources(
         root_res = scan_root.resolve()
     except (OSError, RuntimeError):
         root_res = scan_root
-    # <out>/omnigraph-out/graph.json — legacy relative source_files may be
-    # anchored here instead of the scan root (<=0.9.16/).
     out_base = graph_path.parent.parent
     try:
         out_base = out_base.resolve()
@@ -405,7 +388,7 @@ def _zero_node_stamped_code_sources(
     for f in unchanged_code:
         p = Path(f)
         if _get_extractor(p) is None:
-            continue  # no extractor: absence from the graph is expected
+            continue
         spellings = {nfc(str(p))}
         try:
             spellings.add(nfc(str(p.resolve())))
@@ -416,7 +399,7 @@ def _zero_node_stamped_code_sources(
         except (ValueError, OSError, RuntimeError):
             pass
         if spellings & present:
-            continue  # the graph has this file: stamp is honest
+            continue
         healed.append(f)
     return healed
 
@@ -601,7 +584,6 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     from omnigraph.paths import out_path, OMNIGRAPH_OUT_NAME
     # O gancho BeforeTool do Gemini não aceita stdin e SEMPRE deve retornar uma decisão, então
     # a ferramenta nunca é bloqueada; o deslocamento do grafo é anexado somente quando um grafo
-    # existe. Manipulado antes do stdin ler abaixo (que os guardas de pesquisa/leitura precisam).
     if kind == "gemini":
         payload = {"decision": "allow"}
         try:
@@ -623,14 +605,6 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     try:
         if kind == "search":
             cmd_str = str(t.get("command", "") or "")
-            # Two input shapes reach this guard (matcher "Bash|Grep"):
-            # the Bash tool carries `command`, while Claude Code's dedicated
-            # Grep tool carries `pattern` (plus optional path/glob) and no
-            # command — a Grep call IS a content search by definition, so it
-            # nudges whenever a graph exists. For Bash, keep matching the same
-            # set the old `case` matched: *grep*, *ripgrep*, and rg/find/fd/
-            # ack/ag as a token (name followed by a space). Nudge-only, even in
-            # strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = any(tok in cmd_str for tok in (
                 "grep", "ripgrep", "rg ", "find ", "fd ", "ack ", "ag "))
@@ -648,10 +622,6 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             under_out = "omnigraph-out/" in j or (OMNIGRAPH_OUT_NAME.lower() + "/") in j
             if under_out or not any(tl in _HOOK_SOURCE_EXTS for tl in tails):
                 return
-            # (a): skip files outside the graph's project. cwd (or
-            # CLAUDE_PROJECT_DIR, which Claude Code sets) is the project root, since
-            # the guard only triggers when graph.json exists relative to cwd. A path
-            # candidate that resolves outside that root is out-of-project.
             root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
             try:
                 root = root.resolve()
@@ -664,7 +634,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                 for v in explicit:
                     p = Path(v)
                     if not p.is_absolute():
-                        in_project = True  # relative -> anchored at cwd == in project
+                        in_project = True
                         break
                     try:
                         p.resolve().relative_to(root)
@@ -674,13 +644,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                         continue
                 if not in_project:
                     return
-            # One stat for existence + mtime of the graph.
             try:
                 gmtime = os.stat(str(out_path("graph.json"))).st_mtime
             except OSError:
                 return
-            # (b): stale-for-target -> soften, never block. The target file
-            # changed after the last build, or watch flagged the tree.
             stale = False
             fp = str(t.get("file_path") or "")
             if fp:
@@ -696,8 +663,6 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             if stale:
                 sys.stdout.write(_READ_NUDGE_STALE)
                 return
-            # Strict block: Read tool only, first time per session, not recently
-            # oriented, and the file is demonstrably indexed.
             tool_name = d.get("tool_name")
             if _hook_strict_enabled(strict) and tool_name in (None, "Read") \
                     and not _query_stamp_fresh() \
@@ -749,7 +714,6 @@ def _clone_repo(
     import subprocess as _sp
     import re as _re
 
-    # Normalizar URL – remover o .git final, se presente
     url = url.rstrip("/")
     if not url.endswith(".git"):
         git_url = url + ".git"
@@ -997,17 +961,6 @@ def dispatch_command(cmd: str) -> None:
             _raw = _json.loads(gp.read_text(encoding="utf-8"))
             if "links" not in _raw and "edges" in _raw:
                 _raw = dict(_raw, links=_raw["edges"])
-            # `query` deliberately keeps the graph undirected (unlike `path` /
-            # `explain`, which force directed=True): BFS/DFS here must explore
-            # both callers and callees of the seed node to build useful
-            # context, and forcing a DiGraph would make G.neighbors() return
-            # successors only, silently dropping every caller-side result for
-            # a seed with no outgoing edges. Direction is instead preserved
-            # per-edge below (mirrors omnigraph/build.py's _src/_tgt pattern)
-            # so the *rendering* stays correct without narrowing traversal.
-            # Keep in-file markers when present: unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
             _raw = dict(
                 _raw,
                 links=[
@@ -1112,19 +1065,18 @@ def dispatch_command(cmd: str) -> None:
         except Exception as exc:
             print(f"error: could not load graph: {exc}", file=sys.stderr)
             sys.exit(1)
+        from omnigraph.paths import OMNIGRAPH_OUT_NAME
+        graph_root = gp.parent.parent if gp.parent.name == OMNIGRAPH_OUT_NAME else gp.parent
         print(
             format_affected(
                 graph,
                 query,
                 relations=relations or DEFAULT_AFFECTED_RELATIONS,
                 depth=depth,
+                root=graph_root,
             )
         )
     elif cmd in ("god-nodes", "god_nodes"):
-        # god_nodes has long been an analyzer (analyze.py), an MCP tool, and a
-        # README-advertised capability, but never a CLI subcommand — `omnigraph
-        # god_nodes` fell through to "unknown command". Wire it as a
-        # read-only graph query, mirroring `affected`.
         from omnigraph.affected import load_graph
         from omnigraph.analyze import god_nodes as _god_nodes
         from omnigraph.security import sanitize_label as _sanitize_label
@@ -1176,8 +1128,6 @@ def dispatch_command(cmd: str) -> None:
             for rank, n in enumerate(gods, 1):
                 print(f"  {rank}. {_sanitize_label(str(n['label']))} - {n['degree']} edges")
     elif cmd == "save-result":
-        # omnigraph salvar resultado --question Q --resposta A [--type T] [-nodes N1 N2 ...]
-        #                      [--outcome useful|dead_end|corrected] [--correction TEXT]
         import argparse as _ap
 
         p = _ap.ArgumentParser(prog="omnigraph save-result")
@@ -1299,9 +1249,6 @@ def dispatch_command(cmd: str) -> None:
                     )
                     sys.exit(1)
                 direction_flag = "undirected"
-        # Directed by default: direction truth exists in every
-        # graph.json (arc order on post- files, _src/_tgt markers on legacy
-        # canonicalized files), so respect it unless the caller opts out.
         undirected = direction_flag == "undirected"
         gp = Path(graph_path).resolve()
         if not gp.exists():
@@ -1311,12 +1258,6 @@ def dispatch_command(cmd: str) -> None:
         _raw = json.loads(gp.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
-        # Force directed so the renderer can recover stored caller→callee
-        # direction, and multigraph so exact-pair parallel links (e.g. a
-        # `references` and a `calls` edge between the same two nodes) survive load
-        # instead of being silently collapsed last-writer-wins — otherwise the
-        # printed relation could be one the traversed pair doesn't actually
-        # carry. Local to this read; serve's shared graph is untouched.
         _raw = {**_raw, "directed": True, "multigraph": True}
         try:
             G = json_graph.node_link_graph(_raw, edges="links")
@@ -1334,7 +1275,6 @@ def dispatch_command(cmd: str) -> None:
         tgt_nid = _pick_scored_endpoint(G, tgt_scored, target_label)
         # Proteção de ambigüidade: quando ambas as consultas são resolvidas para o mesmo nó, o
         # o caminho mais curto é trivialmente zero saltos, o que quase nunca é o que o
-        # caller wanted (see bug).
         if src_nid == tgt_nid:
             print(
                 f"'{source_label}' and '{target_label}' both resolved to the same "
@@ -1357,10 +1297,6 @@ def dispatch_command(cmd: str) -> None:
                         f"(top score {_top:g}, runner-up {_runner:g})",
                         file=sys.stderr,
                     )
-        # Deterministic shortest path: hash-seeded neighbor views
-        # returned an arbitrary route among equal-length paths that varied per
-        # process. Build a sorted, materialized graph so neighbor order — and
-        # thus the chosen path — is canonical for a given graph.json.
         try:
             if undirected:
                 _und = _nx.Graph()
@@ -1368,10 +1304,6 @@ def dispatch_command(cmd: str) -> None:
                 _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
                 path_nodes = _nx.shortest_path(_und, src_nid, tgt_nid)
             else:
-                # Directed by default. True direction is NOT raw arc
-                # order: legacy canonicalized files persist a flipped arc with
-                # _src/_tgt markers, so build the digraph from _src/_tgt
-                # (falling back to the loaded arc) rather than to_directed().
                 _dg = _nx.DiGraph()
                 _dg.add_nodes_from(sorted(G.nodes))
                 _dg.add_edges_from(sorted(
@@ -1393,16 +1325,6 @@ def dispatch_command(cmd: str) -> None:
         from omnigraph.build import edge_datas
         for i in range(len(path_nodes) - 1):
             u, v = path_nodes[i], path_nodes[i + 1]
-            # Report the ACTUAL stored relation(s) of the traversed pair and
-            # direction — never a fabricated `calls`. A pair may carry
-            # several parallel relations; show all, and fall back to an honest
-            # "related" when the stored edge has no relation.
-            # Direction truth lives in the per-link _src/_tgt markers:
-            # undirected NetworkX storage canonicalizes endpoint order, so the
-            # persisted source/target arc can be flipped relative to the real
-            # caller→callee direction. Recover it from _src when present, else
-            # fall back to the loaded arc tail (markerless canonical files keep
-            # today's behavior).
             fwd, bwd = [], []
             for a, b in ((u, v), (v, u)):
                 if G.has_edge(a, b):
@@ -1504,11 +1426,7 @@ def dispatch_command(cmd: str) -> None:
             pass
         print(f"  Degree:    {G.degree(nid)}")
         from omnigraph.build import edge_data
-        connections: list[tuple[str, str, dict]] = []  # (direction, neighbor_id, edge_data)
-        # Classify by the edge's TRUE direction, not the loaded arc order:
-        # a link persisted in flipped endpoint order carries its truth in the
-        # per-edge _src marker. Markerless edges fall back to the arc
-        # tail (today's behavior).
+        connections: list[tuple[str, str, dict]] = []
         for nb in G.successors(nid):
             _ed = edge_data(G, nid, nb)
             connections.append(
@@ -1526,9 +1444,6 @@ def dispatch_command(cmd: str) -> None:
                 rel = edata.get("relation", "")
                 conf = edata.get("confidence", "")
                 arrow = "-->" if direction == "out" else "<--"
-                # Append the edge's location — the actual call/import/reference
-                # SITE (in the caller's file for an incoming call), not a def
-                # line (#BUG1). Labeled by [rel] so the meaning is unambiguous.
                 loc = edata.get("source_location") or ""
                 sfile = edata.get("source_file") or ""
                 at = f" {sfile}:{loc}" if loc else ""
@@ -1536,17 +1451,11 @@ def dispatch_command(cmd: str) -> None:
             if len(connections) > 20:
                 remainder = connections[20:]
                 print(f"  ... and {len(remainder)} more")
-                # a bare count silently hides the answer on high-degree
-                # nodes ("who calls this, what's the impact?"). Group the cut
-                # connections by direction + file so their shape is visible
-                # without falling back to a repo-wide grep.
                 by_file: dict[tuple[str, str], int] = {}
                 for direction, _nb, edata in remainder:
                     sfile = edata.get("source_file") or "(unknown file)"
                     key = (direction, sfile)
                     by_file[key] = by_file.get(key, 0) + 1
-                # Count desc, then (direction, file) so equal-count groups have a
-                # byte-stable order (not the degree-derived insertion order).
                 grouped = sorted(by_file.items(), key=lambda kv: (-kv[1], kv[0]))
                 print("  Grouped by file:")
                 for (direction, sfile), count in grouped[:20]:
@@ -1711,7 +1620,6 @@ def dispatch_command(cmd: str) -> None:
         # o back-end configurado, mesmo quando já existe um .omnigraph_labels.json.
         force_relabel = cmd == "label"
         # Espelhe o padrão de análise de arg da árvore/exportação: ande argv so flags e
-        # o caminho posicional opcional pode aparecer em qualquer ordem.
         no_viz = "--no-viz" in sys.argv
         no_label = "--no-label" in sys.argv
         missing_only = "--missing-only" in sys.argv
@@ -1729,10 +1637,6 @@ def dispatch_command(cmd: str) -> None:
         co_exclude_hubs: float | None = None
         label_max_concurrency: int = 4
         label_batch_size: int = 100
-        # defaults make presence undetectable for these, so track whether
-        # the user actually passed them — the label-reuse branch below warns when
-        # labeling flags are silently ignored. (--backend/--model default to None,
-        # so `is not None` already means "explicitly passed" for those.)
         label_max_concurrency_explicit = False
         label_batch_size_explicit = False
         i_arg = 0
@@ -1797,7 +1701,6 @@ def dispatch_command(cmd: str) -> None:
         # Solução 3: não faça hard-exit em um graph.json superdimensionado aqui.
         # As saídas principais (graph.json + GRAPH_REPORT.md) ainda são gravadas; o
         # A renderização graph.html abaixo volta para a visualização de agregação da comunidade
-        # (node_limit=5000) quando estiver acima do limite.
         from omnigraph.security import check_graph_file_size_cap as _check_cap
         _over_cap = False
         try:
@@ -1821,10 +1724,8 @@ def dispatch_command(cmd: str) -> None:
         print("Re-clustering...")
         communities = cluster(G, resolution=co_resolution, exclude_hubs_percentile=co_exclude_hubs)
         # Espelhe o caminho de observação/atualização: mapeie novos cids para os anteriores
-        # node-overlap para que o .omnigraph_labels.json existente continue anexando
         # para a mesma comunidade conceitual após o reagrupamento. Sem isso,
         # os rótulos seguem o índice cid bruto e ficam desalinhados sempre que o
-        # o grafo mudou entre rotulagem e somente cluster.
         previous_node_community = {
             n["id"]: n["community"]
             for n in _raw.get("nodes", [])
@@ -1842,7 +1743,6 @@ def dispatch_command(cmd: str) -> None:
         # omnigraph-out/ dir (saída de outro projeto/inquilino), escreva ao lado dele,
         # não em um omnigraph-out/ no CWD. Mas quando `--graph`
         # aponta para um caminho arbitrário - por ex. um `backup/graph.json` arquivado
-        # antes do reagrupamento — volte para o omnigraph-out/ do CWD,
         # que é o fluxo de trabalho de restauração no local que testa os pinos. O padrão
         # (sem --graph) o caso já possui graph_json em watch_path/omnigraph-out.
         _out_name = Path(_OMNIGRAPH_OUT).name
@@ -1862,18 +1762,10 @@ def dispatch_command(cmd: str) -> None:
                 }
             except Exception:
                 existing_labels = {}
-        # Acumule o uso de token das chamadas LLM de rotulagem para modo somente cluster
-        # relata o custo real em vez de um zero codificado. Permanece {0, 0} ativado
         # os caminhos reutilizados/sem rótulo, que não fazem chamadas LLM.
         label_token_usage = {"input": 0, "output": 0}
-        # a --no-label run produces only "Community N" placeholders.
-        # Persisting them (plus a matching .sig) made the reuse branch treat them
-        # as fresh forever, permanently blocking real labeling on later runs.
         placeholder_only = False
         if labels_path.exists() and not force_relabel:
-            # this branch never calls the LLM, so labeling flags would be
-            # silently ignored. Reuse is still the correct (exit 0) outcome — but
-            # say so, instead of letting `--backend openai` look like it relabeled.
             _ignored_label_flags = [flag for flag, given in (
                 ("--backend", label_backend is not None),
                 ("--model", label_model is not None),
@@ -1888,9 +1780,7 @@ def dispatch_command(cmd: str) -> None:
                     file=sys.stderr,
                 )
             # Reutilize rótulos salvos, mas não confie cegamente neles: o grafo pode ter
-            # foi redefinido/reagrupado desde a rotulagem, caso em que um cid agora
             # cobre uma comunidade DIFERENTE e seu nome antigo (LLM) está errado (#label-stale).
-            # Valide cada comunidade com base na assinatura de membro salva ao lado do
             # rótulos; qualquer comunidade que mudou (ou não tem rótulo salvo) é renomeada por
             # seu hub atual - determinístico e correto por construção - e o usuário
             # é instruído a `omnigraph label` para novos nomes de LLM. Comunidades inalteradas mantêm
@@ -1914,17 +1804,12 @@ def dispatch_command(cmd: str) -> None:
             hub_labels: dict[int, str] | None = None
             changed = 0
             for cid in communities:
-                # A persisted "Community {cid}" is a placeholder, not an earned
-                # label — treat it as absent so the hub labeler replaces it and an
-                # already-polluted sidecar (e.g. from a prior --no-label run) heals
-                # instead of suppressing real labels forever.
                 have_label = (
                     cid in existing_labels
                     and existing_labels[cid] != f"Community {cid}"
                 )
                 if saved_sigs:
                     # Preciso: a assinatura de membro nos diz se isso é exato
-                    # comunidade mudou desde que foi rotulada.
                     fresh = have_label and saved_sigs.get(cid) == cur_sigs.get(cid)
                 else:
                     # Nenhum sidecar de assinatura (os rótulos são anteriores). Uma comunidade diferente
@@ -1953,13 +1838,11 @@ def dispatch_command(cmd: str) -> None:
         else:
             # Nenhum arquivo de rótulos ainda (ou `omnigraph label` forçou uma atualização). Quando executado
             # autônomo, não há agente de orquestração para executar o skill.md Etapa 5, então
-            # nomear automaticamente as comunidades em vez de sair de "Comunidade N".
             from omnigraph.cluster import label_communities_by_hub
             from omnigraph.llm import generate_community_labels
             print("Labeling communities...")
             # Rótulos básicos determinísticos e livres de LLM: nomeie cada comunidade com base em seu
             # hub de mais alto nível, para que o relatório seja legível mesmo sem back-end
-            # (anteriormente denominado "Comunidade N"). Um back-end LLM configurado substitui esses
             # com nomes mais ricos abaixo; seu substituto de espaço reservado sem backend NÃO.
             hub_labels = label_communities_by_hub(G, communities)
             label_communities_input = communities
@@ -1979,33 +1862,19 @@ def dispatch_command(cmd: str) -> None:
                 max_concurrency=label_max_concurrency, batch_size=label_batch_size,
                 usage_out=label_token_usage,
             )
-            # Deixe o LLM OVERRIDE apenas onde produziu um nome real - sem back-end
             # fallback retorna espaços reservados "Community {cid}", que não devem ser prejudicados
-            # the deterministic hub labels. Also reject a model echoing the prompt
-            # key back ("5" for community 5) — that is an id, not a name.
             labels.update({
                 cid: v for cid, v in generated_labels.items()
                 if v and v != f"Community {cid}" and v != str(cid)
             })
         stages.mark("label")
         questions = suggest_questions(G, communities, labels)
-        # cluster-only re-clusters an EXISTING graph: the code content is exactly
-        # what extract saw, so keep the extract-time commit stamp instead of
-        # re-deriving it from the shell's cwd — running from another repo used to
-        # re-stamp graph.json with THAT repo's HEAD. When the loaded
-        # graph predates the stamp, fall back to the analysed repo's HEAD via
-        # the cwd-aware helper.
         _commit = _raw.get("built_at_commit")
         if not _commit:
             from omnigraph.watch import _git_head as _gh
             _commit = _gh(cwd=watch_path)
-        # Snapshot BEFORE any artifact is replaced: GRAPH_REPORT.md was written
-        # first, so the dated folder held the NEW report, not the previous.
         from omnigraph.export import backup_if_protected as _backup
         _backup(out)
-        # The guard can refuse this write, so it goes before the sidecars —
-        # a report and labels describing a clustering graph.json does not contain
-        # are worse than no run at all.
         if not to_json(G, communities, str(out / "graph.json"),
                        community_labels=labels, built_at_commit=_commit):
             print(
@@ -2035,21 +1904,14 @@ def dispatch_command(cmd: str) -> None:
             json.dumps(analysis, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
-        # Don't persist placeholder-only labels (or their .sig): leaving the
-        # sidecar absent lets a later run generate real labels instead of reading
-        # back "Community N" as authoritative.
         if not placeholder_only:
             from omnigraph.paths import write_json_atomic as _wja
             _wja(labels_path, {str(k): v for k, v in labels.items()}, ensure_ascii=False)
-            # Membership signatures beside the labels so a later cluster-only can
-            # detect which communities changed and avoid reusing a stale label
-            # (see reuse above).
             from omnigraph.cluster import community_member_sigs as _cms
             (labels_path.parent / (labels_path.name + ".sig")).write_text(
                 json.dumps({str(k): v for k, v in _cms(communities).items()}), encoding="utf-8")
 
         # Espelhe o padrão watch.py: gate to_html para saídas principais (graph.json +
-        # GRAPH_REPORT.md) sempre pousa. Honra --no-viz explicitamente; de outra forma
         # volte ao tratamento de ValueError para que um grafo superdimensionado não trave
         # a CLI está no meio da gravação e deixa um graph.html obsoleto no disco.
         html_target = out / "graph.html"
@@ -2131,17 +1993,10 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
 
     elif cmd == "hook-check":
-        # Codex Desktop rejeita hookSpecificOutput.additionalContext em PreToolUse.
-        # Mantenha isso como um ambiente independente de plataforma cruzada para que os ganchos instalados nunca quebrem o Bash
         # chamadas de ferramenta. A orientação sobre o grafo chega ao agente por AGENTS.md / skill.
         sys.exit(0)
     elif cmd == "hook-guard":
-        # Guarda Claude/Codebuddy PreToolUse independente de shell. Substitui o antigo
         # ganchos inline-bash que falharam no Windows. Imprime um empurrão adicional de Contexto
-        # toward omnigraph when a fresh in-project graph exists; always exits 0. In
-        # strict mode (opt-in, `hook-guard read --strict`) it blocks the first raw
-        # read per session via the JSON permissionDecision payload — never via exit
-        # code — and downgrades to the nudge thereafter.
         _run_hook_guard(
             sys.argv[2] if len(sys.argv) > 2 else "",
             strict="--strict" in sys.argv[3:],
@@ -2158,9 +2013,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "tree":
         # Emita uma visualização HTML de árvore dobrável D3 v7 de graph.json:
         # botões expandir tudo / recolher tudo / redefinir visualização, multilinha
-        # Etiquetas wrapText com nome + contagem em cores separadas,
         # paleta baseada em profundidade, subárvore clique para alternar, inspetor flutuante
-        # showing top-K outbound edges per symbol.
         from typing import Optional as _Opt
         from omnigraph.tree_html import write_tree_html, DEFAULT_MAX_CHILDREN
         graph_path = Path(_OMNIGRAPH_OUT) / "graph.json"
@@ -2209,8 +2062,6 @@ def dispatch_command(cmd: str) -> None:
                 top_k_edges=top_k_edges, project_label=project_label,
             )
         except ValueError as exc:
-            # e.g. an explicit --root that matches no source_file — the tree
-            # would silently flatten, so fail loudly instead.
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(1)
         size_kb = out.stat().st_size / 1024
@@ -2219,11 +2070,9 @@ def dispatch_command(cmd: str) -> None:
         sys.exit(0)
 
     elif cmd == "merge-driver":
-        # driver git merge para graph.json - pega (base, atual, outro) e grava
         # a união de atuais + outros nós/arestas de volta ao atual. Sai 1 em
         # entrada corrompida, então o git revela o conflito em vez de silenciosamente
         # aceitar uma fusão envenenada (ver F-005).
-        # Uso: omnigraph merge-driver %O %A %B (definido no driver de mesclagem .git/config)
         if len(sys.argv) < 5:
             print("Usage: omnigraph merge-driver <base> <current> <other>", file=sys.stderr)
             sys.exit(1)
@@ -2247,8 +2096,6 @@ def dispatch_command(cmd: str) -> None:
                     f"graph.json {p} is {size} bytes, exceeds {_MERGE_MAX_BYTES}-byte cap"
                 )
             data = json.loads(path_obj.read_text(encoding="utf-8"))
-            # A committed raw (--no-cluster) graph stores edges under "edges";
-            # parse via the shared links/edges-normalizing loader.
             from omnigraph.paths import load_node_link_graph as _lnlg
             return _lnlg(data), data
         try:
@@ -2274,7 +2121,6 @@ def dispatch_command(cmd: str) -> None:
         sys.exit(0)
 
     elif cmd == "merge-graphs":
-        # omnigraph merge-graphs graph1.json graph2.json ... --out merged.json
         args = sys.argv[2:]
         graph_paths: list[Path] = []
         out_path = Path(_OMNIGRAPH_OUT) / "merged-graph.json"
@@ -2302,15 +2148,9 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(1)
             _enforce_graph_size_cap_or_exit(gp)
             data = json.loads(gp.read_text(encoding="utf-8"))
-            # Normalize a chave de arestas/links antes de carregar - zspekfy escreve "links"
             # via node_link_data mas execuções mais antigas podem ter usado "arestas".
             if "links" not in data and "edges" in data:
                 data = dict(data, links=data["edges"])
-            # Preserve stored edge direction across undirected node_link_graph.
-            # Mirrors cli.py's query pattern and export.py's _src/_tgt restoration.
-            # Keep in-file markers when present: unconditionally
-            # overwriting them with source/target would clobber the true
-            # direction of a link persisted in flipped endpoint order.
             data = dict(
                 data,
                 links=[
@@ -2326,42 +2166,27 @@ def dispatch_command(cmd: str) -> None:
                 G = _jg.node_link_graph(data, edges="links")
             except TypeError:
                 G = _jg.node_link_graph(data)
-            # node_link_graph restores only the nested `graph.hyperedges` slot;
-            # a graph.json whose hyperedges live only at the top level (the
-            # other half of to_json's dual-slot shape) would silently
-            # lose them here. Fall back to the top-level key.
             if "hyperedges" not in G.graph and isinstance(data.get("hyperedges"), list):
                 G.graph["hyperedges"] = data["hyperedges"]
             graphs.append(G)
-        # nx.compose exige que todos os grafos sejam do mesmo tipo.  Quando inserir grafos
         # vêm de fontes diferentes (por exemplo, uma execução apenas AST versus uma execução LLM completa) uma
-        # pode ser um MultiGraph e outro um Graph.  Normalize tudo para grafo
         # (o padrão zspekfy) convertendo MultiGraphs com nx.Graph().
         def _to_simple(g: "_nx.Graph") -> "_nx.Graph":
-            # nx.compose exige que todos os grafos sejam do mesmo tipo. As entradas podem
             # discordo em AMBOS os eixos - direcionado versus não direcionado e multi versus simples
             # - porque os arquivos graph.json por repositório são escritos por extratos diferentes
             # caminhos em momentos diferentes. Normalize tudo para um plano simples e não direcionado
             # Grafo (a visão de repositório cruzado mesclada não é direcionada de qualquer maneira), que cobre
-            # DiGraph / MultiGraph / MultiDiGraph. Sem isso, uma entrada direcionada
             # composição travada com "Todos os grafos devem ser direcionados ou não direcionados".
             if type(g) is not _nx.Graph:
                 return _nx.Graph(g)
             return g
         # Tag de repositório exclusiva por grafo. O nome do diretório `omnigraph-out/..` não é
-        # exclusivo entre entradas (src/omnigraph-out e frontend/src/omnigraph-out ambos
         # → "src"), que colide IDs de nós do mesmo tronco e mescla silenciosamente
-        # entidades. distinct_repo_tags garante um prefixo distinto por grafo.
         repo_tags = _repo_tags(graph_paths)
         naive_tags = [gp.parent.parent.name for gp in graph_paths]
         if len(set(naive_tags)) != len(naive_tags):
             print(f"  note: repo dir names collide; using distinct tags: {', '.join(repo_tags)}")
         merged = _nx.Graph()
-        # nx.compose merges graph attrs with dict.update, so each iteration
-        # CLOBBERED the previously accumulated hyperedge list — only the last
-        # input's hyperedges survived (, after @oleksii-tumanov's
-        # diagnosis in PR). Collect every input's prefixed hyperedges
-        # and re-attach the union after composing.
         collected_hyperedges: list = []
         for G, repo_tag in zip(graphs, repo_tags):
             prefixed = _to_simple(_prefix(G, repo_tag))
@@ -2369,9 +2194,6 @@ def dispatch_command(cmd: str) -> None:
             if isinstance(hes, list):
                 collected_hyperedges.extend(h for h in hes if isinstance(h, dict))
             merged = _nx.compose(merged, prefixed)
-        # Drop whatever compose left behind (the last input's list, possibly
-        # with internal duplicates) so attach_hyperedges dedups the full
-        # collection by id from a clean slate.
         merged.graph.pop("hyperedges", None)
         if collected_hyperedges:
             from omnigraph.export import attach_hyperedges as _attach
@@ -2380,17 +2202,12 @@ def dispatch_command(cmd: str) -> None:
             out_data = _jg.node_link_data(merged, edges="links")
         except TypeError:
             out_data = _jg.node_link_data(merged)
-        # Restore original edge direction from _src/_tgt markers (same pattern as export.py/)
         for link in out_data.get("links", []):
             tsrc = link.pop("_src", None)
             ttgt = link.pop("_tgt", None)
             if tsrc is not None and ttgt is not None:
                 link["source"] = tsrc
                 link["target"] = ttgt
-        # Persist BOTH hyperedge slots: node_link_data only nests graph
-        # attrs under `graph`, so without this line the union would survive
-        # solely in the slot historic readers ignored. Mirror to_json's
-        # dual-slot shape so every writer agrees.
         out_data["hyperedges"] = merged.graph.get("hyperedges", [])
         out_path.parent.mkdir(parents=True, exist_ok=True)
         from omnigraph.paths import write_json_atomic as _wja
@@ -2439,7 +2256,6 @@ def dispatch_command(cmd: str) -> None:
             print("            (or set FALKORDB_PASSWORD instead of --password to keep it off argv)", file=sys.stderr)
             sys.exit(1)
 
-        # Parse shared args
         args = sys.argv[3:]
         graph_path = Path(_OMNIGRAPH_OUT) / "graph.json"
         graph_path_explicit = False
@@ -2604,7 +2420,6 @@ def dispatch_command(cmd: str) -> None:
         except TypeError:
             G = _jg.node_link_graph(_raw)
 
-        # Load optional analysis/labels
         communities: dict[int, list[str]] = {}
         if analysis_path.exists():
             _an = json.loads(analysis_path.read_text(encoding="utf-8"))
@@ -2619,7 +2434,6 @@ def dispatch_command(cmd: str) -> None:
         # (`to_json` escreve em cada nó). O sidecar de análise é o
         # fonte canônica - mas o caminho de reconstrução pós-commit/watch não
         # regenere-o e `extract` poderá ter seus arquivos temporários limpos. Quando
-        # isso acontece, `omnigraph export html` anteriormente resgatado com
         # "Comunidade única - visualização agregada não é útil." mesmo que o
         # o atributo por nó tinha os dados corretos o tempo todo. Reconstruir de
         # o próprio grafo, então subcomandos downstream (html, obsidian, wiki,
@@ -2805,10 +2619,7 @@ def dispatch_command(cmd: str) -> None:
     elif cmd == "extract":
         # Extração de pipeline completo sem cabeçalho para CI/scripts.
         # Executa detecção -> extração AST no código -> extração semântica LLM em
-        # docs/papers/images -> merge -> build -> cluster -> write outputs.
         # Ao contrário do caminho skill.md (que passa pelos subagentes do Código Claude),
-        # isso chama extract_corpus_parallel diretamente usando qualquer back-end
-        # tem um conjunto de chaves de API.
         if len(sys.argv) < 3:
             print(
                 "Usage: omnigraph extract <path> [--backend gemini|kimi|claude|openai|deepseek|ollama] "
@@ -2849,12 +2660,10 @@ def dispatch_command(cmd: str) -> None:
         cli_token_budget: int | None = None
         cli_max_concurrency: int | None = None
         cli_api_timeout: float | None = None
-        # Clustering tuning knobs
         cli_resolution: float = 1.0
         cli_exclude_hubs: float | None = None
         cli_excludes: list[str] = []
         cli_timing: bool = False
-        # --force paridade com `omnigraph update`: o sinalizador ou OMNIGRAPH_FORCE=1
         # desativa a porta incremental e ignora as leituras do cache semântico.
         force = os.environ.get("OMNIGRAPH_FORCE", "").lower() in ("1", "true", "yes")
 
@@ -2897,9 +2706,6 @@ def dispatch_command(cmd: str) -> None:
             elif a.startswith("--mode="):
                 extract_mode = a.split("=", 1)[1]; i += 1
             elif a in ("--out", "--output") and i + 1 < len(args):
-                # --output is an alias of --out: it was silently dropped
-                # before, and `omnigraph tree` already documents --output, so the
-                # mistake is natural. (--output= does not startswith --out=.)
                 out_dir = Path(args[i + 1]); i += 2
             elif a.startswith(("--out=", "--output=")):
                 out_dir = Path(a.split("=", 1)[1]); i += 1
@@ -2978,7 +2784,6 @@ def dispatch_command(cmd: str) -> None:
             print("[omnigraph extract] deep mode enabled: richer semantic extraction")
 
         # O sinalizador CLI vence env var. Configurando OMNIGRAPH_API_TIMEOUT aqui então
-        # _call_openai_compat o seleciona sem precisar de um novo caminho kwarg.
         if cli_api_timeout is not None:
             os.environ["OMNIGRAPH_API_TIMEOUT"] = str(cli_api_timeout)
         if cli_max_workers is not None:
@@ -2986,26 +2791,15 @@ def dispatch_command(cmd: str) -> None:
 
         # Resolva o diretório de saída. O contrato voltado para o usuário é "<out>/omnigraph-out/"
         # então um novo checkout escreve omnigraph-out/ na raiz do projeto, correspondendo
-        # o pipeline habilidade.md.
         out_root = (out_dir.resolve() if out_dir else target)
         omnigraph_out = out_root / _OMNIGRAPH_OUT
         omnigraph_out.mkdir(parents=True, exist_ok=True)
-        # Persist corpus-shaping options so later update/watch/hook rebuilds
-        # use the same file set as the initial extraction.
         from omnigraph.watch import (
             _write_build_config as _write_build_cfg,
             _read_build_excludes as _read_build_ex,
             _read_build_gitignore as _read_build_gi,
         )
-        # persistence: an explicit --no-gitignore persists False; a later
-        # flag-less `omnigraph extract` must NOT clobber it back to True, which
-        # would make the git-ignored code silently disappear again (the exact
-        # complaint is about). Honor the persisted value for THIS run when
-        # the flag is absent (read before the write below), and write False only
-        # when the flag is set — None leaves the setting as-is, mirroring how
-        # persists --exclude.
         _effective_gitignore = False if no_gitignore else _read_build_gi(omnigraph_out)
-        # An explicit list replaces the persisted one; omission reuses it.
         _effective_excludes = cli_excludes or _read_build_ex(omnigraph_out)
         _write_build_cfg(
             omnigraph_out,
@@ -3029,7 +2823,6 @@ def dispatch_command(cmd: str) -> None:
         # excluído) e build_merge + _stale_graph_sources reconciliado substituído
         # e fontes genuinamente excluídas em relação ao corpus atual, então doc/
         # nós de papel/imagem sobrevivem a uma reconstrução --code-only em vez de serem
-        # descartado com o restante do grafo confirmado.
         incremental_mode = existing_graph_path.exists() if has_path else False
         # --force: varredura completa, não a diferença incremental controlada por manifesto - um caloroso
         # caso contrário, a árvore inalterada despacharia zero arquivos.
@@ -3082,12 +2875,6 @@ def dispatch_command(cmd: str) -> None:
             graph_stale_sources = _stale_graph_sources(
                 existing_graph_path, target, _seen_files, detection=detection
             )
-            # heal: manifests poisoned BEFORE failed-source unstamping
-            # existed carry live hashes for code files whose extraction failed
-            # (missing extra, crash) — stamped up-to-date yet absent from
-            # graph.json, so the incremental gate skips them forever. Treat
-            # such a file as changed and re-queue it; if it fails again this
-            # run it is now left unstamped, so this cannot wedge.
             _healed_sources = _zero_node_stamped_code_sources(
                 existing_graph_path,
                 target,
@@ -3123,7 +2910,6 @@ def dispatch_command(cmd: str) -> None:
         # --code-only: código de índice (AST local puro, sem chave) e pula a semântica
         # (doc/paper/image) passa inteiramente, então um repositório misto não falha quando não
         # O back-end do LLM está configurado. Relate o que foi ignorado em vez de
-        # deixando-o cair silenciosamente.
         if code_only and semantic_files:
             print(
                 f"[omnigraph extract] --code-only: skipping {len(semantic_files)} "
@@ -3140,11 +2926,8 @@ def dispatch_command(cmd: str) -> None:
             # não é um proxy válido para cobertura profunda: sobre uma árvore quente e inalterada
             # ele despacha zero arquivos e `--mode deep` silenciosamente sem operação
             #. Ampliar o passe semântico para o FULL live
-            # doc/paper/image set (``files_by_type`` de detect_incremental,
             # que já exclui arquivos excluídos) e deixe o
             # cache com namespace de modo decide acertos/erros - a primeira execução profunda
-            # re-dispatches everything (deep namespace cold), later deep runs
-            # atingiu o cache profundo.
             _deep_all = [
                 Path(p)
                 for _ftype in ("document", "paper", "image")
@@ -3160,8 +2943,6 @@ def dispatch_command(cmd: str) -> None:
             semantic_files = _deep_all
         if incremental_mode:
             # Arquivos excluídos, mas ativos, são relatados separadamente das exclusões
-            #: eles ainda existem no disco, a varredura simplesmente parou
-            # covering them (ignore rules / --exclude changed).
             _excl_note = f"; {len(excluded_files)} excluded" if excluded_files else ""
             print(
                 f"[omnigraph extract] {len(code_files)} code, {len(doc_files)} docs, "
@@ -3186,10 +2967,6 @@ def dispatch_command(cmd: str) -> None:
                 f"[omnigraph extract] {len(_unclassified)} file(s) not classified "
                 f"(no supported extension or shebang), skipped: {_names}{_more}"
             )
-        # Name the files dropped by the sensitive-file filter so a wrongly-flagged
-        # source/doc is visible, not just a count. Operational skips
-        # (symlink/office/Workspace) carry a " [reason]" suffix; exclude those here
-        # so this line reports only the security-heuristic drops.
         _sensitive = detection.get("skipped_sensitive", []) if isinstance(detection, dict) else []
         _sec = [s for s in _sensitive if " [" not in s]
         if _sec:
@@ -3201,7 +2978,6 @@ def dispatch_command(cmd: str) -> None:
             )
         stages.mark("detect")
 
-        # Resolva o back-end do LLM somente agora que sabemos se o corpus
         # precisa de um. Um corpus somente de código é AST local puro e não deve exigir
         # uma chave de API; a chave é aplicada abaixo somente quando há trabalho de LLM.
         from omnigraph.llm import (
@@ -3292,15 +3068,7 @@ def dispatch_command(cmd: str) -> None:
                     )
                     sys.exit(1)
 
-        # Track whether this run's extraction was incomplete (a whole extractor
-        # pass crashed, or some semantic chunks failed). A partial result must not
-        # be force-written over a good complete graph — the final write falls back
-        # to the shrink guard unless --allow-partial is set.
         _extraction_incomplete = False
-        # A walk that couldn't fully enumerate the corpus (permission-denied
-        # subtree, I/O error) yields a legitimately smaller graph that must not
-        # be force-written over a complete one — same failure class as a crashed
-        # pass. detect()/detect_incremental() already record these; consume them.
         if detection.get("walk_errors"):
             _extraction_incomplete = True
 
@@ -3310,24 +3078,10 @@ def dispatch_command(cmd: str) -> None:
         if code_files:
             from omnigraph.extract import extract as _ast_extract
             # Ancore o cache na raiz de saída, não no projeto verificado:
-            # com --out, um <target>/omnigraph-out/cache/ vazaria um
             # omnigraph-out/ dir em um projeto que solicitou saída externa.
-            # `root` stays the scanned project so source_file/ids relativize
-            # against it; conflating the two basenamed every node.
             ast_kwargs: dict = {"cache_root": out_root, "root": target}
             if cli_max_workers is not None:
                 ast_kwargs["max_workers"] = cli_max_workers
-            # (the `omnigraph update` twin of watch's fix): an
-            # incremental re-scan extracts only the changed code files, so the
-            # cross-file resolvers cannot see a callee living in an unchanged
-            # file and every changed->unchanged call edge silently vanished on
-            # merge. Hand extract() read-only resolution context from the
-            # persisted graph: its AST-tier nodes (with their `_callable`/
-            # `_callable_class` markers) plus the contains/method edges
-            # the member-call resolvers walk, scoped to the UNCHANGED
-            # live corpus — never a re-extracted, deleted, or excluded file, so
-            # stale symbols cannot resurrect. Fails open (changed-batch-only
-            # resolution, the pre-fix behavior) on an unreadable graph.
             if incremental_mode and existing_graph_path.exists():
                 _ctx_nodes: list[dict] = []
                 _ctx_edges: list[dict] = []
@@ -3343,10 +3097,6 @@ def dispatch_command(cmd: str) -> None:
                     _ctx_root = Path(os.path.abspath(target))
 
                     def _ctx_identity(source_file) -> str | None:
-                        # graph.json source_file values are relative to the
-                        # scanned root (`root=target` above); detect's
-                        # unchanged_files keep their scan-time form. Compare
-                        # both as absolute posix paths.
                         if not source_file:
                             return None
                         _p = Path(str(source_file))
@@ -3404,15 +3154,10 @@ def dispatch_command(cmd: str) -> None:
                 ast_result = _ast_extract(code_files, **ast_kwargs)
             except Exception as exc:
                 print(f"[omnigraph extract] AST extraction failed: {exc}", file=sys.stderr)
-                # losing the whole AST pass is fatal by default. The
-                # empty stand-in only reaches the shrink guard when an existing
-                # graph is larger — on a fresh build it used to be written as a
-                # 0-node graph with exit 0, indistinguishable from success.
-                # --allow-partial opts back into the best-effort continuation.
                 if not cli_allow_partial:
                     sys.exit(1)
                 ast_result = {"nodes": [], "edges": [], "input_tokens": 0, "output_tokens": 0}
-                _extraction_incomplete = True  # the whole AST pass was lost
+                _extraction_incomplete = True
         stages.mark("AST extract")
 
         # Extração semântica em documentos/artigos/imagens. Verifique o cache primeiro.
@@ -3425,20 +3170,12 @@ def dispatch_command(cmd: str) -> None:
             "nodes": [], "edges": [], "hyperedges": [],
             "input_tokens": 0, "output_tokens": 0,
         }
-        # Semantic files whose extraction truncated this run. They are left
-        # unstamped in the manifest so detect_incremental re-queues them next run
-        # (mirrors the failed-chunk handling); captured below before the
-        # _partial markers are stripped from the corpus.
         _partial_semantic_files: set[str] = set()
         sem_cache_hits = 0
         sem_cache_misses = 0
         # O modo profundo usa seu próprio namespace (cache/semantic-deep/) tão profundo e
         # resultados padrão para o mesmo conteúdo nunca se obscurecem.
         sem_cache_mode = "deep" if deep_mode else None
-        # Entries are attributed to the extraction prompt that produced them, so
-        # a release that changes the prompt re-extracts rather than replaying the
-        # older vintage alongside the new one. Read and write must pass
-        # the same prompt, or the write lands where the next read won't look.
         from omnigraph.llm import _extraction_system as _sem_prompt_for
         sem_prompt = _sem_prompt_for(deep=deep_mode)
         if semantic_files:
@@ -3446,7 +3183,6 @@ def dispatch_command(cmd: str) -> None:
             if force:
                 # --force: ignora o READ do cache para que cada arquivo semântico seja
                 # reenviado; o salvamento abaixo ainda funciona, então o novo
-                # os resultados substituem as entradas obsoletas.
                 cached_nodes, cached_edges, cached_hyperedges = [], [], []
                 uncached_paths = list(sem_paths_str)
             else:
@@ -3478,7 +3214,6 @@ def dispatch_command(cmd: str) -> None:
                     corpus_kwargs["max_concurrency"] = cli_max_concurrency
 
                 # Retorno de chamada de progresso mínimo para que a CLI não fique mais silenciosa
-                # during long local-inference runs (issue addendum).
                 # Acompanhe também o sucesso por bloco para que possamos falhar ruidosamente quando
                 # erros de cada pedaço (por exemplo, pacote SDK de back-end ausente).
                 _chunk_stats = {"total": 0, "succeeded": 0}
@@ -3505,7 +3240,7 @@ def dispatch_command(cmd: str) -> None:
                         file=sys.stderr,
                     )
                     fresh = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
-                    _extraction_incomplete = True  # the semantic pass crashed
+                    _extraction_incomplete = True
 
                 # on_chunk_done só é acionado após um pedaço ser bem-sucedido. Se fresco
                 # a extração semântica foi solicitada e nenhum pedaço foi concluído,
@@ -3519,16 +3254,8 @@ def dispatch_command(cmd: str) -> None:
                         file=sys.stderr,
                     )
                     sys.exit(1)
-                # Some (but not all) chunks failed — the graph is missing nodes
-                # from the failed chunks, so it must not clobber a larger complete
-                # graph without an explicit --allow-partial override.
                 if _chunk_stats["total"] and _chunk_stats["succeeded"] < _chunk_stats["total"]:
                     _extraction_incomplete = True
-                # Which files truncated this run (item markers + the empty-parse
-                # _partial_files set). Computed BEFORE the save so it can be passed
-                # as partial_source_files: without it, a file whose only truncated
-                # chunk parsed empty (so it has no item markers here) would be
-                # written as a complete cache entry, re-promoting it.
                 from omnigraph.llm import (
                     _partial_source_files as _partial_sf,
                     _strip_partial_markers as _strip_partial,
@@ -3548,8 +3275,6 @@ def dispatch_command(cmd: str) -> None:
                     )
                 except Exception as exc:
                     print(f"[omnigraph extract] warning: could not write semantic cache: {exc}", file=sys.stderr)
-                # Strip the markers before the corpus feeds the graph so the
-                # internal flag never leaks into graph.json.
                 _strip_partial(fresh)
                 sem_result["nodes"].extend(fresh.get("nodes", []))
                 sem_result["edges"].extend(fresh.get("edges", []))
@@ -3561,15 +3286,9 @@ def dispatch_command(cmd: str) -> None:
         # com chave de hash de conteúdo e sem versionamento, para que nunca seja varrido pelo AST
         # limpeza de versão: cada alteração de conteúdo ou exclusão de arquivo deixa um
         # órfão permanente que acumula ilimitadamente. Varrer contra
-        # o conjunto COMPLETO de documentos ativos (``files_by_type`` — presente em ambos os
         # ramificações incrementais e completas), NÃO os ``semantic_files`` incrementais
         # subconjunto alterado, que excluiria todas as entradas válidas de documentos inalterados.
         # Melhor esforço: uma falha de poda nunca deve interromper a extração.
-        # Hash keys are anchored to the corpus (``target``) — the same anchor
-        # the cache read/write above use — while the stat-index artifact
-        # follows the cache location (``out_root``). Anchoring these hashes to
-        # ``out_root`` instead would mismatch every key under ``--out`` and
-        # sweep the entire fresh cache as orphaned.
         try:
             from omnigraph.cache import file_hash as _file_hash
             _live_hashes: set[str] = set()
@@ -3584,7 +3303,6 @@ def dispatch_command(cmd: str) -> None:
                         _live_hashes.add(_file_hash(_abs, target, cache_root=out_root))
                     except OSError:
                         pass
-            # A pathless database extraction has no filesystem corpus to sweep.
             if has_path:
                 _prune_semantic_cache(out_root, _live_hashes)
         except Exception as exc:
@@ -3618,7 +3336,6 @@ def dispatch_command(cmd: str) -> None:
         # Mesclar AST + semântica + pg_result + cargo_result. O pedido é importante para desduplicação: aprovação no AST
         # primeiro significa que os atributos do nó semântico vencem na colisão (rótulos mais ricos
         # para símbolos também referenciados em documentos). As hiperarestas só vêm do
-        # semantic side.
         merged: dict = {
             "nodes": list(ast_result.get("nodes", [])) + list(sem_result.get("nodes", [])) + list(pg_result.get("nodes", [])) + list(cargo_result.get("nodes", [])),
             "edges": list(ast_result.get("edges", [])) + list(sem_result.get("edges", [])) + list(pg_result.get("edges", [])) + list(cargo_result.get("edges", [])),
@@ -3636,9 +3353,6 @@ def dispatch_command(cmd: str) -> None:
         # seu semantic_hash está vazio, então detect_incremental os coloca novamente na fila (# 933).
         # A normalização do caminho na raiz da varredura acontece dentro do auxiliar
         # então novos source_files relativos à raiz correspondem aos de detect()
-        # absolute file lists.
-        # also drop AST sources that failed (missing optional extra /
-        # zero-node anomaly) so they are not frozen as up-to-date.
         _failed_ast_sources = list(ast_result.get("failed_sources") or [])
         _manifest_files = _stamped_manifest_files(
             files_by_type,
@@ -3648,27 +3362,13 @@ def dispatch_command(cmd: str) -> None:
             failed_ast_sources=_failed_ast_sources,
         )
 
-        # Files dispatched this run but dropped by _stamped_manifest_files
-        # above (failed chunk, LLM omission, or any future exclusion) still
-        # carry a stale semantic_hash from a prior successful run in the
-        # on-disk manifest; save_manifest's seed loop would otherwise copy it
-        # verbatim and mask the omission. Derived from semantic_files
-        # — what was actually SENT to the backend this run (narrowed by the
-        # incremental gate and --code-only, widened by deep mode) — NOT from
-        # files_by_type: the full live corpus includes untouched files that
-        # were never dispatched, and clearing those would blank the whole
-        # manifest on every partial incremental run, forcing a full-corpus
-        # re-extraction on the next one.
         _stamped_semantic = {
             f for _flist in _manifest_files.values() for f in _flist
         }
         _cleared_semantic = {str(p) for p in semantic_files} - _stamped_semantic
-        # AST failures need both hashes blanked (clear_ast), not just
-        # semantic_hash — otherwise a prior bad stamp keeps the file "unchanged".
         _cleared_ast = set(_failed_ast_sources)
 
         # O manifesto de verificação completa salva linhas removidas para arquivos na raiz que deixaram o
-        # digitaliza o corpus, mas ainda existe no disco. O corpus deve ser o
         # Saída de detecção RAW (files_by_type), NÃO a filtrada pelo selo # 933
         # _manifest_files acima – a remoção do conjunto filtrado apagaria
         # linhas falhadas/omitidas-doc e todas as linhas do documento em --code-only são executadas.
@@ -3691,8 +3391,6 @@ def dispatch_command(cmd: str) -> None:
             # Sem NetworkX, sem detecção de comunidade, sem sidecar de análise.
             # Desduplicar nós (por id) e arestas paralelas para que a saída bruta corresponda ao
             # caminho agrupado (cujo DiGraph recolhe ambos) e permanece determinístico
-            # across modes (; node dedup also collapses shared Swift module
-            # anchors emitted per importing file).
             from omnigraph.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
             from omnigraph.export import (
                 backup_if_protected as _backup,
@@ -3734,15 +3432,6 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(0)
 
             if incremental_mode:
-                # this raw path used to write ONLY this run's extraction
-                # over graph.json — on an incremental run that is just the
-                # changed files, silently dropping every node/edge owned by an
-                # unchanged file. Merge the existing graph forward first, with
-                # the same replace/prune semantics as the clustered path's
-                # build_merge: re-extracted sources replaced, deleted +
-                # excluded + graph-stale sources pruned, everything else
-                # carried. Survivors are prepended, so the dedupe below keeps
-                # this run's fresh attributes for re-extracted nodes.
                 from omnigraph.build import merge_raw_extraction as _merge_raw_extraction
                 _raw_prune_sources: list[str] = list(deleted_files)
                 for _src in list(excluded_files) + graph_stale_sources:
@@ -3756,15 +3445,10 @@ def dispatch_command(cmd: str) -> None:
                         root=target,
                     )
                 except RuntimeError as exc:
-                    # Existing graph present but unparseable: refuse to
-                    # raw-dump this run's partial extraction over it.
                     print(f"error: {exc}", file=sys.stderr)
                     sys.exit(1)
             merged["nodes"] = _dedupe_nodes(merged["nodes"])
             merged["edges"] = _dedupe_edges(merged["edges"])
-            # Disambiguate colliding-basename file-node labels. This raw
-            # --no-cluster path bypasses build_from_json (where the clustered path
-            # gets this), so apply it directly on the merged node list.
             from omnigraph.build import disambiguate_file_labels_in_nodes as _disamb_labels
             _disamb_labels(merged["nodes"])
             # Preencher source_file dos nós do endpoint — esse caminho bruto ignora
@@ -3775,11 +3459,6 @@ def dispatch_command(cmd: str) -> None:
                     _e["source_file"] = (
                         _node_sf.get(_e.get("source")) or _node_sf.get(_e.get("target")) or ""
                     )
-            # RT-parity for the raw path: an incomplete build must not force a
-            # partial graph over a larger complete one here either. The clustered
-            # path gets this from to_json's guard; this path never calls
-            # to_json, so replicate the shrink check against the existing file and
-            # exit before the write/manifest unless --allow-partial is set.
             if _extraction_incomplete and not cli_allow_partial:
                 from omnigraph.export import MALFORMED_GRAPH as _MALFORMED_GRAPH
                 _existing_n = _existing_graph_node_count(graph_json_path)
@@ -3806,10 +3485,6 @@ def dispatch_command(cmd: str) -> None:
             from omnigraph.paths import write_json_atomic as _write_json_atomic
             _write_json_atomic(graph_json_path, merged, indent=2)
             try:
-                # Record the scan root so a later build_merge / update runbook can
-                # relativize deleted-file paths correctly even for a custom --out
-                # (its grandparent-of-graph.json fallback points at the wrong dir
-                # otherwise, and deleted files never prune —/).
                 (omnigraph_out / ".omnigraph_root").write_text(
                     str(Path(target).resolve()), encoding="utf-8"
                 )
@@ -3851,7 +3526,6 @@ def dispatch_command(cmd: str) -> None:
             stages.total()
             sys.exit(0)
 
-        # Build graph + cluster + score + write.
         from omnigraph.build import (
             build as _build,
             build_from_json as _build_from_json,
@@ -3906,32 +3580,11 @@ def dispatch_command(cmd: str) -> None:
         from omnigraph.export import backup_if_protected as _backup
         _backup(omnigraph_out)
         _invalidate_file_manifest_for_db_graph()
-        # force=True bypasses the shrink guard entirely. A full build
-        # legitimately shrinks (fuzzy dedup collapse, deleted code) so it keeps
-        # force=True — EXCEPT when this run's extraction was incomplete (an
-        # extractor pass crashed or some semantic chunks failed). Then a partial
-        # graph could silently overwrite a good complete one, so fall back to the
-        # shrink guard (force=False) unless the user opts in with --allow-partial.
-        #
-        # Both write paths are guarded: the clustered path here via to_json's
-        # check, and the `--no-cluster` raw-dump path above via the same
-        # shrink check against the existing file (existing_graph_node_count).
-        #
-        # Trade-off: this reuses to_json's coarse node-count guard, not the
-        # source-aware _check_shrink that watch/update use. On an incremental run
-        # a legitimate deletion that coincides with an unrelated transient chunk
-        # failure can therefore be refused here — recoverable by re-running or
-        # passing --allow-partial (the good graph is preserved and the manifest
-        # is not stamped, so the retry re-extracts).
         _force_write = cli_allow_partial or not _extraction_incomplete
-        _wrote = _to_json(G, communities, str(graph_json_path), force=_force_write)
+        from omnigraph.watch import _git_head as _gh_target
+        _wrote = _to_json(G, communities, str(graph_json_path), force=_force_write,
+                          built_at_commit=_gh_target(cwd=Path(target).resolve()))
         if not _wrote:
-            # The shrink guard refused: this partial build is smaller than the
-            # existing graph. Exit before writing the manifest/marker below, which
-            # would otherwise stamp these files as done and make the next
-            # incremental run skip re-extracting them (poisoning the manifest
-            # against the graph we declined to write). Exit non-zero so a retry
-            # re-attempts.
             print(
                 "[omnigraph extract] error: extraction was incomplete (an AST/semantic "
                 f"pass failed) and the resulting graph is smaller than the existing "
@@ -3942,8 +3595,6 @@ def dispatch_command(cmd: str) -> None:
             )
             sys.exit(1)
         try:
-            # See the --no-cluster path above: persist the scan root so build_merge
-            # can relativize deleted-file paths under a custom --out.
             (omnigraph_out / ".omnigraph_root").write_text(
                 str(Path(target).resolve()), encoding="utf-8"
             )
@@ -4019,19 +3670,8 @@ def dispatch_command(cmd: str) -> None:
         stages.total()
 
     elif cmd == "cache-check":
-        # omnigraph cache-check <files_from> [--root <dir>] [--mode <m> | --deep]
-        #                       [--prompt-file <path>]
         # Lê caminhos de arquivos (um por linha) de <files_from>, verifica o cache semântico.
-        # --mode deep (ou --deep) verifica o cache/semantic-deep/ namespace
-        # escrito por `extract --mode deep` em vez de cache/semantic/.
-        # --prompt-file names the extraction prompt the caller will use (an agent's
-        # references/extraction-spec.md), restricting hits to entries produced by
-        # that same prompt. Omitting it reads the unattributed layout, which
-        # cannot see entries a fingerprinted run wrote.
-        # Writes:
-        #   omnigraph-out/.omnigraph_cached.json   — already-cached nodes/edges/hyperedges
         #   omnigraph-out/.omnigraph_uncached.txt — caminhos que precisam de extração
-        # Stdout: "Cache: N hit, M miss"
         from omnigraph.cache import check_semantic_cache
         if len(sys.argv) < 3:
             print("Usage: omnigraph cache-check <files_from> [--root <dir>] "
@@ -4079,7 +3719,6 @@ def dispatch_command(cmd: str) -> None:
         print(f"Cache: {len(files) - len(uncached)} hit, {len(uncached)} miss")
 
     elif cmd == "merge-chunks":
-        # omnigraph merge-chunks <chunk_glob_or_files...> --out <path>
         # Concatena arquivos .omnigraph_chunk_*.json escritos por subagentes semânticos.
         # Desduplica nós por ID (o primeiro gravador vence). Soma contagens de tokens.
         import glob as _glob
@@ -4106,16 +3745,6 @@ def dispatch_command(cmd: str) -> None:
         merged: dict = {"nodes": [], "edges": [], "hyperedges": [], "input_tokens": 0, "output_tokens": 0}
         seen_ids: set[str] = set()
         valid_chunks = 0
-        # These chunk files are untrusted subagent output. load_validated_...
-        # stats the file size BEFORE reading it (so a multi-GB chunk can't blow up
-        # memory), parses the JSON, and validates the security caps + the node/
-        # edge id charset that blocks path traversal — the same enforcement
-        # the skill merge path applies. A bad chunk is skipped with a warning
-        # while valid siblings still merge; if every chunk is invalid, fail
-        # closed instead of reporting success and replacing --out with an empty
-        # semantic layer. Deliberately NOT wired into
-        # build_from_json/load_graph_json, which must keep loading valid
-        # pre-existing graphs. file_type is left to build's coercion.
         from omnigraph.semantic_cleanup import load_validated_semantic_fragment
         for cf in chunk_files:
             chunk, _chunk_errs = load_validated_semantic_fragment(Path(cf))
@@ -4133,9 +3762,6 @@ def dispatch_command(cmd: str) -> None:
                     merged["nodes"].append(n)
             merged["edges"].extend(chunk.get("edges", []))
             merged["hyperedges"].extend(chunk.get("hyperedges", []))
-            # Coerce token counts: a chunk is untrusted, so a non-numeric
-            # input_tokens/output_tokens must not abort the whole merge with a
-            # TypeError after other chunks already merged.
             for _tok in ("input_tokens", "output_tokens"):
                 _v = chunk.get(_tok, 0)
                 merged[_tok] += _v if isinstance(_v, (int, float)) else 0
@@ -4160,7 +3786,6 @@ def dispatch_command(cmd: str) -> None:
         )
 
     elif cmd == "merge-semantic":
-        # omnigraph merge-semantic --cached <path> --new <path> --out <path>
         # Mescla resultados semânticos armazenados em cache com resultados de pedaços recém-extraídos.
         # Desduplica nós por ID (as entradas em cache têm prioridade sobre as novas).
         if len(sys.argv) < 3:
@@ -4203,7 +3828,6 @@ def dispatch_command(cmd: str) -> None:
 
     elif Path(cmd).exists() or cmd in (".", "..") or cmd.startswith(("./", "../", "/", "~")):
         # O usuário executou `omnigraph <caminho>` diretamente - trate como `omnigraph extract <caminho>`.
-        # Comum ao seguir a nota do PowerShell no README (`omnigraph.`) ou
         # invocações de habilidades de copiar e colar sem a barra inicial.
         sys.argv.insert(2, sys.argv[1])
         sys.argv[1] = "extract"

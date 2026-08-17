@@ -71,10 +71,7 @@ def ingest_scip_json(
     if not isinstance(documents, list):
         return {"nodes": nodes, "edges": edges}
 
-    # ---- pass 1: build symbol → node_id indices -----------------------------
     # Dois índices para que a resolução do relacionamento possa ser baseada em documentos:
-    #   per_doc:  (symbol_id, doc_path) → node_id  (same-document precedence)
-    #   global:   symbol_id              → list[node_id] (cross-document fallback,
     #                                                     usado apenas quando inequívoco)
     per_doc_index: dict[tuple[str, str], str] = {}
     global_index: dict[str, list[str]] = {}
@@ -113,7 +110,6 @@ def ingest_scip_json(
                 }
             )
 
-    # ---- pass 2: emit nodes + relationship edges -----------------------------
     for record in symbol_records:
         _emit_symbol_node(record, nodes, seen_node_ids)
         _emit_relationships(
@@ -209,7 +205,6 @@ def _emit_relationships(
         if target_node_id is None:
             # Alvo de relacionamento externo: emite um nó stub para a aresta
             # nunca está pendurado. O stub usa o caminho do documento de origem
-            # como seu contexto hospedeiro.
             target_node_id = _make_scip_node_id(target_symbol, doc_path)
             if target_node_id not in seen_node_ids:
                 seen_node_ids.add(target_node_id)

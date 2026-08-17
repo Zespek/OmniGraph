@@ -33,7 +33,6 @@ def extract_dart(path: Path) -> dict:
     stem = _file_stem(path)
     file_nid = _make_id(str(path))
 
-    # Verifique se isso faz parte do arquivo e redirecione para o pai
     part_of_match = re.search(r"^\s*part\s+of\s+['\"]([^'\"]+)['\"]", src_clean, re.MULTILINE)
     is_part = False
     if part_of_match:
@@ -149,7 +148,6 @@ def extract_dart(path: Path) -> dict:
         start_idx = m.end()
         rest = src_clean[start_idx : start_idx + 500]
 
-        # Skip class generic parameters
         if rest.lstrip().startswith("<"):
             offset = rest.find("<")
             depth = 1
@@ -160,7 +158,6 @@ def extract_dart(path: Path) -> dict:
                 i += 1
             rest = rest[i:]
 
-        # Skip primary constructor (e.g. extension type MyExt(int id))
         if rest.lstrip().startswith("("):
             offset = rest.find("(")
             depth = 1
@@ -208,7 +205,6 @@ def extract_dart(path: Path) -> dict:
             else:
                 header = rest_header
 
-        # Analisar com
         with_m = re.search(r"^\s*with\s+", header)
         if with_m:
             rest_header = header[with_m.end():]
@@ -221,18 +217,15 @@ def extract_dart(path: Path) -> dict:
                 header = ""
             mixins_list = _split_types(mixins_str)
 
-        # Parse implements
         impl_m = re.search(r"^\s*implements\s+", header)
         if impl_m:
             interfaces_list = _split_types(header[impl_m.end():])
 
-        # Map extends inheritance relation
         if base_class:
             base_nid = _make_id(base_class)
             add_node(base_nid, base_class, source_file=None)
             add_edge(class_nid, base_nid, "inherits")
 
-            # Map generic type arguments (e.g. MyBloc extends Bloc<MyEvent, MyState>)
             if generics:
                 for gen in _split_types(generics):
                     gen_clean = gen.split("<")[0].strip()
@@ -241,14 +234,12 @@ def extract_dart(path: Path) -> dict:
                         add_node(gen_nid, gen_clean, source_file=None)
                         add_edge(class_nid, gen_nid, "references")
 
-        # Map mixins
         for mixin in mixins_list:
             mixin_clean = mixin.split("<")[0].strip()
             mixin_nid = _make_id(mixin_clean)
             add_node(mixin_nid, mixin_clean, source_file=None)
             add_edge(class_nid, mixin_nid, "mixes_in")
 
-        # Map interfaces
         for interface in interfaces_list:
             interface_clean = interface.split("<")[0].strip()
             interface_nid = _make_id(interface_clean)
@@ -268,7 +259,6 @@ def extract_dart(path: Path) -> dict:
             end_pos = _find_matching_brace(src_clean, start_idx)
             class_body = src_clean[brace_pos:end_pos]
 
-            # Registro de evento de bloco: on<MyEvent>()
             for em in re.finditer(r"\bon<(\w+)>\s*\(", class_body):
                 event_name = em.group(1)
                 event_nid = _make_id(event_name)
@@ -291,7 +281,6 @@ def extract_dart(path: Path) -> dict:
                     add_node(event_nid, event_name, source_file=None)
                     add_edge(class_nid, event_nid, "calls", context="bloc_add_event")
 
-            # Riverpod provider references: ref.watch(provider)
             for rm in re.finditer(r"\bref\.(?:watch|read|listen)\s*\(\s*(\w+)\b", class_body):
                 provider_name = rm.group(1)
                 provider_nid = _make_id(provider_name)
@@ -306,7 +295,6 @@ def extract_dart(path: Path) -> dict:
                     add_node(bloc_nid, bloc_name, source_file=None)
                     add_edge(class_nid, bloc_nid, "references", context="bloc_widget_binding")
 
-            # context.read<MyBloc>() ou BlocProvider.of<MyBloc>(contexto)
             for lm in re.finditer(r"\b(?:read|watch|select|of)\s*<([a-zA-Z0-9_]+)>", class_body):
                 bloc_name = lm.group(1)
                 if bloc_name not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "void"}:
@@ -315,7 +303,6 @@ def extract_dart(path: Path) -> dict:
                     add_edge(class_nid, bloc_nid, "references", context="bloc_lookup")
 
     # 2. Mapeamento de anotações (anotações de classe, mixin, enum ou nível de função)
-    # Support: @riverpod, @Riverpod(...), @injectable, @singleton, @RoutePage(), @HiveType(typeId: 0), @RestApi()
     # Corresponde a `@annotation` e vincula-o à próxima declaração de classe/mixin/enum/função no arquivo
     annotation_pattern = r"@(\w+)(?:\([^)]*\))?"
     for am in re.finditer(annotation_pattern, src_clean):
@@ -367,7 +354,6 @@ def extract_dart(path: Path) -> dict:
                      add_node(provider_nid, provider_name, ftype="concept", source_file=str(path))
                      add_edge(target_nid, provider_nid, "defines", context="riverpod_provider")
 
-    # 2.5 Typedefs (Type Aliases)
     typedef_pattern = r"^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([a-zA-Z0-9_<>,.?\s]+);"
     for m in re.finditer(typedef_pattern, src_clean, re.MULTILINE):
         typedef_name = m.group(1)
@@ -457,7 +443,6 @@ def extract_dart(path: Path) -> dict:
             end_pos = _find_matching_brace(src_clean, start_idx)
             func_body = src_clean[brace_pos:end_pos]
 
-            # Extract Riverpod provider references: ref.watch(provider)
             for rm in re.finditer(r"\bref\.(?:watch|read|listen)\s*\(\s*(\w+)\b", func_body):
                 provider_name = rm.group(1)
                 provider_nid = _make_id(provider_name)
@@ -472,7 +457,6 @@ def extract_dart(path: Path) -> dict:
                     add_node(event_nid, event_name, source_file=None)
                     add_edge(nid, event_nid, "calls", context="bloc_add_event")
 
-            # context.read<MyBloc>() ou BlocProvider.of<MyBloc>(contexto)
             for lm in re.finditer(r"\b(?:read|watch|select|of)\s*<([a-zA-Z0-9_]+)>", func_body):
                 bloc_name = lm.group(1)
                 if bloc_name not in {"String", "int", "double", "bool", "num", "dynamic", "Object", "void"}:
@@ -480,7 +464,6 @@ def extract_dart(path: Path) -> dict:
                     add_node(bloc_nid, bloc_name, source_file=None)
                     add_edge(nid, bloc_nid, "references", context="bloc_lookup")
 
-            # Universal Navigation Patters (GoRouter, AutoRoute, Navigator)
             for nm in re.finditer(r"\b(?:go|push|goNamed|pushNamed|replace|replaceNamed)\s*\(\s*(?:context\s*,\s*)?['\"]([a-zA-Z0-9_/?=&%-]+)['\"]", func_body):
                 route_path = nm.group(1)
                 route_nid = _make_id("route", route_path.replace("/", "_").replace("?", "_").replace("=", "_").replace("&", "_"))
@@ -512,9 +495,7 @@ def extract_dart(path: Path) -> dict:
         add_node(tgt_nid, pkg, source_file=None)
         add_edge(file_nid, tgt_nid, "exports")
 
-    # 7. Generic Invocations / Type Lookups (Universal Dependency Lookup)
     # Corresponde a qualquer chamada de método com parâmetros de tipo: methodName<Type>() ou object.methodName<Type>()
-    # Extrai automaticamente pesquisas do tipo GetIt, Injectable, Riverpod, Provider, BlocProvider e InheritedWidget!
     generic_call_pattern = r"\b\w+<([a-zA-Z0-9_.]+(?:<[a-zA-Z0-9_.,\s<>]+>)?)\s*>\s*\("
     type_blacklist = {"String", "int", "double", "bool", "num", "dynamic", "Object", "List", "Map", "Set", "Future", "Stream", "void"}
     for m in re.finditer(generic_call_pattern, src_clean):

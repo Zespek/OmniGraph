@@ -8,7 +8,7 @@ from omnigraph.serve import _query_terms
 from omnigraph.paths import default_graph_json as _default_graph_json
 
 
-_CHARS_PER_TOKEN = 4  # standard approximation
+_CHARS_PER_TOKEN = 4
 
 
 def _safe(unicode_char: str, ascii_fallback: str) -> str:
@@ -97,9 +97,6 @@ def run_benchmark(
     Returns dict with: corpus_tokens, avg_query_tokens, reduction_ratio, per_question
     """
     graph_path = graph_path or _default_graph_json()
-    # Size-cap check + links/edges normalization + node-link parse. A raw
-    # --no-cluster graph stores edges under "edges" and used to KeyError
-    # here.
     from omnigraph.paths import load_node_link_graph
     G = load_node_link_graph(graph_path)
 
@@ -107,7 +104,7 @@ def run_benchmark(
         # Estimativa aproximada: cada rótulo de nó tem aproximadamente 3 palavras, mais o contexto de origem
         corpus_words = G.number_of_nodes() * 50
 
-    corpus_tokens = corpus_words * 100 // 75  # words → tokens (100 words ≈ 133 tokens)
+    corpus_tokens = corpus_words * 100 // 75
 
     qs = questions or _SAMPLE_QUESTIONS
     per_question = []

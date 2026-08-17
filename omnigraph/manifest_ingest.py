@@ -24,7 +24,6 @@ from omnigraph.ids import make_id
 
 __all__ = ["is_package_manifest_path", "extract_package_manifest", "PACKAGE_MANIFEST_NAMES"]
 
-# manifest filename (lowercased) -> ecosystem tag
 PACKAGE_MANIFEST_NAMES: dict[str, str] = {
     "apm.yml": "apm",
     "apm.yaml": "apm",
@@ -72,7 +71,7 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
     node: dict[str, Any] = {
         "id": pkg_nid,
         "label": name,
-        "file_type": "code",   # valid schema type; `type` distinguishes packages
+        "file_type": "code",
         "type": "package",
         "ecosystem": eco,
         "source_file": str_path,
@@ -110,7 +109,6 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
     return {"nodes": nodes, "edges": edges}
 
 
-# ── per-ecosystem parsers: text -> {"name", "version"?, "deps": [str]} | None ──
 
 def _coerce_deps(value: Any) -> list[str]:
     """A dependency block may be a list of names or a name->spec map."""
@@ -144,8 +142,10 @@ def _parse_apm(text: str) -> dict | None:
 
 def _parse_apm_fallback(text: str) -> dict | None:
     """Minimal line parser for apm.yml when PyYAML is unavailable: a top-level
-    ``name:`` plus a simple ``dependencies:`` block (list items or a name map)."""
+    ``name:``/``version:`` plus a simple ``dependencies:`` block (list items or
+    a name map)."""
     name = None
+    version = None
     deps: list[str] = []
     in_deps = False
     for line in text.splitlines():
@@ -153,6 +153,10 @@ def _parse_apm_fallback(text: str) -> dict | None:
             m = re.match(r'^name:\s*["\']?([^"\'\s#]+)', line)
             if m:
                 name = m.group(1)
+                continue
+            m = re.match(r'^version:\s*["\']?([^"\'\s#]+)', line)
+            if m:
+                version = m.group(1)
                 continue
         if re.match(r'^dependencies:\s*$', line):
             in_deps = True
@@ -164,7 +168,7 @@ def _parse_apm_fallback(text: str) -> dict | None:
                 deps.append(dm.group(1))
             elif re.match(r'^\S', line):  # a próxima chave de nível superior encerra o bloco
                 in_deps = False
-    return {"name": name, "version": None, "deps": deps} if name else None
+    return {"name": name, "version": version, "deps": deps} if name else None
 
 
 def _pep508_name(spec: str) -> str:
@@ -208,21 +212,12 @@ def _parse_cargo(text: str) -> dict | None:
     data = _toml.loads(text)
     pkg = data.get("package", {}) if isinstance(data.get("package"), dict) else {}
     name = pkg.get("name")
-    # A virtual workspace root (``[workspace]``, no ``[package]``) declares no
-    # package of its own — emit nothing rather than a fabricated node. ``name`` is
-    # never workspace-inheritable in Cargo, but guard on the type anyway.
     if not isinstance(name, str) or not name:
         return None
-    # ``version`` may be workspace-inherited (``version.workspace = true``), which
-    # parses to a table; keep only a concrete string version.
     version = pkg.get("version")
     if not isinstance(version, str):
         version = None
-    # A dependency value is a bare version string or an inline table; either way
-    # _coerce_deps keys it by the dependency NAME (the table/map key).
     deps = _coerce_deps(data.get("dependencies"))
-    # Platform-conditional deps live under ``[target.<cfg>.dependencies]``; fold
-    # them in so a crate whose deps are entirely cfg-gated still emits its edges.
     targets = data.get("target")
     if isinstance(targets, dict):
         for cfg in targets.values():

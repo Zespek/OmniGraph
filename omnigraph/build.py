@@ -1,25 +1,17 @@
 # montar dictos de nó + aresta em um grafo NetworkX, preservando a direção da aresta
-#
-# Node deduplication — three layers:
-#
 # 1. Dentro de um arquivo (AST): cada extrator rastreia um conjunto `seen_ids`. Um ID de nó é
 #    emitido no máximo uma vez por arquivo, portanto, duplique as definições de classe/função em
 #    o mesmo arquivo de origem é recolhido na primeira ocorrência.
-#
 # 2. Entre arquivos (construção): NetworkX G.add_node() é idempotente - chamando-o
-#    duas vezes com o mesmo ID substitui os atributos pelos da segunda chamada
 #    valores. Os nós são adicionados em ordem de extração (primeiro AST, depois semântico),
 #    então se a mesma entidade for extraída por ambos passa o nó semântico
 #    substitui silenciosamente o nó AST. Isso é intencional: nós semânticos
 #    carregam rótulos mais ricos e contexto de arquivo cruzado, enquanto os nós AST têm
 #    source_location. Se você precisar alterar a prioridade, reordene as extrações
-#    passado para construir().
-#
 # 3. Mesclagem semântica (habilidade): antes de chamar build(), a habilidade mescla em cache
 #    e novos resultados semânticos usando um conjunto `visto` explícito digitado no nó ["id"],
 #    portanto, duplicatas em ocorrências de cache e novas extrações são resolvidas lá
 #    antes que qualquer construção de grafo aconteça.
-#
 from __future__ import annotations
 import json
 import math
@@ -35,9 +27,6 @@ from .paths import is_absolute_any_platform as _is_abs
 from .validate import validate_extraction
 
 
-# Deterministic (AST) extractors emit source_location "L<line>"; the semantic
-# extraction spec emits null. Used by _is_ast_tier as a shape fallback for
-# legacy items that predate the _origin marker.
 _AST_LOC_RE = re.compile(r"^L\d")
 
 
@@ -52,13 +41,14 @@ def _is_ast_tier(item: dict) -> bool:
     return isinstance(loc, str) and bool(_AST_LOC_RE.match(loc))
 
 
+_GENERIC_RELATIONS: frozenset[str] = frozenset({"references", "uses", "mentions"})
+
 # Famílias de interoperabilidade de idiomas, codificadas por extensão, para a aresta fantasma entre idiomas
 # guarda no loop de aresta abaixo. Grupo de famílias por interoperabilidade REAL (JS/TS compartilha um módulo
 # grafo; C/C++/ObjC compartilham uma unidade de compilação por meio de cabeçalhos; Idiomas JVM compartilham bytecode),
 # portanto, uma chamada legítima de importação TS->JS ou C impl->header sobrevive, enquanto um Python
 # ligação `import time` para um `time.ts` ou uma `calls` INFERRED entre idiomas
 # aresta é descartada. Mantido local para build.py (não importado de extract.py,
-# que importa build.py - um ciclo) e espelha deliberadamente extract._LANG_FAMILY_BY_EXT.
 _EDGE_LANG_FAMILY: dict[str, str] = {
     ".py": "py", ".pyi": "py",
     ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "js",
@@ -289,10 +279,8 @@ def _norm_source_file(p: str | None, root: str | None = None) -> str | None:
         except ValueError:
             # Relativo léxico_to falhou. Tente novamente com ambos os lados totalmente resolvidos:
             # uma raiz de varredura com link simbólico (macOS /var -> /private/var ou um link simbólico
-            # home/worktree) faz com que os prefixos brutos sejam diferentes, embora apontem
             # no mesmo diretório, que de outra forma derrota silenciosamente podar/substituir
             # correspondência. Somente o caminho lento é resolvido, então a correspondência lexical comum
-            # stays filesystem-free.
             try:
                 p = Path(p).resolve().relative_to(Path(root).resolve()).as_posix()
             except (ValueError, OSError):
@@ -369,7 +357,7 @@ def _file_label_reassignments(items: "list[tuple]") -> dict:
     for members in groups.values():
         distinct = {sf for _, sf in members}
         if len(distinct) < 2:
-            continue  # no collision — leave the bare basename label
+            continue
         for key, sf in members:
             out[key] = _shortest_unique_suffix(sf, distinct)
     return out
@@ -500,7 +488,7 @@ def _derive_prune_root(prune_sources: "list[str]", stored_sfs: "set[str]") -> "s
             continue
         hits = {q[: -len(s) - 1] for s in rel_sfs if q.endswith("/" + s)}
         if len(hits) > 1:
-            return None  # one entry implies two different roots — ambiguous
+            return None
         roots |= hits
     if len(roots) == 1:
         return next(iter(roots))
@@ -582,7 +570,6 @@ def _old_file_stems(rel: Path) -> list[str]:
     if parent and parent not in (".", ""):
         forms.append(make_id(f"{parent}.{rel.stem}"))
     forms.append(make_id(rel.stem))
-    # Dedupe while preserving order (top-level files collapse both forms).
     seen: set[str] = set()
     return [f for f in forms if f and not (f in seen or seen.add(f))]
 
@@ -610,16 +597,10 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
         sf_norm = _norm_source_file(str(sf), root) or str(sf)
         rel = Path(sf_norm)
         if _is_abs(sf_norm):
-            # Can't relativize (no/failed root) — leave the id untouched rather
-            # than bake an on-disk path into it. Tested for BOTH platforms: a
-            # graph built on Linux/CI carries POSIX-absolute source_files that
-            # WindowsPath.is_absolute() calls relative, which leaked the whole
-            # build directory into node IDs when updated on Windows.
             continue
         if not rel.name:
             # source_file é igual à raiz da varredura, então _norm_source_file relativizou-o
             # to Path('.') — um nó no nível do projeto sem identidade por arquivo para remapear.
-            # Deixe seu id intacto (e evite a falha de nome vazio de _file_stem).
             continue
         new_stem = make_id(_file_stem(rel))
         if not new_stem:
@@ -628,25 +609,12 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
         # Guarda de idempotência: um id que já carrega seu radical canônico é
         # pronto - não execute novamente o branch legado nele. Quando o radical canônico
         # contém um radical herdado mais curto como prefixo (nome do diretório pai == arquivo
-        # stem, e.g. `.claude/CLAUDE.md` -> `claude_claude` over legacy `claude`),
         # um ID já migrado como `claude_claude_x` ainda corresponde ao legado
-        # prefixo `claude_` abaixo e ganharia outro segmento radical em cada
-        # build, derrotando os curtos-circuitos same_topology/no_change. Espelha o
         # verificação canônica em graph_has_legacy_ids.
         if norm_nid == new_stem or norm_nid.startswith(new_stem + "_"):
             continue
         new_id: str | None = None
         old_forms = _old_file_stems(rel)
-        # on Windows, detect() can emit an ABSOLUTE source_file, and a
-        # semantic fragment's id derived from that absolute path (e.g.
-        # d_projects_myrepo_docs_dataflow) matches neither the canonical
-        # relative stem nor the legacy short forms above — so while source_file
-        # itself is healed by _norm_source_file, the id would ghost against the
-        # existing graph's docs_dataflow. When the raw path was absolute and
-        # relativized under root, treat the raw-absolute stem as one more
-        # old-stem form — the semantic-side twin of extract.py's absolute-form
-        # id registration. It is the longest form, so it goes first (greedy
-        # prefix stripping, same ordering rule as _old_file_stems).
         sf_raw = str(sf).replace("\\", "/")
         if sf_raw != sf_norm and _is_abs(sf_raw):
             abs_stem = make_id(_file_stem(Path(sf_raw)))
@@ -668,6 +636,17 @@ def _semantic_id_remap(nodes: list, root: str | None) -> dict:
     return remap
 
 
+_MCP_GLOBAL_ID_KINDS = frozenset({"mcp_command", "mcp_package", "env_var"})
+
+
+def _has_global_id(node: dict) -> bool:
+    """Whether ``node``'s ID is global by construction rather than file-derived."""
+    meta = node.get("metadata")
+    if not isinstance(meta, dict):
+        return False
+    return meta.get("mcp_kind") in _MCP_GLOBAL_ID_KINDS
+
+
 def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: int = 300) -> bool:
     """Whether a loaded graph still uses pre-#1504 node IDs (parent-dir / filename
     stem) rather than the full repo-relative path. Read-only consumers (query,
@@ -677,8 +656,10 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
     inspected, because their ID is unambiguously the file stem. Symbol nodes are
     skipped — some extractors scope a symbol by package/directory (Go's
     ``_make_id(pkg_dir, name)`` → ``sub_thing``), which can coincide with an old
-    file-stem form and would otherwise false-positive. Returns True as soon as one
-    file node's ID matches an OLD stem form but not the canonical full-path form."""
+    file-stem form and would otherwise false-positive. Nodes whose ID is global by
+    construction (see ``_MCP_GLOBAL_ID_KINDS``) are skipped for the same reason.
+    Returns True as soon as one file node's ID matches an OLD stem form but not the
+    canonical full-path form."""
     from omnigraph.extractors.base import _file_stem
     _r = str(root) if root is not None else None
     checked = 0
@@ -687,6 +668,8 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
             continue
         if str(node.get("source_location") or "") != "L1":
             continue  # apenas nós de nível de arquivo carregam um ID de tronco de arquivo inequívoco
+        if _has_global_id(node):
+            continue
         nid = node.get("id")
         sf = node.get("source_file")
         if not nid or not isinstance(nid, str) or not sf:
@@ -696,7 +679,7 @@ def graph_has_legacy_ids(nodes: list, root: str | Path | None = None, sample: in
         if _is_abs(sf_norm):
             continue
         if not rel.name:
-            continue  # source_file == scan root -> Path('.'), sem arquivo stem
+            continue
         new_stem = make_id(_file_stem(rel))
         if not new_stem:
             continue
@@ -754,23 +737,14 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         relative to root so all nodes share a consistent path key (#932).
     """
     _root = str(Path(root).resolve()) if root else None
-    # NetworkX <= 3.1 arestas serializadas como "links"; remapear para "arestas" para compatibilidade.
     if "edges" not in extraction and "links" in extraction:
         extraction = dict(extraction, edges=extraction["links"])
 
-    # Hyperedge persistence is dual-slot: to_json writes BOTH a
-    # top-level `hyperedges` key AND the nested `graph.hyperedges` (node_link
-    # graph attrs), but node_link_data-only writers emit just the nested slot.
-    # Fold the nested slot onto the top-level key ONCE, so every downstream
-    # pass (_coerce_non_string_ids, _normalize_hyperedge_members, the member
-    # revalidation before G.graph["hyperedges"] is set) reads one location.
     if "hyperedges" not in extraction and isinstance(
         (extraction.get("graph") or {}).get("hyperedges"), list
     ):
         extraction = dict(extraction, hyperedges=extraction["graph"]["hyperedges"])
 
-    # Numeric ids from a loose backend become str before anything keys on them
-    # — after the links remap so aliased edges are covered too.
     _coerce_non_string_ids(extraction)
 
     # Canonize o esquema de nó/aresta herdado antes da validação.
@@ -791,15 +765,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 file=sys.stderr,
             )
             node["source_file"] = node.pop("source")
-        # Fold the remaining legacy node aliases (`name`->`label`,
-        # `path`->`source_file`) before validation and before the
-        # semantic-rekey / ghost-merge passes below, all of which key on
-        # label/source_file and would otherwise skip the node entirely.
         _fold_node_aliases(node)
         # Padrão ausente/Nenhum file_type para "conceito", então legado graph.json
         # entradas (e nós stub preservados por `_rebuild_code` de versões mais antigas
         # versões omnigraph que nem sempre preencheram file_type) não
-        # trigger spurious "invalid file_type 'None'" validator warnings.
         if node.get("file_type") in (None, ""):
             node["file_type"] = "concept"
         ft = node.get("file_type", "")
@@ -807,17 +776,12 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             node["file_type"] = _FILE_TYPE_SYNONYMS.get(ft, "concept")
 
     # Canonizar listas de membros do hyperedge: os produtores às vezes digitam o
-    # lista de membros `members`/`node_ids` em vez de `nodes`. Dobre os aliases em
     # `nodes` aqui - ANTES da validação e do loop de rechave semântica abaixo - então
     # cada consumidor downstream (rekey, source_file relativize, to_json) lê
     # uma chave canônica, da mesma forma que os endpoints de aresta alias de/para na construção.
     for he in extraction.get("hyperedges", []) or []:
         _normalize_hyperedge_members(he)
 
-    # Fold legacy edge field aliases (`type`->`relation`,
-    # `confidence_score`->`confidence`) BEFORE validation. The existing
-    # from/to endpoint fold lives in the edge loop further down, which runs
-    # after validate_extraction — too late for fields the validator requires.
     for edge in extraction.get("edges", []):
         if isinstance(edge, dict):
             _fold_edge_aliases(edge)
@@ -826,10 +790,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # Arestas pendentes (importações stdlib/externas) são esperadas - apenas avisam sobre erros reais de esquema.
     real_errors = [e for e in errors if "does not match any node id" not in e]
     if real_errors:
-        # Break the warning down by cause: a mixed batch used to surface
-        # only real_errors[0], hiding every other failure mode. Group on the
-        # "missing required field 'X'" suffix and report per-cause counts plus
-        # one example each, so the operator sees the full shape of the damage.
         by_cause: dict[str, list[str]] = {}
         for err in real_errors:
             m = re.search(r"missing required field '[^']*'", err)
@@ -850,7 +810,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # seu próprio source_file no código, então um fragmento desviado reconcilia fisicamente
     # com o nó AST em vez de gerar um fantasma/uma nova fatura. Nós de origem AST
     # já carregam IDs canônicos (o pós-passagem extract() id-remap garante isso)
-    # e ficam intocados.
     _rekey: dict[str, str] = _semantic_id_remap(extraction.get("nodes", []), _root)
     if _rekey:
         for node in extraction.get("nodes", []):
@@ -865,9 +824,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 edge["target"] = _rekey[edge["target"]]
         for he in extraction.get("hyperedges", []) or []:
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
-                # Guard on hashability: _normalize_hyperedge_members
-                # has already coerced members above, but a still-unhashable ref
-                # must pass through rather than abort the merge on dict.get.
                 he["nodes"] = [
                     _rekey.get(n, n) if _hashable(n) else n for n in he["nodes"]
                 ]
@@ -897,7 +853,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         extraction["edges"] = _new_edges
         for he in extraction.get("hyperedges", []) or []:
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
-                # Same hashability guard as the _rekey pass above.
                 he["nodes"] = [
                     _doc_remap.get(n, n) if _hashable(n) else n for n in he["nodes"]
                 ]
@@ -926,18 +881,15 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         G.add_node(node["id"], **{k: v for k, v in node.items() if k != "id"})
     node_set = set(G.nodes())
 
-    # (extended): merge LLM ghost-duplicate nodes into AST canonical nodes.
-    # Bug original: AST usa IDs qualificados pelos pais (mingpt_bpe_get_pairs) enquanto LLM
     # usa IDs de haste simples (bpe_get_pairs) — IDs diferentes, mesmo símbolo.
     # A correção original capturou apenas nós LLM com source_location=None; LLM agora
     # preenche source_location, então esses fantasmas sobreviveram. Correção estendida: use
     # _origin=="ast" como o sinal canônico. Os nós AST sempre vencem; qualquer não AST
     # o compartilhamento de nó (nome base, rótulo) com um nó AST é um fantasma.
-    _loc_nodes: dict[tuple[str, str], str] = {}   # (source_file, label) -> canonical node id
+    _loc_nodes: dict[tuple[str, str], str] = {}
     _loc_collisions: set[tuple[str, str]] = set()  # chaves compartilhadas por mais de 2 nós AST
-    _noloc_nodes: dict[tuple[str, str], str] = {}  # (source_file, label) -> ghost node id
+    _noloc_nodes: dict[tuple[str, str], str] = {}
 
-    # Pass 1: collect canonical nodes — AST-origin nodes take precedence over LLM nodes.
     # Quando mais de 2 nós AST compartilham uma chave (símbolos com o mesmo nome em arquivos com o mesmo nome em
     # diretórios, por ex. renderizar em dois index.ts), a chave é ambígua: mesclar um
     # o fantasma escolheria um vencedor arbitrário por meio da ordem de iteração definida. Acompanhar
@@ -945,7 +897,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # _rewire_unique_stub_nodes, que só mescla quando existe exatamente um def real.
     # Itere em uma ordem determinística (classificada), não em uma ordem de iteração definida, de modo que o
     # o vencedor canônico e as decisões de ambigüidade abaixo não mudam de corrida para corrida
-    # com a semente de hash de string por processo do CPython - o mesmo motivo pelo qual
     # loop de iteração de aresta mais abaixo classifica propositalmente.
     for nid in sorted(node_set):
         attrs = G.nodes[nid]
@@ -953,42 +904,22 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         sf = str(attrs.get("source_file", ""))
         if not label or not sf:
             continue
-        # Strict _origin check on purpose — NOT _is_ast_tier: existing
-        # graph items are backfilled with _origin at load time, so inside a
-        # build the only unstamped items are fresh SEMANTIC chunks (extract()
-        # always stamps AST output). Those may carry drifted 'L<line>'
-        # source_locations (the very ghosts #1145-extended collapses), and the
-        # shape fallback would misread them as AST — turning two same-file LLM
-        # duplicates into a fake AST/AST collision that blocks their merge.
         is_ast = attrs.get("_origin") == "ast"
         if attrs.get("source_location") or is_ast:
-            # Key on the FULL normalized source_file, not the bare basename
-            #: the AST/LLM ghost twins of always share the same
-            # source_file (different ids, same file), so full-path keying still
-            # collapses them, while unrelated same-basename nodes in DIFFERENT
-            # directories (docs/a/index.md vs docs/b/index.md) now get distinct
-            # keys and are never falsely merged. This subsumes the
-            # cross-file ambiguity guard, which is why the non-AST branch below
-            # no longer needs it.
             key = (sf, label)
             if is_ast:
-                # Two AST nodes on the same key (same file, same label) is an
-                # ambiguous collision.
                 if key in _loc_nodes and G.nodes[_loc_nodes[key]].get("_origin") == "ast":
                     _loc_collisions.add(key)
                 # Os nós de origem AST sempre substituem uma entrada anterior não AST.
                 _loc_nodes[key] = nid
             else:
-                # First non-AST node for this (file, label) wins as canonical; a
-                # later same-key node is a genuine same-file duplicate and still
-                # collapses in Pass 2.
                 _loc_nodes.setdefault(key, nid)
 
     # Passo 2: encontre fantasmas - nós não AST que possuem um gêmeo canônico AST.
     for nid in sorted(node_set):
         attrs = G.nodes[nid]
         if attrs.get("_origin") == "ast":
-            continue  # AST nodes are never ghosts (strict check — see Pass 1)
+            continue
         label = str(attrs.get("label", "")).strip()
         sf = str(attrs.get("source_file", ""))
         if not label or not sf:
@@ -998,8 +929,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             continue  # chave ambígua: nenhum vencedor canônico seguro, deixe o fantasma intacto
         if key in _loc_nodes and _loc_nodes[key] != nid:
             _noloc_nodes[key] = nid
-    # Para cada fantasma que possui uma contraparte AST, registre um remapeamento.
-    _ghost_remap: dict[str, str] = {}  # ghost_id -> canonical_id
+    _ghost_remap: dict[str, str] = {}
     for key, sem_id in _noloc_nodes.items():
         ast_id = _loc_nodes.get(key)
         if ast_id is not None:
@@ -1009,9 +939,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         G.remove_node(ghost_id)
         node_set.discard(ghost_id)
 
-    # Mapa de ID normalizado: permite que as arestas sobrevivam quando o LLM gera IDs com
     # caixa ou pontuação ligeiramente diferente do extrator AST.
-    # por exemplo "Session_ValidateToken" mapeia para "session_validatetoken".
     norm_to_id: dict[str, str] = {_normalize_id(nid): nid for nid in node_set}
     # Mapeie também IDs fantasmas para suas substituições canônicas de AST.
     for ghost_id, canonical_id in _ghost_remap.items():
@@ -1022,22 +950,17 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
     # fragmento (por exemplo, uma atualização incremental cujo fragmento faz referência a um símbolo em um
     # arquivo que NÃO foi extraído novamente) ainda é resolvido para o nó migrado
     # de pendurado. Apenas preenche lacunas – nunca substitui um ID de nó real.
-    #
     # A forma radical antiga descarta a extensão e (para o próprio nó do arquivo) cada
     # diretório, mas o pai imediato, então ele entra em colapso facilmente: "ping.h" e
     # "ping.php" em diretórios diferentes, ambos alias para "ping". Coletando
     # cada candidato a um pseudônimo ANTES de cometer qualquer um deles - e somente
     # comprometer-se quando exatamente um candidato o reivindica - mantém isso preciso
     # ajuda de redigitação em vez de uma mesclagem silenciosa de arquivos cruzados (e idiomas cruzados).
-    # Sem isso, uma vantagem pendente para um ID substituto vazio e deliberadamente sem escopo
     # (por exemplo, o destino de último recurso do extrator C/C++ para um #include que não foi possível
     # resolver para um caminho real) poderia usar esse alias em qualquer coisa não relacionada
-    # mesmo arquivo-stem foi inserido primeiro em ``node_set`` — um arquivo Python
     # definido, então "primeiro" é a ordem de hash, não é nada significativo.
-    #
     # O ID PRÓPRIO de um nó de arquivo nem sempre é um prefixo ``new_stem`` limpo: quando um
     # O par ``.h``/``.cpp`` do mesmo diretório colide em sua pré-extensão compartilhada
-    # id, _disambiguate_colliding_node_ids salts both apart into ids like
     # ``tools_aolserver_utility_h_tools_aolserver_utility`` — que não é mais
     # string-prefixos limpos para a matemática do sufixo abaixo. Detectando "este É o
     # nó de arquivo" por rótulo (o rótulo de cada nó de arquivo é seu próprio nome de base,
@@ -1062,7 +985,7 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         else:
             suffix = ""
             if _normalize_id(nid).startswith(new_stem):
-                suffix = _normalize_id(nid)[len(new_stem):]  # liderando "_entity" ou ""
+                suffix = _normalize_id(nid)[len(new_stem):]
         for old_stem in _old_file_stems(rel):
             if old_stem == new_stem:
                 continue
@@ -1111,26 +1034,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             tgt = norm_to_id.get(_normalize_id(tgt), tgt)
         if src not in node_set or tgt not in node_set:
             continue  # pular arestas para nós externos/stdlib - esperado, não é um erro
-        # `target_file` is a transient import-disambiguation salt hint
-        # with no downstream reader; it holds an absolute path, so it must never
-        # be persisted. Disambiguation already pops it off fresh extractions —
-        # dropping it here as well keeps a pre-fix graph's stale absolute hint
-        # from surviving an incremental build_merge, which re-serializes base
-        # edges through here without re-running disambiguation.
-        # `local_alias` is the same shape of transient hint: it exists only
-        # for the module arm of _resolve_python_member_calls to match an aliased
-        # import receiver, and extract() already drops it once that pass has run.
-        # Dropping it here too covers a stale pre-fix graph re-serialized through
-        # an incremental build_merge, same rationale as target_file above.
-        # Sanitize numeric edge fields: an explicit ``"weight": null`` in
-        # the extraction JSON survives ``.get("weight", 1.0)`` (the key is present,
-        # so the default never applies) and reaches Louvain/Leiden as None,
-        # crashing modularity arithmetic with a TypeError (graspologic's Leiden
-        # even panics on NaN). Coerce to float and fall back to the schema default
-        # of 1.0 for anything the clustering backends reject — None, non-numeric
-        # strings, NaN/inf, negatives — while numeric strings coerce cleanly.
-        # Repair (not drop) the key so graph.json round-trips a clean value and a
-        # cluster-only/--update reload never re-ingests the null.
         attrs = {k: v for k, v in edge.items() if k not in ("source", "target", "target_file", "local_alias")}
         for _num_key in ("weight", "confidence_score"):
             if _num_key in attrs:
@@ -1152,7 +1055,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             )
         if "source_file" in attrs:
             attrs["source_file"] = _norm_source_file(attrs["source_file"], _root)
-        # Eliminar arestas fantasmas entre idiomas — os mesmos nomes curtos (renderizar, analisar,
         # tempo, ...) ocorrem através das fronteiras linguísticas, de modo que um alvo não resolvido pode
         # vincular-se a um nó com o mesmo nome em outro idioma. A especificação de extração proíbe
         # isto para `chamadas`; é igualmente inválido para `importações`/`referências` (um
@@ -1164,7 +1066,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             src_fam = _EDGE_LANG_FAMILY.get(src_ext)
             tgt_fam = _EDGE_LANG_FAMILY.get(tgt_ext)
             if _edge_rel == "calls":
-                # Comportamento inalterado: apenas chamadas INFERRED e descartadas como
                 # assim que uma das famílias for diferente (um ramal desconhecido conta como diferente).
                 if (
                     attrs.get("confidence") == "INFERRED"
@@ -1177,14 +1078,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 # (ramal desconhecido, por exemplo, um manifesto) nunca é confundido com um fantasma.
                 if src_fam is not None and tgt_fam is not None and src_fam != tgt_fam:
                     continue
-        # A file-level import or re-export cannot carry useful connectivity when
-        # both endpoints resolve to the same node.  This most often happens when
-        # the target is an unresolved bare module name (``builtins``, ``poseidon``)
-        # that the legacy-ID alias index above mistakes for the importing file's
-        # own old stem.  It also covers a nested module importing its parent file:
-        # at file-node granularity that relationship necessarily collapses.  Keep
-        # other self-edges, notably recursive ``calls``, because those are real
-        # program structure rather than import-resolution artifacts.
         if src == tgt and _edge_rel in ("imports", "imports_from", "re_exports"):
             continue
         # Preservar a direção original da aresta - caso contrário, os grafos não direcionados a perderão,
@@ -1195,13 +1088,20 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         # a mesma relação, mas direções opostas (por exemplo, a `chama` b e b `chama` a),
         # nx.Graph os recolhe em uma aresta. A classificação determinística acima significa
         # a direção lexicograficamente posterior substituiria sistematicamente o
-        # o _src/_tgt anterior, invertendo silenciosamente o chamador da aresta sobrevivente
         # e chamado. Em vez disso, a direção vista pela primeira vez vence - abandone o redundante
         # duplique a direção reversa para que a direção original seja preservada.
         if not G.is_directed() and G.has_edge(src, tgt):
             existing = edge_data(G, src, tgt)
             if existing.get("relation") == attrs.get("relation") and (
                 existing.get("_src") == tgt and existing.get("_tgt") == src
+            ):
+                continue
+        if G.has_edge(src, tgt):
+            existing_rel = edge_data(G, src, tgt).get("relation")
+            if (
+                attrs.get("relation") in _GENERIC_RELATIONS
+                and existing_rel is not None
+                and existing_rel not in _GENERIC_RELATIONS
             ):
                 continue
         G.add_edge(src, tgt, **attrs)
@@ -1215,14 +1115,10 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
             if isinstance(he, dict) and he.get("source_file"):
                 he["source_file"] = _norm_source_file(he["source_file"], _root)
             # Valide membros em relação ao conjunto de nós construídos: uma hiperarestas
-            # membro ausente do grafo usado para ser copiado para
-            # G.graph["hyperedges"] literalmente e alcance graph.json pendente,
             # mesmo de uma extração ao vivo (sem cache). Espelhe a aresta dos pares
-            # handling above: remap mismatched ids via normalization first,
             # então descarte os membros que ainda não resolveram; abandone a hiperarestas
             # em si quando nenhum membro válido permanece (hiperarestas de membro único
             # são legais nesta base de código, por ex. um fluxo por arquivo, então podamos
-            # em vez de exigir dois sobreviventes).
             if isinstance(he, dict) and isinstance(he.get("nodes"), list):
                 valid_members = []
                 for m in he["nodes"]:
@@ -1248,11 +1144,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
         if kept_hyperedges:
             G.graph["hyperedges"] = kept_hyperedges
         else:
-            # Full wipeout: every incoming hyperedge failed member
-            # revalidation. Store an EXPLICIT empty list — distinct from
-            # "this graph never carried hyperedge metadata" — and say loudly
-            # that the persisted set is about to be emptied, so the per-edge
-            # warnings above can't scroll past unnoticed.
             G.graph["hyperedges"] = []
             print(
                 f"[omnigraph] WARNING: all {len(hyperedges)} hyperedge(s) were "
@@ -1260,10 +1151,6 @@ def build_from_json(extraction: dict, *, directed: bool = False, root: str | Pat
                 f"will be emptied on the next export.",
                 file=sys.stderr,
             )
-    # Runs LAST, after the alias-competition above (which relies on file-node
-    # labels still being bare basenames): give colliding-basename file nodes a
-    # directory-qualified display label so lookup/discovery can disambiguate
-    # them. Labels only — ids and edges are untouched.
     _disambiguate_file_node_labels(G)
     return G
 
@@ -1300,20 +1187,14 @@ def build(
         combined["input_tokens"] += ext.get("input_tokens", 0)
         combined["output_tokens"] += ext.get("output_tokens", 0)
     if dedup and combined["nodes"]:
-        # Numeric ids must be str before dedup, which keys on them and would
-        # raise TypeError in _pick_winner's regex search. build_from_json
-        # coerces too, but that runs after dedup — too late for this path.
         _coerce_non_string_ids(combined)
-        # Fold legacy node field aliases before dedup: dedup runs BEFORE
-        # build_from_json and keys on `label`, so a `name`/`path` alias node
-        # would be invisible to it and only label-dedup one build later, after
-        # build_from_json's own fold has healed the persisted graph.json.
         for n in combined["nodes"]:
             if isinstance(n, dict):
                 _fold_node_aliases(n)
         combined["nodes"], combined["edges"] = deduplicate_entities(
             combined["nodes"], combined["edges"], communities={},
             dedup_llm_backend=dedup_llm_backend, root=root,
+            hyperedges=combined.get("hyperedges"),
         )
     return build_from_json(combined, directed=directed, root=root)
 
@@ -1341,8 +1222,8 @@ def deduplicate_by_label(nodes: list[dict], edges: list[dict]) -> tuple[list[dic
     conflation ``deduplicate_entities`` deliberately avoids for code (#1205).
     """
     _CHUNK_SUFFIX = re.compile(r"_c\d+$")
-    canonical: dict[str, dict] = {}  # norm_label -> surviving node
-    remap: dict[str, str] = {}       # old_id -> surviving_id
+    canonical: dict[str, dict] = {}
+    remap: dict[str, str] = {}
 
     for node in nodes:
         key = _norm_label(node.get("label", node.get("id", "")))
@@ -1410,12 +1291,6 @@ def _load_existing_graph(graph_path: Path) -> "tuple[list, list, list, bool] | N
     links_key = "links" if "links" in data else "edges"
     nodes = list(data.get("nodes", []))
     edges = list(data.get(links_key, []))
-    # Backfill tier provenance on legacy items: _origin is stamped at
-    # extraction time only (extract.py for AST, and the semantic path never
-    # stamps), so pre-0.9.16 graphs and externally-merged fragments carry
-    # unstamped items. Stamp them via the _is_ast_tier shape fallback so the
-    # graph self-heals on the next write and every downstream tier decision
-    # (build_merge replace, watch reconcile) reads an explicit marker.
     for item in nodes:
         if isinstance(item, dict):
             item.setdefault("_origin", "ast" if _is_ast_tier(item) else "semantic")
@@ -1473,10 +1348,6 @@ def merge_raw_extraction(
         else _infer_merge_root(graph_path)
     )
 
-    # Tier-scoped replace, mirroring build_merge (, COEXIST): a
-    # source re-extracted this run replaces only the tier(s) actually present
-    # in the new extraction, so an AST-only re-extract keeps the file's
-    # semantic layer and vice versa.
     new_ast_sources: set[str] = set()
     new_sem_sources: set[str] = set()
     for n in new.get("nodes", []):
@@ -1492,8 +1363,6 @@ def merge_raw_extraction(
             tier_sources.add(norm)
     new_sources: set[str] = new_ast_sources | new_sem_sources
 
-    # "Replace" wins over a contradictory "delete" of the same source,
-    # in both string and absolute-identity space — as in build_merge.
     prune_set, prune_abs = _build_prune_sets(prune_sources, _eff_root, new_sources)
     _prune_root = _eff_root
 
@@ -1508,11 +1377,6 @@ def merge_raw_extraction(
         a = _abs_identity(sf, _prune_root)
         return bool(a) and a in prune_abs
 
-    # when NONE of the prune entries match anything stored, the guessed
-    # _eff_root is usually wrong (non-standard layout, no marker) and every
-    # prune silently no-ops. Derive the root by suffix-matching the absolute
-    # prune paths against the stored relative source_files and retry — same
-    # fallback as build_merge.
     if prune_set or prune_abs:
         _stored_sfs = {
             item.get("source_file")
@@ -1532,15 +1396,11 @@ def merge_raw_extraction(
         if not isinstance(item, dict):
             return True
         sf = item.get("source_file")
-        # Tier-scoped replace: an item is superseded only when ITS OWN tier
-        # re-extracted its source. Hyperedges are semantic-tier (no _origin,
-        # null source_location), so an AST-only re-extract carries them.
-        # Deletion pruning below stays tier-blind.
         own = new_ast_sources if _is_ast_tier(item) else new_sem_sources
         if sf in own or _norm_source_file(sf, _eff_root) in own:
-            return True  # re-extracted this run — replaced by the new chunk
+            return True
         if not sf:
-            return False  # unowned — carry forward
+            return False
         return _prune_hit(sf)
 
     new["nodes"] = [n for n in existing_nodes if not _dropped(n)] + list(new.get("nodes", []))
@@ -1591,7 +1451,6 @@ def build_merge(
     if directed is None:
         directed = existing_directed if had_graph else False
 
-    # Raiz efetiva para relativizar caminhos absolutos de source_file / prune de volta ao
     # chaves relativas source_file armazenadas. Quando o chamador passa pelo root, nós o usamos;
     # caso contrário, retorne à raiz de varredura registrada do grafo, tão absoluta
     # prune_sources e caminhos de novos pedaços ainda correspondem mesmo quando um chamador omite root
@@ -1605,20 +1464,11 @@ def build_merge(
 
     # Arquivos reextraídos SUBSTITUEM sua contribuição anterior. Cada source_file
     # presente em new_chunks é eliminado da base carregada antes da fusão, portanto, um
-    # CHANGED file's stale nodes/edges don't accumulate across incremental
     # atualizações. Sem isso, build() mescla antigo+novo para o mesmo arquivo e apenas
     # colapso de arestas duplicadas exatas — arestas/nós que desapareceram do novo
     # versão sobreviverá para sempre. Arquivos novos não estão na base, então este é um ambiente autônomo
     # para eles; arquivos genuinamente excluídos ainda são tratados via prune_sources.
-    # Correspondido na forma bruta e _norm_source_file porque new_chunks pode carregar
     # caminhos win32 absolutos enquanto o grafo armazenado mantém posix relativo.
-    # Replacement is tier-scoped (, COEXIST): each file has two
-    # producers — the deterministic AST pass and the semantic/LLM pass — whose
-    # node sets coexist in the graph. A re-extract of one tier must replace
-    # only that tier's prior contribution, never the other's (a semantic-only
-    # chunk used to delete the file's AST headings). Which tier a NEW chunk
-    # item belongs to is read via _is_ast_tier (existing items were stamped by
-    # _load_existing_graph above).
     _replace_root = _eff_root
     new_ast_sources: set[str] = set()
     new_sem_sources: set[str] = set()
@@ -1633,10 +1483,6 @@ def build_merge(
             if norm:
                 tier_sources.add(norm)
     new_sources: set[str] = new_ast_sources | new_sem_sources
-    # True on-disk baseline for the shrink accounting at the end:
-    # the rebind below removes the re-extracted sources' old nodes from
-    # existing_nodes, so any later size comparison against the rebound list can
-    # never see the loss it is meant to catch.
     _disk_nodes = existing_nodes
     _disk_n = len(existing_nodes)
     if new_sources:
@@ -1664,25 +1510,16 @@ def build_merge(
     # relativizado por _norm_source_file em tempo de construção). .resolve() (via _eff_root)
     # lida com raízes simbólicas e segmentos ".." / "./" então Path.relative_to()
     # é bem-sucedido mesmo quando a raiz da varredura é um link simbólico.
-    #
     # Um arquivo que acabou de ser extraído novamente (presente em new_chunks) está sendo SUBSTITUÍDO,
     # nunca excluído - portanto, nunca remova-o, mesmo que o chamador também o liste
     # prune_sources. Caso contrário, seus nós novos e recém-construídos serão removidos silenciosamente
     # (perda de dados): comum quando uma edição mantém o rótulo de um nó e o chamador segue
     # o antigo fluxo de trabalho de edição de passar o arquivo alterado em prune_sources.
-    # "replace" wins over a contradictory "delete" of the same source. Applied in
-    # both string and absolute-identity space so the third-form fallback below
-    # can't resurrect the delete for a re-extracted file.
     _prune_root = _eff_root
     prune_set, prune_abs = _build_prune_sets(prune_sources, _prune_root, new_sources)
     _matched_prune_entries: set[str] = set()
 
     def _prune_match(sf: "str | None") -> bool:
-        # Match a node/edge/hyperedge source_file against the prune set in a
-        # form-insensitive way: exact string, normalised-relative, then the
-        # absolute-identity fallback for the third-form case. Records
-        # WHICH prune entry matched, so the prune report can count only the
-        # entries that actually hit something.
         if not sf:
             return False
         hit = prune_set.get(sf)
@@ -1699,13 +1536,6 @@ def build_merge(
         _matched_prune_entries.add(hit)
         return True
 
-    # when NONE of the prune entries match anything stored, the guessed
-    # _eff_root is usually wrong (non-standard layout, no marker) and every
-    # prune would silently no-op. Derive the root by suffix-matching the
-    # absolute prune paths against the stored relative source_files and redo
-    # the prune sets with it; on ambiguity fall through to the zero-match
-    # warning below. Runs before the hyperedge carry so hyperedge pruning
-    # benefits too.
     if prune_set or prune_abs:
         _stored_sfs = {
             item.get("source_file")
@@ -1723,7 +1553,6 @@ def build_merge(
 
     # Transportar hiperarestas de arquivos que não foram reextraídos nem
     # excluído. build() vê apenas as hiperarestas dos novos pedaços, portanto, sem
-    # isso every --update recolhe a hiperarestas do grafo definida apenas para o
     # arquivos alterados'. As hiperarestas anteriores dos arquivos reextraídos são eliminadas (suas novas
     # a versão já está em G — substituição por fonte, como nós/arestas); excluído
     # arquivos' são descartados via prune_set. id-dedup (attach_hyperedges) então é transportado
@@ -1736,13 +1565,10 @@ def build_merge(
                 continue
             sf = he.get("source_file")
             norm = _norm_source_file(sf, _eff_root)
-            # Hyperedges are semantic-tier: only a SEMANTIC re-extract of the
-            # source replaces them. An AST-only re-extract cannot regenerate
-            # hyperedges, so dropping them there would be data loss.
             if sf in new_sem_sources or norm in new_sem_sources:
-                continue  # semantically re-extracted — replaced by the new chunk's version
+                continue
             if _prune_match(sf):
-                continue  # deleted — pruned
+                continue
             carried.append(he)
         if carried:
             from omnigraph.export import attach_hyperedges
@@ -1750,6 +1576,10 @@ def build_merge(
 
     # Remover nós e arestas de arquivos de origem excluídos
     if prune_sources:
+        _isolated_before = {
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file") and G.degree(n) == 0
+        }
         to_remove = [
             n for n, d in G.nodes(data=True)
             if _prune_match(d.get("source_file"))
@@ -1764,9 +1594,16 @@ def build_merge(
         if edges_to_remove:
             G.remove_edges_from(edges_to_remove)
 
-        # Report only the prune entries that ACTUALLY matched something — not
-        # len(prune_sources), which counted every entry as pruned-from even
-        # when a root mismatch made most of them no-ops.
+        orphaned = [
+            n for n, d in G.nodes(data=True)
+            if not d.get("source_file")
+            and G.degree(n) == 0
+            and n not in _isolated_before
+        ]
+        if orphaned:
+            G.remove_nodes_from(orphaned)
+            n_nodes += len(orphaned)
+
         n_files = len(_matched_prune_entries)
         if n_nodes:
             print(
@@ -1783,10 +1620,6 @@ def build_merge(
 
         if not n_nodes and not edges_to_remove:
             if (prune_set or prune_abs) and not _matched_prune_entries:
-                # Live prune entries that matched NOTHING usually mean the
-                # effective root is wrong (and the derived-root fallback above
-                # found no consistent candidate) — warn instead of claiming the
-                # graph is "already clean".
                 _p0 = next((p for p in prune_sources if p), None)
                 sample_prune = _norm_source_file(_p0, _prune_root) or _p0
                 sample_sf = next(
@@ -1813,30 +1646,13 @@ def build_merge(
                     file=sys.stderr,
                 )
 
-    # Safety check: refuse to SILENTLY drop nodes (, reworked in).
-    # The old count comparison ran against the post-replace `existing_nodes`,
-    # which had already lost the re-extracted sources' old nodes — so it could
-    # never fire when it mattered, and was skipped outright whenever
-    # prune_sources was passed. Mirror watch._check_shrink instead: diff the
-    # on-disk baseline by node identity and excuse only losses explained by
-    # this run's own re-extraction (same tier) or an explicit prune. Skipped
-    # under dedup, where fuzzy merging collapses ids legitimately.
-    #
-    # Residual tradeoff (accepted): a partial re-extraction that under-produces
-    # for ITS OWN file (>= 1 node still present in new_chunks) is excused here —
-    # that failure mode is owned by the extraction layer's incomplete-build
-    # guard, and refusing it here would reintroduce the
-    # false-refuse for legitimate edits that remove symbols from a file.
     if had_graph and not dedup:
         def _in_new_graph(n: dict) -> bool:
             nid = n.get("id")
             if nid is None or not _hashable(nid):
-                return True  # untrackable identity — never count as lost
+                return True
             if nid in G:
                 return True
-            # Doc-twin heal: build_from_json merges a markdown
-            # quick-scan's bare doc node into its semantic `<id>_doc` twin for
-            # the same file — a legitimate collapse, not a loss.
             return (
                 isinstance(nid, str)
                 and not nid.endswith("_doc")
@@ -1856,8 +1672,8 @@ def build_merge(
                 return True
             own = new_ast_sources if _is_ast_tier(n) else new_sem_sources
             if sf in own or _norm_source_file(sf, _replace_root) in own:
-                return True  # replaced by this run's re-extract (same tier)
-            return _prune_match(sf)  # deliberately pruned this run
+                return True
+            return _prune_match(sf)
 
         unexplained = [n for n in lost if not _explained(n)]
         if unexplained:
@@ -1890,13 +1706,6 @@ def prefix_graph_for_global(G: nx.Graph, repo_tag: str) -> nx.Graph:
             data["_src"] = relabel[data["_src"]]
         if "_tgt" in data and data["_tgt"] in relabel:
             data["_tgt"] = relabel[data["_tgt"]]
-    # Out-of-band hyperedges must be relabeled with the nodes (, after
-    # @oleksii-tumanov's diagnosis in PR): relabel_nodes copies graph
-    # attrs by reference, so member ids kept their pre-prefix form and dangled
-    # after a cross-repo merge. Rebuild the list (fresh dicts — the input
-    # graph's list is shared with H) with member ids mapped through the same
-    # relabel table, and prefix the hyperedge id itself so same-named
-    # hyperedges from different repos cannot collide when merged.
     hyperedges = H.graph.get("hyperedges")
     if isinstance(hyperedges, list):
         rewritten = []
@@ -1927,7 +1736,7 @@ def distinct_repo_tags(graph_paths: "list[Path]") -> "list[str]":
     dir (``frontend_src``), then an index suffix guarantees uniqueness so no two
     graphs ever share a prefix.
     """
-    repo_dirs = [p.parent.parent for p in graph_paths]  # omnigraph-out/.. → repo dir
+    repo_dirs = [p.parent.parent for p in graph_paths]
     tags = [d.name or "repo" for d in repo_dirs]
     if len(set(tags)) != len(tags):
         widened: list[str] = []

@@ -3,25 +3,41 @@
 from __future__ import annotations
 from collections import Counter
 from pathlib import Path
-from urllib.parse import quote
+import re
 import networkx as nx
 
 from omnigraph.build import edge_data
+from omnigraph.paths import stem_filename_budget
+
+_SLUG_SUFFIX_RESERVE = 5
+
+_UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
-def _safe_filename(name: str) -> str:
-    """Make a label safe for use as a filename across platforms.
+def _safe_filename(name: str, limit: int = 200) -> str:
+    """Make a label safe for use as a filename across platforms AND as a
+    markdown link destination.
 
     Substitutes characters that Windows reserves in filenames
-    (< > : " / \\ | ? *) and strips trailing dots/spaces, also reserved.
-    Falls back to 'unnamed' for empty results and caps length at 200
-    chars to stay well under common filesystem limits.
+    (< > : " / \\ | ? *) plus the ones that would make the emitted link stop
+    matching the file on disk, and strips trailing dots/spaces, also reserved.
+    Falls back to 'unnamed' for empty results and caps length at ``limit``
+    chars (default 200) to stay well under common filesystem limits; ``to_wiki``
+    lowers ``limit`` when the wiki directory leaves less than that inside
+    Windows' MAX_PATH window (#2655).
+
+    Parentheses are DROPPED rather than substituted: every callable node is
+    labelled ``foo()``, and substituting would leave a trailing ``foo__`` on
+    each of them — and would mangle Python dunders (``__init__()`` ->
+    ``_init_``) if the resulting runs were then collapsed. Dropping keeps
+    ``__init__`` intact. Two labels that collapse to one slug are still
+    separated by ``_unique_slug``.
     """
-    import re
     s = name.replace("/", "-").replace(" ", "_").replace(":", "-")
-    s = re.sub(r'[<>:"/\\|?*]', '_', s)
+    s = s.replace("(", "").replace(")", "")
+    s = _UNSAFE_SLUG_CHARS.sub('_', s)
     s = s.strip('. ')
-    return s[:200] if s else 'unnamed'
+    return s[:limit] if s else 'unnamed'
 
 
 def _md_link(label: str, resolver: dict[str, str]) -> str:
@@ -29,13 +45,23 @@ def _md_link(label: str, resolver: dict[str, str]) -> str:
 
     ``resolver`` maps an article's display label to the slug (filename stem) it
     was written under. When the label has an article, emit a standard
-    ``[label](slug.md)`` link, URL-encoding the target so any spaces, parens, &
-    or # in the slug survive every CommonMark renderer (GitHub, GitLab, VS Code
-    preview, a plain browser) and Obsidian alike. The old ``[[label]]`` form
-    only resolved inside Obsidian, because the on-disk filename differs from the
-    label — _safe_filename turns spaces into underscores and substitutes
-    reserved characters — so e.g. ``[[Domain Data Models]]`` pointed at a
-    non-existent ``Domain Data Models.md`` everywhere else.
+    ``[label](slug.md)`` link whose target is the on-disk name VERBATIM.
+
+    The target is deliberately not percent-encoded (#2597). ``quote()`` turned
+    ``_make_id().md`` into ``_make_id%28%29.md`` while the file stayed raw, so
+    the link pointed at a path that does not exist. Renderers hid it by
+    decoding before resolving, but the wiki's whole purpose is to be
+    agent-crawlable, and an agent that reads the target off disk verbatim got a
+    FileNotFoundError. ``_safe_filename`` now keeps the slug free of everything
+    that would need encoding, so raw emission and the filename are the same
+    string by construction — one source of truth instead of two spellings that
+    happened to agree only for URL-safe labels.
+
+    The old ``[[label]]`` form only resolved inside Obsidian, because the
+    on-disk filename differs from the label — _safe_filename turns spaces into
+    underscores and substitutes reserved characters — so e.g.
+    ``[[Domain Data Models]]`` pointed at a non-existent
+    ``Domain Data Models.md`` everywhere else.
 
     Labels with no article — most node-level links, since only communities and
     god nodes get article files — render as plain text instead of a dead link
@@ -45,7 +71,7 @@ def _md_link(label: str, resolver: dict[str, str]) -> str:
     slug = resolver.get(label)
     if slug is None:
         return text
-    return f"[{text}]({quote(f'{slug}.md')})"
+    return f"[{text}]({slug}.md)"
 
 
 def _cross_community_links(G: nx.Graph, nodes: list[str], own_cid: int, labels: dict[int, str], node_community: dict[str, int]) -> list[tuple[str, int]]:
@@ -73,20 +99,6 @@ def _community_article(
     top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
     cross = _cross_community_links(G, nodes, cid, labels, node_community or {})
 
-    # Edge confidence breakdown, over every edge INCIDENT to the community (the
-    # cross-community ones included — those are disproportionately the uncertain
-    # edges, and AMBIGUOUS is what ARCHITECTURE.md flags for human review).
-    #
-    # ``G.edges(nbunch)`` reports each incident edge exactly once. Walking
-    # ``nodes x G.neighbors`` instead visited an edge once per endpoint inside
-    # the community, so an intra-community edge was counted TWICE while a
-    # crossing one was counted once. Intra-community edges are overwhelmingly
-    # the high-confidence EXTRACTED ones — that is what makes a community — so
-    # the split was biased towards confidence and understated the review
-    # burden. On a MultiGraph this also counts parallel edges individually
-    # rather than collapsing them to the first (``edge_data``), which is the
-    # same understatement: an AMBIGUOUS edge parallel to an EXTRACTED one used
-    # to be invisible here.
     conf_counts: Counter = Counter(
         d.get("confidence", "EXTRACTED") for *_, d in G.edges(nodes, data=True)
     )
@@ -271,7 +283,6 @@ def to_wiki(
     # Limpe arquivos .md obsoletos de execuções anteriores para evitar o acúmulo de órfãos.
     # Os rótulos da comunidade são gerados por LLM (por habilidade.md Etapa 5) e não determinísticos
     # entre execuções - a mesma comunidade conceitual pode receber nomes diferentes a cada vez
-    # (por exemplo, "AutoAgent Skills" → "AutoAgent Methodology"), deixando o arquivo anterior
     # como órfão. Como to_wiki() possui wiki/ inteiramente (sempre escreve o conjunto completo),
     # ele pode limpar arquivos .md com segurança no início de cada chamada.
     for old_article in out.glob("*.md"):
@@ -288,11 +299,11 @@ def to_wiki(
     count = 0
     used_slugs: set[str] = set()
 
+    _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
+
     def _unique_slug(base: str) -> str:
         # Dobrar caso na verificação de colisão: dois rótulos diferindo apenas por caso
         # (por exemplo, "Analisador" vs "analisador") resolve para um caminho sem distinção entre maiúsculas e minúsculas
-        # sistemas de arquivos (macOS/APFS, Windows/NTFS), portanto, eles devem ser desduplicados em cada um
-        # other enquanto ainda emite o nome do arquivo do caso original.
         slug = base
         n = 2
         while slug.lower() in used_slugs:
@@ -301,7 +312,6 @@ def to_wiki(
         used_slugs.add(slug.lower())
         return slug
 
-    # Primeira passagem: atribua a cada artigo seu slug antes de renderizar qualquer corpo, para que o
     # os corpos podem se ligar uns aos outros. O destino de um link é o nome do arquivo no disco (o
     # slug), que difere do rótulo — _safe_filename transforma espaços em
     # sublinhados e substitutos de caracteres reservados, e um slug pode pegar um número
@@ -315,15 +325,15 @@ def to_wiki(
     community_slugs: dict[int, str] = {}
     for cid in communities:
         label = labels.get(cid, f"Community {cid}")
-        slug = _unique_slug(_safe_filename(label))
+        slug = _unique_slug(_safe_filename(label, _slug_limit))
         community_slugs[cid] = slug
         resolver.setdefault(label, slug)
 
-    god_articles: list[tuple[str, str]] = []  # (node_id, slug)
+    god_articles: list[tuple[str, str]] = []
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
-            slug = _unique_slug(_safe_filename(node_data['label']))
+            slug = _unique_slug(_safe_filename(node_data['label'], _slug_limit))
             god_articles.append((nid, slug))
             resolver.setdefault(node_data['label'], slug)
 
@@ -339,7 +349,6 @@ def to_wiki(
         (out / f"{slug}.md").write_text(article, encoding="utf-8")
         count += 1
 
-    # Index
     (out / "index.md").write_text(
         _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges(), resolver),
         encoding="utf-8",

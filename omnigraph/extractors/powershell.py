@@ -122,8 +122,6 @@ def extract_powershell(path: Path) -> dict:
                 if body:
                     function_bodies.append((func_nid, body))
                     # Ande também com o corpo durante a passagem principal para que
-                    # Import-Module / dot-source inside functions emit
-                    # file-level imports_from edges.
                     walk(body, parent_class_nid)
             return
 
@@ -137,7 +135,6 @@ def extract_powershell(path: Path) -> dict:
                 add_edge(file_nid, class_nid, "contains", line)
                 # Tipo(s) base(s) após ':'. PowerShell não tem base sintática vs.
                 # divisão de interface, então (correspondendo à convenção C#) trate o
-                # primeira base como a superclasse (herda) e o resto como
                 # interfaces (implementos). As bases são os filhos simple_name
                 # após o token ':'.
                 colon_seen = False
@@ -188,7 +185,6 @@ def extract_powershell(path: Path) -> dict:
                     if target_nid != method_nid:
                         add_edge(method_nid, target_nid, "references",
                                  line, context="return_type")
-                # Parameter types: class_method_parameter_list
                 param_list = next(
                     (c for c in node.children if c.type == "class_method_parameter_list"), None)
                 if param_list is not None:
@@ -211,7 +207,6 @@ def extract_powershell(path: Path) -> dict:
             return
 
         if t == "command":
-            # Dot-sourcing: `. ./Shared.psm1`
             # Usa command_invokation_operator '.' + command_name_expr (não command_name)
             invoke_op = next(
                 (c for c in node.children if c.type == "command_invokation_operator"), None
@@ -226,7 +221,6 @@ def extract_powershell(path: Path) -> dict:
                     )
                     if name_node:
                         raw_path = _read_text(name_node, source)
-                        # Retirar o prefixo do caminho relativo (./ ou .\ ou apenas o ponto)
                         module_stem = re.sub(r'^[./\\]+', '', raw_path)
                         # Solte a extensão para obter o nome do módulo simples
                         module_stem = re.sub(r'\.[^.]+$', '', module_stem).replace('\\', '/')
@@ -253,7 +247,6 @@ def extract_powershell(path: Path) -> dict:
                         add_edge(file_nid, _make_id(module_name), "imports_from",
                                  node.start_point[0] + 1)
                 elif cmd_text == "import-module":
-                    # Collect generic_token args; skip command_parameter flags like -Name
                     # O nome do módulo é o primeiro generic_token (ou aquele após -Name)
                     module_name: str | None = None
                     expect_name = False
@@ -345,7 +338,7 @@ def _psd1_module_name(raw: str) -> str:
     """
     # Remover prefixo e extensão do caminho
     name = raw.replace("\\", "/").split("/")[-1]
-    name = re.sub(r"\.[^.]+$", "", name)  # remove last extension
+    name = re.sub(r"\.[^.]+$", "", name)
     return name.strip()
 
 def extract_powershell_manifest(path: Path) -> dict:
@@ -413,14 +406,12 @@ def extract_powershell_manifest(path: Path) -> dict:
                 walk_manifest(child)
             return
 
-        # Identifique a chave
         key_node = next((c for c in node.children if c.type == "key_expression"), None)
         if key_node is None:
             return
         key_text = source[key_node.start_byte:key_node.end_byte].decode(errors="replace").strip()
 
         if key_text not in _PSD1_IMPORT_KEYS:
-            # Ainda recursivo caso haja hashes aninhados (por exemplo, entradas ModuleVersion
             # contêm sub-hashes, mas nos preocupamos apenas com chaves de nível superior para importações)
             return
 
@@ -442,15 +433,11 @@ def extract_powershell_manifest(path: Path) -> dict:
                 add_import_edge(file_nid, s, line)
 
         elif key_text == "RequiredModules":
-            # Two forms:
-            # 1) 'SimpleModule' — literais de string diretos no array
-            # 2) @{ ModuleName = 'Foo'; ModuleVersion = '2.0' } — use somente ModuleName
-            #
             # Estratégia: percorrer o valor dos nós hash_entry cuja chave é 'ModuleName';
             # colete seus valores de string. Para os nós string_literal restantes que
             # NÃO estão dentro de uma subárvore hash_entry, trate-os como nomes de módulos simples.
             module_name_strings: list[str] = []
-            inside_hash_entries: set[int] = set()  # deslocamentos de bytes de strings manipuladas
+            inside_hash_entries: set[int] = set()
 
             def find_modulename_entries(n) -> None:
                 if n.type == "hash_entry":

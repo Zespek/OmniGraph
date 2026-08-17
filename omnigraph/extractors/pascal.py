@@ -260,7 +260,6 @@ def _extract_pascal_regex(path: Path) -> dict:
         # Um método de classe declarado na seção de interface e definido no
         # seção de implementação emitem uma aresta de `método` para o mesmo nó, então
         # desduplicar em (src, tgt, relação) para evitar que o grafo carregue duplicado
-        # method/contains/inherits edges (mirrors _add_node's seen_ids guard).
         key = (src, tgt, relation)
         if key in seen_edges:
             return
@@ -286,7 +285,6 @@ def _extract_pascal_regex(path: Path) -> dict:
 
     stripped = _pascal_strip_comments(raw)
 
-    # Module header
     module_nid = file_nid
     mod_m = _PAS_MODULE_RE.search(stripped)
     if mod_m:
@@ -325,7 +323,6 @@ def _extract_pascal_regex(path: Path) -> dict:
             if same_file_nid in seen_ids:
                 # Classe base já declarada anteriormente neste mesmo arquivo --
                 # reutilizar seu nó real em vez da pesquisa de arquivo cruzado/stub
-                # abaixo (que assume uma classe por arquivo e criaria um
                 # nó duplicado para uma classe base que compartilha este arquivo).
                 base_nid = same_file_nid
             else:
@@ -333,12 +330,8 @@ def _extract_pascal_regex(path: Path) -> dict:
                 if resolved:
                     # Classe base entre arquivos encontrada no disco – seu nó real
                     # chega através da própria extração desse arquivo. Não adicione um
-                    # stub duplicado aqui: carregaria este arquivo
                     # source_file (errado – pertence à classe base
                     # próprio arquivo) e colidir com o nó real em
-                    # cross-file id disambiguation, producing two different
-                    # IDs salgados para o que deveria ser uma classe (quebras
-                    # cross-file `inherits`-chain resolution downstream).
                     base_nid = resolved
                 else:
                     base_nid = _make_id(base_name)
@@ -361,9 +354,7 @@ def _extract_pascal_regex(path: Path) -> dict:
 
         pos = end_m.end() if end_m else len(search_text)
 
-    # Implementation headers (procedure/function/constructor/destructor)
     impl_records: list[tuple[str, int, str, str, str]] = []
-    # (proc_nid, line, body_text, container, name_lower)
     for fm in _PAS_IMPL_HEADER_RE.finditer(impl_text):
         qualified = fm.group("qual")
         line = _lineno(stripped, impl_off + fm.start())
@@ -407,8 +398,6 @@ def _extract_pascal_regex(path: Path) -> dict:
             if not target_nid:
                 # Não pode ser resolvido neste arquivo (por exemplo, herdado de uma base
                 # classe declarada em outro arquivo) - relatório para o
-                # resolvedor de arquivos cruzados (omnigraph.pascal_resolution) em vez de
-                # adivinhando ou largando-o silenciosamente.
                 raw_calls.append({
                     "source_file": str_path,
                     "source_location": f"L{call_line}",
@@ -470,7 +459,6 @@ def extract_pascal(path: Path) -> dict:
     seen_ids: set[str] = set()
     seen_edges: set[tuple[str, str, str]] = set()
     proc_bodies: list[tuple[str, Any, str, str]] = []
-    # (proc_nid, body_node, container, name_lower)
 
     def _read(node) -> str:  # type: ignore[no-untyped-def]
         return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
@@ -491,7 +479,6 @@ def extract_pascal(path: Path) -> dict:
         # Um método de classe declarado na seção de interface e definido no
         # seção de implementação emitem uma aresta de `método` para o mesmo nó, então
         # desduplicar em (src, tgt, relação) para evitar que o grafo carregue duplicado
-        # method/contains/inherits edges (mirrors add_node's seen_ids guard).
         key = (src, tgt, relation)
         if key in seen_edges:
             return
@@ -559,22 +546,15 @@ def extract_pascal(path: Path) -> dict:
                         base_name = _read(child)
                         base_nid = _make_id(stem, base_name)
                         if base_nid not in seen_ids:
-                            # Try cross-file resolution (TFooBar → FooBar.pas)
                             resolved = _pascal_resolve_class(path, base_name)
                             if resolved:
                                 # Classe base entre arquivos encontrada no disco - é
                                 # o nó real chega através do próprio arquivo
                                 # extração. Não adicione um stub duplicado
-                                # aqui: carregaria este arquivo
-                                # source_file (errado) e colidir com o
-                                # real node under cross-file id
-                                # disambiguation, producing two different
-                                # IDs salgados para o que deveria ser uma classe.
                                 base_nid = resolved
                             else:
                                 base_nid = _make_id(base_name)
                                 if base_nid not in seen_ids:
-                                    # Stub para classes base RTL/externas.
                                     add_node(base_nid, base_name, line)
                         add_edge(cls_nid, base_nid, "inherits", line)
                 for child in kind_node.children:
@@ -634,7 +614,6 @@ def extract_pascal(path: Path) -> dict:
     # Segunda passagem: resolver chamadas dentro de corpos de procedimento/função, com escopo definido por
     # a própria classe do chamador, depois sua cadeia ancestral e, em seguida, livre em nível de arquivo
     # funções, recorrendo a uma correspondência global inequívoca (ver
-    # _resolve_pascal_callee_factory).
     resolve_callee = _resolve_pascal_callee_factory(proc_bodies, edges, module_nid)
     seen_call_pairs: set[tuple[str, str]] = set()
     raw_calls: list[dict] = []
@@ -646,8 +625,6 @@ def extract_pascal(path: Path) -> dict:
         if not target:
             # Não pode ser resolvido neste arquivo (por exemplo, herdado de uma base
             # classe declarada em outro arquivo) -- relatório para o arquivo cruzado
-            # resolvedor (omnigraph.pascal_resolution) em vez de adivinhar ou
-            # largando-o silenciosamente.
             raw_calls.append({
                 "source_file": str_path,
                 "source_location": f"L{line}",
@@ -670,7 +647,6 @@ def extract_pascal(path: Path) -> dict:
             if callee_text:
                 _emit_or_report(caller_nid, callee_text.lower(), node.start_point[0] + 1)
         elif node.type == "statement":
-            # Chamadas de procedimento simples Pascal sem argumentos: `Reset;`
             # tree-sitter representa estes como instrução → identificador (sem wrapper exprCall)
             named = [c for c in node.children if c.is_named]
             if len(named) == 1 and named[0].type == "identifier":

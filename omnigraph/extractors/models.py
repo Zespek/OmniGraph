@@ -12,8 +12,8 @@ _JS_CACHE_BYPASS_SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts
 
 @dataclass
 class LanguageConfig:
-    ts_module: str                                   # e.g. "tree_sitter_python"
-    ts_language_fn: str = "language"                 # attr para ligar: por exemplo. tslang.idioma()
+    ts_module: str
+    ts_language_fn: str = "language"
 
     class_types: frozenset = frozenset()
     function_types: frozenset = frozenset()
@@ -24,19 +24,16 @@ class LanguageConfig:
     container_bind_methods: frozenset = frozenset()
     event_listener_properties: frozenset = frozenset()
 
-    # Name extraction
     name_field: str = "name"
     name_fallback_child_types: tuple = ()
 
-    # Body detection
     body_field: str = "body"
-    body_fallback_child_types: tuple = ()   # e.g. ("declaration_list", "compound_statement")
+    body_fallback_child_types: tuple = ()
 
-    # Call name extraction
     call_function_field: str = "function"           # campo no nó de chamada para o receptor
-    call_accessor_node_types: frozenset = frozenset()  # member/attribute nodes
+    call_accessor_node_types: frozenset = frozenset()
     call_accessor_field: str = "attribute"          # campo no acessador para o nome do método
-    call_accessor_object_field: str = ""            # campo no acessador para o receptor/objeto
+    call_accessor_object_field: str = ""
 
     # Pare a recursão nesses tipos em walk_calls
     function_boundary_types: frozenset = frozenset()
@@ -115,7 +112,4 @@ class _SymbolResolutionFacts:
     namespace_exports: list[_NamespaceExportFact] = field(default_factory=list)
     uses: list[_SymbolUseFact] = field(default_factory=list)
     # Importações de submódulo arquivo para arquivo de `from pkg import submod`.
-    # Each entry is (importing_file, submodule_file, line, local_name) -- local_name
-    # is the binding introduced in the importing file: the alias when `from pkg
-    # import submod as alias` is used, otherwise the submodule's own name.
     module_imports: list[tuple[Path, Path, int, str]] = field(default_factory=list)

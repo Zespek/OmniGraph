@@ -27,46 +27,11 @@ def _viz_node_limit() -> int:
     except ValueError:
         return MAX_NODES_FOR_VIZ
 
-# Ajuda do painel lateral. Numa constante porque aparece em dois lugares: no HTML
-# inicial e de volta pelo JS quando o usuário clica fora e desmarca o nó.
-_INFO_AJUDA = (
-    '<div class="ajuda"><b>Clique num nó</b> para ver o que ele é, de que arquivo veio'
-    ' e com quem se conecta.</div>'
-    '<div class="ajuda">A caixa <b>Search nodes</b> acha um nó <b>pelo nome</b>'
-    ' (um arquivo, uma função) — ela não responde perguntas. Para perguntar'
-    ' <i>como algo funciona</i>, use no terminal:'
-    '<br><code>omnigraph-perguntar "como funciona o login?"</code></div>'
-)
-
-_COMUNIDADES_AJUDA = (
-    '<div class="ajuda" id="legend-ajuda">Cada cor é um grupo de arquivos que o OmniGraph'
-    ' viu trabalhando juntos, batizado pelo arquivo mais central do grupo. O número é'
-    ' quantos nós o grupo tem. Desmarque um grupo para escondê-lo e enxergar o resto.</div>'
-)
-
-
 def _html_styles() -> str:
     return """<style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0d0714; color: #ede4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
-  /* Fundo de espaço: dois brilhos fixos (o roxo da identidade e um ciano frio) e
-     um campo de estrelas em tiles que se repetem. É tudo CSS de propósito — o
-     vis.js limpa o canvas a cada quadro, então qualquer estrela desenhada nele
-     sumiria; e pintar estrelas no canvas custaria FPS num grafo de milhares de
-     nós. Assim o custo é zero: o canvas é transparente e isto aparece atrás. */
-  #graph { flex: 1;
-    background-color: #0d0714;
-    background-image:
-      radial-gradient(900px 520px at 78% -10%, rgba(189,0,255,.18), transparent 62%),
-      radial-gradient(760px 460px at 6% 108%, rgba(0,229,255,.07), transparent 60%),
-      radial-gradient(1.3px 1.3px at 34px 26px, rgba(255,255,255,.55), transparent),
-      radial-gradient(1px 1px at 168px 92px, rgba(217,77,255,.60), transparent),
-      radial-gradient(1.5px 1.5px at 96px 178px, rgba(255,255,255,.38), transparent),
-      radial-gradient(1px 1px at 246px 138px, rgba(0,229,255,.45), transparent),
-      radial-gradient(1px 1px at 210px 232px, rgba(255,255,255,.30), transparent);
-    background-repeat: no-repeat, no-repeat, repeat, repeat, repeat, repeat, repeat;
-    background-size: auto, auto, 300px 260px, 300px 260px, 300px 260px, 300px 260px, 300px 260px;
-  }
+  #graph { flex: 1; }
   #sidebar { width: 280px; background: #160b20; border-left: 1px solid #33184a; display: flex; flex-direction: column; overflow: hidden; }
   #search-wrap { padding: 12px; border-bottom: 1px solid #33184a; }
   #search { width: 100%; background: #0d0714; border: 1px solid #432060; color: #ede4f5; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
@@ -80,14 +45,6 @@ def _html_styles() -> str:
   #info-content .field { margin-bottom: 5px; }
   #info-content .field b { color: #ede4f5; }
   #info-content .empty { color: #8a6fa8; font-style: italic; }
-  .ajuda { color: #b79fce; font-size: 12px; line-height: 1.55; }
-  .ajuda b { color: #ede4f5; }
-  .ajuda + .ajuda { margin-top: 9px; padding-top: 9px; border-top: 1px solid #33184a; }
-  /* block: o comando é longo e, inline, a borda quebrava em dois pedaços na virada da linha */
-  .ajuda code { display: block; margin-top: 5px; font-family: ui-monospace, Consolas, monospace;
-                font-size: 11.5px; color: #d94dff; background: #0d0714; border: 1px solid #33184a;
-                border-radius: 4px; padding: 4px 7px; overflow-wrap: anywhere; }
-  #legend-ajuda { margin-bottom: 12px; }
   .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #432060; }
   .neighbor-link:hover { background: #33184a; }
   #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
@@ -116,6 +73,27 @@ def _hyperedge_script(hyperedges_json: str) -> str:
 const hyperedges = {hyperedges_json};
 // afterDrawing passes ctx already transformed to network coordinate space.
 // Draw node positions raw — no manual pan/zoom/DPR math needed.
+
+// Andrew's monotone chain. Returns the hull in counter-clockwise order, which
+// is what the perimeter must be traced in. Collinear and duplicate points
+// collapse to the extremes, so degenerate member sets render as a segment
+// rather than a zero-area crossed path.
+function convexHull(pts) {{
+    const p = pts.slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
+    if (p.length < 3) return p;
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const build = seq => {{
+        const out = [];
+        for (const q of seq) {{
+            while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
+            out.push(q);
+        }}
+        out.pop();
+        return out;
+    }};
+    const hull = build(p).concat(build(p.slice().reverse()));
+    return hull.length >= 3 ? hull : p;
+}}
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
         const positions = h.nodes
@@ -128,10 +106,14 @@ network.on('afterDrawing', function(ctx) {{
         ctx.strokeStyle = '#bd00ff';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        // Centroid and expanded hull in network coordinates
+        // Centroid and expanded hull in network coordinates.
+        // The perimeter must follow hull order, not h.nodes order: tracing the
+        // raw member order self-intersects whenever the layout does not happen
+        // to place members in angular order, filling as crossed wedges.
         const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
         const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
-        const expanded = positions.map(p => ({{
+        const hull = convexHull(positions);
+        const expanded = hull.map(p => ({{
             x: cx + (p.x - cx) * 1.15,
             y: cy + (p.y - cy) * 1.15
         }}));
@@ -152,13 +134,11 @@ network.on('afterDrawing', function(ctx) {{
 }});
 </script>"""
 
-def _html_script(nodes_json: str, edges_json: str, legend_json: str, info_ajuda_json: str) -> str:
+def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
     return f"""<script>
 const RAW_NODES = {nodes_json};
 const RAW_EDGES = {edges_json};
 const LEGEND = {legend_json};
-// mesma ajuda do HTML inicial: volta quando o usuario clica fora e desmarca o no
-const INFO_AJUDA = {info_ajuda_json};
 
 // HTML-escape helper — prevents XSS when injecting graph data into innerHTML
 function esc(s) {{
@@ -271,7 +251,7 @@ network.on('click', params => {{
   if (params.nodes.length > 0) {{
     showInfo(params.nodes[0]);
   }} else if (hoveredNodeId === null) {{
-    document.getElementById('info-content').innerHTML = INFO_AJUDA;
+    document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
   }}
 }});
 
@@ -380,25 +360,18 @@ def _html_document_title(output_path: str) -> str:
     from omnigraph.paths import OMNIGRAPH_OUT_NAME
 
     raw = str(output_path).replace("\\", "/")
-    # Drop Windows drive prefix so Path parts are comparable on any OS.
     if len(raw) >= 3 and raw[1] == ":" and raw[0].isalpha() and raw[2] == "/":
-        raw = raw[2:]  # "/Users/..." style after drive strip
+        raw = raw[2:]
     p = Path(raw)
 
     parts = list(Path(raw).parts)
-    # Path("C:/Users/..") on POSIX may keep "C:" as first part — strip it.
     if parts and len(parts[0]) == 2 and parts[0][1] == ":" and parts[0][0].isalpha():
         parts = parts[1:]
-    # Prefer keeping from the output-dir marker onward: portable in every
-    # case, whereas a cwd-relative path still leaks host/user segments when
-    # the graph is built from a directory ABOVE the project (follow-up).
     marker = OMNIGRAPH_OUT_NAME
     for i, part in enumerate(parts):
         if part == marker or part.startswith("omnigraph-out"):
             return "/".join(parts[i:])
 
-    # No standard out-dir marker (fully custom output path): fall back to a
-    # cwd-relative label when the target is under cwd, else the bare filename.
     try:
         resolved = p if p.is_absolute() else (Path.cwd() / p)
         rel = resolved.resolve().relative_to(Path.cwd().resolve())
@@ -435,7 +408,6 @@ def to_html(
     limit = node_limit if node_limit is not None else _viz_node_limit()
     if G.number_of_nodes() > limit:
         if node_limit is not None:
-            # Build aggregated community meta-graph
             from collections import Counter as _Counter
             import networkx as _nx
             print(f"Graph has {G.number_of_nodes()} nodes (above {limit} limit). Building aggregated community view...")
@@ -498,7 +470,6 @@ def to_html(
 
     # Sobreposição de memória de trabalho (sidecar derivado). Quando não for passado explicitamente, carregue-o
     # melhor esforço do irmão .omnigraph_learning.json próximo à saída
-    # graph.html (que fica ao lado de graph.json). Vazio/ausente => sem aprendizagem
     # campos, portanto, a renderização não anotada é idêntica em bytes ao pré-recurso.
     if learning_overlay is None:
         learning_overlay = {}
@@ -549,8 +520,6 @@ def to_html(
             node["learning_stale"] = stale
             ring = _RING.get(status)
             if ring:
-                # Anel com a cor do status na borda; velho => dessaturado +
-                # dashed (vis.js supports per-node `shapeProperties.borderDashes`).
                 if stale:
                     ring = "#9ca3af"
                     node["shapeProperties"] = {"borderDashes": [4, 4]}
@@ -573,8 +542,6 @@ def to_html(
 
     # Lista de arestas de construção. Restaurar a direção da aresta original de _src/_tgt
     # (escondido por build.py exatamente por esse motivo): NetworkX não direcionado
-    # canoniza a ordem dos endpoints, o que de outra forma viraria a seta
-    # para `calls` e `rationale_for` no grafo renderizado.
     vis_edges = []
     for u, v, data in G.edges(data=True):
         confidence = data.get("confidence", "EXTRACTED")
@@ -592,7 +559,6 @@ def to_html(
             "confidence": confidence,
         })
 
-    # Build community legend data
     legend_data = []
     for cid in sorted((community_labels or {}).keys()):
         color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
@@ -630,11 +596,10 @@ def to_html(
   </div>
   <div id="info-panel">
     <h3>Node Info</h3>
-    <div id="info-content">{_INFO_AJUDA}</div>
+    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
   </div>
   <div id="legend-wrap">
     <h3>Communities</h3>
-    {_COMUNIDADES_AJUDA}
     <div id="legend-controls">
       <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
     </div>
@@ -642,7 +607,7 @@ def to_html(
   </div>
   <div id="stats">{stats}</div>
 </div>
-{_html_script(nodes_json, edges_json, legend_json, _js_safe(_INFO_AJUDA))}
+{_html_script(nodes_json, edges_json, legend_json)}
 {_hyperedge_script(hyperedges_json)}
 </body>
 </html>"""

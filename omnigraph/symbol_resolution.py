@@ -147,7 +147,6 @@ def parse_python_import_aliases(path: Path) -> dict[str, ImportedSymbol]:
     # evidência. Importações aninhadas/funcionais locais NÃO - elas são válidas apenas
     # dentro de seu escopo lexical, e nossos registros de chamadas brutas atualmente não
     # carregue informações de escopo suficientes para corresponder ao local de importação com segurança. Andando
-    # ast.walk(tree) justificaria incorretamente chamadas em outros escopos.
     for node in tree.body:
         if not isinstance(node, ast.ImportFrom):
             continue
@@ -235,11 +234,9 @@ def resolve_python_import_guided_calls(
 
     symbol_index = build_python_symbol_index(all_nodes)
     known_pairs = existing_edge_pairs(all_edges)
-    # Build result_by_file defensively:
     #   - pular índices após o final de per_file (caminhos menores que per_file
     #     também OK; o comportamento semelhante ao zip é o que os chamadores esperam)
     #   - slots per_file não-dict retornam para o fragmento vazio para que o
-    #     downstream `.get("raw_calls", [])` lookup never raises
     result_by_file: dict[str, dict[str, Any]] = {}
     for index, path in enumerate(paths):
         if path.suffix != ".py":
@@ -393,11 +390,10 @@ def _file_node_id_for_path(path: Path, root: Path) -> str:
     # Produza o ID canônico do nó do arquivo {parent_dir}_{stem} que extract()'s
     # id_remap gera, então as arestas `source` do bash pousam no arquivo real
     # nó em vez de um órfão. _bash_make_id / _bash_file_stem são cópias exatas
-    # de extract._make_id / extract._file_stem, para que os IDs correspondam.
     try:
         rel = path.resolve().relative_to(root.resolve())
     except ValueError:
-        return _bash_make_id(str(path))  # caminho fora da raiz: caminho absoluto do hash como substituto
+        return _bash_make_id(str(path))
     return _bash_make_id(_bash_file_stem(rel))
 
 
@@ -428,7 +424,7 @@ def resolve_bash_source_edges(
           Anything else is silently skipped.
     """
     path_by_index = [Path(p).resolve() for p in paths]
-    file_nid_by_path = {p: _file_node_id_for_path(p, root) for p in path_by_index}  # apenas caminhos resolvidos
+    file_nid_by_path = {p: _file_node_id_for_path(p, root) for p in path_by_index}
 
     functions_by_file: dict[str, dict[str, str]] = {}
     for result, path in zip(per_file, path_by_index):

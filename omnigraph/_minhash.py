@@ -18,7 +18,7 @@ import numpy as np
 
 
 _MP = np.uint64((1 << 61) - 1)  # Mersenne prime para a família do haxixe
-_MH = np.uint64(0xFFFF_FFFF)    # mascarar para valores de 32 bits
+_MH = np.uint64(0xFFFF_FFFF)
 
 # Uma matriz de coeficientes (a, b) por num_perm, compartilhada entre todas as instâncias.
 _MH_COEFFS: dict[int, tuple[np.ndarray, np.ndarray]] = {}

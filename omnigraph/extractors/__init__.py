@@ -13,6 +13,7 @@ from typing import Callable
 from omnigraph.extractors.apex import extract_apex
 from omnigraph.extractors.bash import extract_bash
 from omnigraph.extractors.blade import extract_blade
+from omnigraph.extractors.commonlisp import extract_commonlisp
 from omnigraph.extractors.dart import extract_dart
 from omnigraph.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract_dmm
 from omnigraph.extractors.elixir import extract_elixir
@@ -37,6 +38,7 @@ LANGUAGE_EXTRACTORS: dict[str, Callable[[Path], dict]] = {
     "apex": extract_apex,
     "bash": extract_bash,
     "blade": extract_blade,
+    "commonlisp": extract_commonlisp,
     "dart": extract_dart,
     "delphi_form": extract_delphi_form,
     "dm": extract_dm,

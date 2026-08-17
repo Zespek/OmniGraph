@@ -1,5 +1,4 @@
 # Gêmeos e OpenAI.
-# Usado por `omnigraph extract . --backend gemini` e os scripts de benchmark.
 # O pipeline omnigraph padrão usa subagentes do Claude Code via skill.md;
 # este módulo fornece um caminho de API direto para ambientes que não sejam do Claude-Code.
 from __future__ import annotations
@@ -27,9 +26,7 @@ from omnigraph.file_slice import (
 # `_read_files` trunca cada arquivo com esse número de caracteres antes de ingressar em
 # a mensagem do usuário. As estimativas de token usam o mesmo limite para que a embalagem corresponda à realidade.
 _FILE_CHAR_CAP = 20_000
-# `_read_files` agrupa cada arquivo em um `<untrusted_source path=... sha256=...>`
 # bloco delimitador (veja o problema); esta é aproximadamente a sobrecarga por arquivo em
-# caracteres que o wrapper adiciona (tag de abertura + sha de 64 caracteres + tag de fechamento + novas linhas).
 _PER_FILE_OVERHEAD_CHARS = 160
 # Fallback grosseiro usado apenas quando `tiktoken` não está instalado. 1 token ≈ 4 caracteres
 # é a heurística padrão para inglês/código em tokenizadores BPE.
@@ -49,7 +46,7 @@ def _get_tokenizer():
         return None
     try:
         return tiktoken.get_encoding("cl100k_base")
-    except Exception:  # falha de rede no download pela primeira vez, etc.
+    except Exception:
         return None
 
 
@@ -73,15 +70,12 @@ def _resolve_ollama_base_url(default: str) -> str:
     host = ollama_host.strip()
     if not host:
         return default
-    # Bare port ("11434") or ":port" (":11434") -> localhost on that port.
     if host.isdigit():
         host = f"localhost:{host}"
     elif host.startswith(":") and host[1:].isdigit():
         host = f"localhost{host}"
     if not host.startswith(("http://", "https://")):
         host = f"http://{host}"
-    # Default the port to Ollama's 11434 when the host omits it (bare hostname
-    # would otherwise resolve to port 80 and silently fail to connect).
     from urllib.parse import urlsplit, urlunsplit
     try:
         parts = urlsplit(host)
@@ -100,26 +94,23 @@ def _resolve_ollama_base_url(default: str) -> str:
 BACKENDS: dict[str, dict] = {
     "claude": {
         # ANTHROPIC_BASE_URL aponta o backend para qualquer compatível com Anthropic
-        # servidor (proxy LiteLLM, gateways, ...); ANTHROPIC_MODEL substitui o
         # modelo padrão. Espelha o padrão OPENAI_BASE_URL/OPENAI_MODEL.
         "base_url": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
         "default_model": os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
         "env_key": "ANTHROPIC_API_KEY",
-        "pricing": {"input": 3.0, "output": 15.0},  # USD per 1M tokens
+        "pricing": {"input": 3.0, "output": 15.0},
         "temperature": 0,
         "max_tokens": 16384,
         "vision": True,
     },
     "kimi": {
         # KIMI_BASE_URL aponta o backend para qualquer servidor compatível com OpenAI para
-        # Moonshot's Kimi models (LiteLLM, self-hosted proxy, ...).
         "base_url": os.environ.get("KIMI_BASE_URL", "https://api.moonshot.ai/v1"),
         "default_model": "kimi-k2.6",
         "env_key": "MOONSHOT_API_KEY",
         # kimi-k2.6 é nativamente multimodal (MoonViT) e aceita o mesmo
-        # OpenAI image_url data-URI block via Moonshot's compat endpoint.
         "vision": True,
-        "pricing": {"input": 0.74, "output": 4.66},  # USD per 1M tokens
+        "pricing": {"input": 0.74, "output": 4.66},
         "temperature": None,  # kimi-k2.6 impõe sua própria temperatura fixa; enviar qualquer valor aumenta 400
         "max_tokens": 16384,
     },
@@ -133,13 +124,11 @@ BACKENDS: dict[str, dict] = {
     },
     "gemini": {
         # GEMINI_BASE_URL aponta o backend para qualquer servidor compatível com OpenAI para
-        # Modelos Gemini (LiteLLM, proxy auto-hospedado, ...). Volta ao Google
-        # official OpenAI-compatible endpoint.
         "base_url": os.environ.get("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
         "default_model": "gemini-3-flash-preview",
         "env_keys": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "model_env_key": "OMNIGRAPH_GEMINI_MODEL",
-        "pricing": {"input": 0.50, "output": 3.00},  # USD per 1M tokens
+        "pricing": {"input": 0.50, "output": 3.00},
         "temperature": 0,
         "reasoning_effort": "low",
         "max_completion_tokens": 16384,
@@ -148,31 +137,24 @@ BACKENDS: dict[str, dict] = {
     "openai": {
         # OPENAI_BASE_URL aponta o backend para qualquer servidor compatível com OpenAI
         # (lhama.cpp, vLLM, LM Studio, ...); OPENAI_MODEL substitui o padrão
-        # modelo. OMNIGRAPH_OPENAI_MODEL ainda vence OPENAI_MODEL quando ambos
         # são definidos (via model_env_key).
         "base_url": os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
         "default_model": os.environ.get("OPENAI_MODEL", "gpt-4.1-mini"),
         "env_key": "OPENAI_API_KEY",
         "model_env_key": "OMNIGRAPH_OPENAI_MODEL",
         "max_tokens": 16384,
-        "pricing": {"input": 0.40, "output": 1.60},  # USD per 1M tokens
-        # Default (gpt-4.1-mini) accepts temperature=0. Reasoning models
+        "pricing": {"input": 0.40, "output": 1.60},
         # (o1/o3/o4/gpt-5) rejeitar qualquer temperatura explícita e omiti-la
-        # automaticamente por _resolve_temperature; OMNIGRAPH_LLM_TEMPERATURA
-        # overrides either way.
         "temperature": 0,
         "vision": True,
     },
     "deepseek": {
         # DEEPSEEK_BASE_URL aponta o backend para qualquer servidor compatível com OpenAI para
-        # Modelos DeepSeek (LiteLLM, proxy auto-hospedado, ...). Volta para o DeepSeek
-        # official API endpoint.
         "base_url": os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
         "default_model": "deepseek-v4-flash",
         "env_key": "DEEPSEEK_API_KEY",
         "model_env_key": "OMNIGRAPH_DEEPSEEK_MODEL",
-        "pricing": {"input": 0.14, "output": 0.28},  # USD per 1M tokens (v4-flash)
-        # deepseek-reasoner silently ignores temperature; deepseek-chat / v4-flash
+        "pricing": {"input": 0.14, "output": 0.28},
         # aceite 0-2, então enviar 0 é seguro. Nota: deepseek-v4-flash (e v4-pro) possuem
         # pensando ATIVADO por padrão (verificado na API ao vivo) - definir
         # OMNIGRAPH_DISABLE_THINKING=1 para desligá-lo (compensação documentada na bandeira).
@@ -182,22 +164,20 @@ BACKENDS: dict[str, dict] = {
     "azure": {
         # Serviço Azure OpenAI — usa o cliente AzureOpenAI SDK, não o padrão
         # Cliente OpenAI, portanto possui seu próprio caminho de chamada (_call_azure).
-        # Required env vars: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT.
         # Opcional: AZURE_OPENAI_API_VERSION (o padrão é 2024-12-01-preview),
         #           AZURE_OPENAI_DEPLOYMENT ou OMNIGRAPH_AZURE_MODEL (nome da implantação).
         # base_url está intencionalmente ausente — evita roteamento acidental
-        # _call_openai_compat, que exige isso e usa a classe de cliente SDK errada.
         "default_model": os.environ.get("AZURE_OPENAI_DEPLOYMENT", os.environ.get("OMNIGRAPH_AZURE_MODEL", "gpt-4o")),
         "env_key": "AZURE_OPENAI_API_KEY",
         "model_env_key": "OMNIGRAPH_AZURE_MODEL",
-        "pricing": {"input": 2.50, "output": 10.00},  # USD per 1M tokens (gpt-4o; may mis-estimate other deployments)
+        "pricing": {"input": 2.50, "output": 10.00},
         "temperature": 0,
         "max_tokens": 16384,
     },
     "bedrock": {
         "default_model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
         "model_env_key": "OMNIGRAPH_BEDROCK_MODEL",
-        "pricing": {"input": 3.0, "output": 15.0},  # USD per 1M tokens
+        "pricing": {"input": 3.0, "output": 15.0},
         "temperature": 0,
         "max_tokens": 16384,
         "vision": True,
@@ -205,14 +185,12 @@ BACKENDS: dict[str, dict] = {
     "claude-cli": {
         # Rotas através da CLI `claude` instalada localmente (Código Claude) usando
         # `-p --formato de saída json`. Autentica por meio do arquivo existente do usuário
-        # Assinatura Pro/Max em vez de uma ANTHROPIC_API_KEY separada – custos
         # são cobrados no plano e não no crédito da API pré-pago.
         "default_model": "claude-code-plan",
         "pricing": {"input": 0.0, "output": 0.0},
         "temperature": 0,
         "max_tokens": 16384,
         # O Código Claude é multimodal; as imagens são passadas por caminho e lidas com o
-        # Ferramenta de leitura da CLI em vez de base64 inline (veja `_call_claude_cli`).
         "vision": True,
     },
 }
@@ -262,7 +240,6 @@ def provider_base_url_ok(base_url: str, name: str, *, warn: bool = True) -> bool
 
 
 def _load_custom_providers() -> dict[str, dict]:
-    # Um projeto local ./.omnigraph/providers.json viaja com um clonado ou compartilhado
     # repo e define para onde o corpus + chave API são enviados, carregando-o
     # silenciosamente é um vetor de exfiltração de corpus/chave. Exigir uma aceitação explícita;
     # o próprio ~/.omnigraph/providers.json global do usuário permanece confiável.
@@ -319,7 +296,6 @@ def _resolve_max_tokens(default: int) -> int:
 # não suporta 0 com este modelo. Somente o valor padrão (1) é suportado."
 # Abrange a série de raciocínio o1/o3/o4 e a família gpt-5, que compartilham o
 # mesma restrição. Correspondência sem distinção entre maiúsculas e minúsculas em relação ao ID do modelo resolvido
-# (issue).
 _FIXED_TEMPERATURE_MODEL_MARKERS = ("o1", "o1-", "o3", "o3-", "o4", "o4-", "gpt-5")
 
 
@@ -331,7 +307,6 @@ def _model_requires_default_temperature(model: str) -> bool:
     We must omit the parameter entirely for these (#1191).
     """
     m = (model or "").lower()
-    # Retire um "openai/" inicial ou prefixo de provedor que alguns gateways precedem.
     base = m.rsplit("/", 1)[-1]
     if base.startswith("gpt-5"):
         return True
@@ -521,7 +496,6 @@ def _resolve_under_root(path: Path, root: Path) -> Path | None:
 
 
 # Sentinelas conhecidas de injeção de prompt/modelo de bate-papo que um arquivo de origem hostil
-# pode incorporar para tentar sair do bloco untrusted_source ou personificar um
 # mudança de sistema/função. Neutralizado (não excluído — mantemos as compensações de bytes estáveis ​​o suficiente
 # para análise) inserindo um espaço de largura zero para que o modelo nunca veja um espaço intacto
 # token de controle. O delimitador de fechamento do nosso próprio wrapper também é neutralizado, então
@@ -581,9 +555,9 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
             print(f"[omnigraph] skipping {p}: symlink target outside corpus root", file=sys.stderr)
             continue
         try:
-            rel = str(p.relative_to(root))
+            rel = p.relative_to(root).as_posix()
         except ValueError:
-            rel = str(p)
+            rel = Path(p).as_posix()
         try:
             if isinstance(u, FileSlice):
                 content = read_slice_text(u)
@@ -597,26 +571,7 @@ def _read_files(units: "list[Path | FileSlice]", root: Path) -> str:
     return "\n\n".join(parts)
 
 
-# ── Semantic evidence-binding ─────────────────────────────────────────────────
-# The semantic (LLM) extraction runs on documents/papers/images — code files are
-# handled by the deterministic AST engine and never reach the model. So a
-# ``file_type == "code"`` node here is a symbol the model surfaced from WITHIN a
-# document (a name in a fenced code block, an API referenced in a paper). Verify
-# that such a symbol actually occurs in the source bytes the model was shown; a
-# node the model asserts with no evidence in its source is a likely fabrication.
-# `_out_of_scope` only rejects a node attributed to a real file that was
-# NOT dispatched; a fabricated symbol attributed to a file that WAS dispatched
-# slips through it. This closes that intra-file gap with a lenient substring
-# check and FLAGS (never drops) an unverifiable node with ``verification =
-# "unverified"``, surfaced by the caller (stderr), reported by the diagnostics,
-# and left on the node in graph.json.
-# Short tokens (len < 3) are ignored: they match too readily to be evidence and
-# their absence is not a reliable fabrication signal, so skipping them avoids
-# false positives.
 _LABEL_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-# A dedicated node field — deliberately NOT the ``confidence`` key, whose
-# validated vocabulary ({EXTRACTED, INFERRED, AMBIGUOUS}, and only on edges)
-# this value does not belong to. Downstream (diagnostics) counts it.
 _VERIFICATION_FIELD = "verification"
 _UNVERIFIED_VALUE = "unverified"
 
@@ -679,9 +634,6 @@ def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root
     nodes = result.get("nodes")
     if not nodes:
         return 0
-    # Perf: skip the (potentially expensive, e.g. PDF re-extraction) source read
-    # entirely when the result has no code-typed node with a source_file — the
-    # common case for a document/paper batch.
     if not any(isinstance(n, dict) and n.get("file_type") == "code" and n.get("source_file")
                for n in nodes):
         return 0
@@ -704,28 +656,23 @@ def _bind_node_evidence(result: dict, text_units: "list[Path | FileSlice]", root
             continue
         src = source_by_path.get(key)
         if src is None:
-            continue  # not dispatched in this call —'s out-of-scope domain
+            continue
         idents = _label_identifiers(str(n.get("label", ""))) + _label_identifiers(str(n.get("id", "")))
         if not idents:
-            continue  # nothing checkable — do not flag
+            continue
         if any(ident.lower() in src for ident in idents):
-            continue  # symbol name is present in the source — verified
-        # No evidence. Flag only a node the model itself presented as solid
-        # (EXTRACTED/unset) — one it already hedged (INFERRED/AMBIGUOUS) needs no
-        # second flag. Idempotent: never overwrites an existing verification.
+            continue
         if n.get("confidence") in (None, "", "EXTRACTED") and not n.get(_VERIFICATION_FIELD):
             n[_VERIFICATION_FIELD] = _UNVERIFIED_VALUE
             downgraded += 1
     return downgraded
 
 
-# ── Image (vision) handling ───────────────────────────────────────────────────
 # Tipos de imagem raster que um modelo de visão pode realmente observar. `.svg` é intencionalmente
 # excluído: é marcação XML, então `_read_files` lê como texto (o modelo analisa
 # a fonte diretamente), o que é mais útil do que rasterizá-la. Antes disso,
 # cada imagem foi alimentada através de `path.read_text(errors="replace")`, tornando-se binária
 # pixels em texto lixo - ruído para back-ends de API e uma `saída 1` definitiva para
-# o back-end claude-cli.
 _VISION_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _IMAGE_MEDIA_TYPES = {
     ".png": "image/png",
@@ -739,7 +686,6 @@ _IMAGE_MEDIA_TYPES = {
 # volte para uma referência de texto (o nó ainda está criado, apenas invisível).
 _MAX_IMAGE_BYTES = 5 * 1024 * 1024
 # Estimativa de token simples por imagem para empacotamento de blocos. Modelos de visão faturam uma imagem
-# a um custo aproximadamente fixo, independentemente do tamanho do arquivo, estimando por tamanho de byte
 # (como faz o caminho genérico) forçaria cada PNG grande em seu próprio pedaço.
 _IMAGE_TOKEN_ESTIMATE = 1_600
 # Limite rígido de imagens por bloco, independente do orçamento do token. Um grande
@@ -748,7 +694,6 @@ _IMAGE_TOKEN_ESTIMATE = 1_600
 # muitos para o loop da ferramenta de leitura claude-cli funcionar. Mantém a memória e
 # tamanho da solicitação limitado a corpora com densidade de imagem.
 _MAX_IMAGES_PER_CHUNK = 20
-# Back-ends que leem uma imagem por caminho de arquivo (ferramenta de leitura de Claude-cli)
 # em vez de incorporar base64. Eles próprios abrem o arquivo e reduzem a resolução como
 # necessário, então `_MAX_IMAGE_BYTES` não se aplica e os bytes nunca precisam ser carregados.
 _PATH_IMAGE_BACKENDS = {"claude-cli"}
@@ -766,7 +711,7 @@ class _ImageRef:
 
     path: Path        # caminho absoluto (claude-cli lê através da ferramenta Read)
     rel: str          # caminho relativo à raiz do corpus (o source_file do nó)
-    media_type: str   # e.g. "image/png"
+    media_type: str
     raw: bytes | None
 
     @property
@@ -813,9 +758,9 @@ def _build_image_refs(image_files: list[Path], root: Path, *, read_bytes: bool =
             print(f"[omnigraph] skipping image {p}: symlink target outside corpus root", file=sys.stderr)
             continue
         try:
-            rel = str(p.relative_to(root))
+            rel = p.relative_to(root).as_posix()
         except ValueError:
-            rel = str(p)
+            rel = Path(p).as_posix()
         media = _IMAGE_MEDIA_TYPES.get(p.suffix.lower(), "image/png")
         raw: bytes | None = None
         if read_bytes:
@@ -962,12 +907,6 @@ def _sanitize_fragment(parsed: dict) -> dict:
             parsed[key] = []
             continue
         parsed[key] = [entry for entry in value if isinstance(entry, dict)]
-    # Coerce hyperedge member refs to hashable scalar ids: a model can
-    # emit a member as an object ({"id": "a_ts"}) instead of a bare id. The
-    # per-entry filter above only checks the hyperedge dicts themselves, so the
-    # bad member shape used to persist into the semantic cache and crash
-    # build_from_json's rekey pass much later (a dict is unhashable). Applying
-    # the shared coercion at this parse chokepoint keeps the cache clean.
     hyperedges = parsed.get("hyperedges")
     if hyperedges:
         from omnigraph.build import _coerce_hyperedge_member_refs
@@ -992,7 +931,6 @@ def _parse_llm_json(raw: str) -> dict:
         return {"nodes": [], "edges": [], "hyperedges": []}
     # Estratégia 1: remova os espaços em branco e, em seguida, manipule as cercas de remarcação em qualquer lugar do
     # texto (não apenas no deslocamento 0 - o código original apenas removeu cercas quando
-    # `raw.startswith("```")`, faltando o caso comum em que Claude precede um
     # preâmbulo como "Aqui estão as entidades extraídas:\n\n```json\n{...}\n```").
     stripped = raw.strip()
     fence_start = stripped.find("```")
@@ -1017,7 +955,6 @@ def _parse_llm_json(raw: str) -> dict:
     except json.JSONDecodeError:
         pass
     # Estratégia 2: extrair o primeiro objeto JSON balanceado encontrado em qualquer lugar
-    # o texto. Lida com o caso em que Claude envolve o JSON em prosa sem
     # qualquer barreira de redução ("O grafo extraído é {...}. Espero que isso ajude!").
     start = stripped.find("{")
     if start != -1:
@@ -1175,7 +1112,6 @@ def _call_openai_compat(
         extra = backend if backend in ("kimi", "gemini", "openai", "ollama") else "openai"
         raise ImportError(_backend_pkg_hint("openai", extra)) from exc
 
-    # Back-ends locais (ollama, llama.cpp, vLLM) normalmente levam mais de 60s para um
     # pedaço único em um modelo grande - muito mais longo que o SDK openai
     # padrão. Honre OMNIGRAPH_API_TIMEOUT (segundos) para substituição explícita;
     # o padrão é 600s, que é longo o suficiente para um modelo 31B em um pedaço de 16k
@@ -1206,7 +1142,6 @@ def _call_openai_compat(
     if reasoning_effort is not None:
         kwargs["reasoning_effort"] = reasoning_effort
     # Um provedor personalizado em provedores.json pode passar seu próprio extra_body (por exemplo,
-    # `chat_template_kwargs.enable_thinking=false` para Qwen3 auto-hospedado servido
     # por vLLM). Quando fornecido, ele vence o padrão moonshot - o usuário tem
     # escolheu explicitamente o formato da solicitação para seu endpoint.
     if extra_body is not None:
@@ -1218,13 +1153,10 @@ def _call_openai_compat(
     #. Não é um padrão – consulte _thinking_disabled_via_env para a compensação.
     elif _thinking_disabled_via_env():
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
-    # Ollama padroniza num_ctx para 2048 e trunca silenciosamente prompts maiores
     # do que isso - o sintoma é vazio 200 respostas OK após as primeiras
     # pedaços (# 798). Derivamos num_ctx do tamanho real do prompt para não
     # alocar demais VRAM de cache KV. Superalocação (por exemplo, 128 mil slots para um 8k
-    # prompt em um modelo 31B) esgota a VRAM no bloco 4 e produz o mesmo
     # Sintoma Hollow-200 – apenas de uma direção diferente (follow-up).
-    # Formula: actual input tokens + output cap + system prompt headroom.
     # Limitado a 131072 (suficiente para o token_budget padrão de 60k); env var vence.
     # A derivação automática ollama num_ctx é um padrão. Um provedor personalizado que
     # define explicitamente que extra_body foi desativado - respeite o formato da solicitação.
@@ -1248,8 +1180,6 @@ def _call_openai_compat(
                 )
                 num_ctx = auto_num_ctx
             else:
-                # Avisar quando o valor fixado for menor que a entrada estimada —
-                # Ollama trunca silenciosamente o prompt e retorna respostas vazias.
                 if num_ctx < estimated_input:
                     print(
                         f"[omnigraph] warning: OMNIGRAPH_OLLAMA_NUM_CTX={num_ctx} is smaller than "
@@ -1259,7 +1189,6 @@ def _call_openai_compat(
                         file=sys.stderr,
                     )
         else:
-            # Estimate input tokens: user_message chars / 4 (standard BPE
             # heurística) + 400 para o prompt do sistema e, em seguida, adicione espaço de saída.
             num_ctx = auto_num_ctx
         keep_alive = os.environ.get("OMNIGRAPH_OLLAMA_KEEP_ALIVE", "30m")
@@ -1272,14 +1201,10 @@ def _call_openai_compat(
     result["input_tokens"] = resp.usage.prompt_tokens if resp.usage else 0
     result["output_tokens"] = resp.usage.completion_tokens if resp.usage else 0
     result["model"] = model
-    # `finish_reason == "length"` significa que o modelo atingiu max_completion_tokens
     # meia geração. O JSON que recebemos está truncado; os chamadores devem
-    # trate isso como um sinal para tentar novamente com uma entrada menor.
     result["finish_reason"] = resp.choices[0].finish_reason
-    # Um modelo local sobrecarregado (normalmente Ollama) pode retornar HTTP 200 com
     # conteúdo vazio/nulo ou JSON gerado pela metade não analisável. A chamada parece
     # bem sucedido, `finish_reason` é `"stop"`, e o pedaço seria silenciosamente
-    # retirado do corpus. Rotule novamente como `"comprimento"` para que a nova tentativa adaptativa
     # a camada divide o pedaço ao meio - a mesma recuperação de um truncamento verdadeiro.
     if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
         print(
@@ -1330,7 +1255,6 @@ def _call_claude(api_key: str, model: str, user_message: str, max_tokens: int = 
     result["model"] = model
     # Normalize o `stop_reason` do Anthropic para o `finish_reason` compatível com OpenAI
     # vocabulário para que a camada de nova tentativa adaptativa não precise saber qual
-    # backend produziu o resultado.
     result["finish_reason"] = "length" if resp.stop_reason == "max_tokens" else "stop"
     if _response_is_hollow(raw_content, result) and result["finish_reason"] != "length":
         print(
@@ -1398,12 +1322,6 @@ def _claude_cli_error(stdout: str) -> str:
     return "unspecified error"
 
 
-# A JSON Schema pinning the top-level shape omnigraph consumes. Passed to
-# `claude -p --json-schema` (structured output) so the CLI CONSTRAINS the model
-# to emit the object directly instead of relying on it CHOOSING to honour a
-# "raw JSON only" instruction in the prompt. Item internals stay loose so a
-# valid extraction is never rejected; the `result` envelope field still carries
-# the JSON string, so the parse path is unchanged. See.
 _EXTRACTION_JSON_SCHEMA = json.dumps(
     {
         "type": "object",
@@ -1416,8 +1334,6 @@ _EXTRACTION_JSON_SCHEMA = json.dumps(
     }
 )
 
-# Cache the `--json-schema` capability probe per resolved claude command so it
-# runs at most once per process (extract fans a chunk out per file/slice).
 _JSON_SCHEMA_SUPPORT: dict[str, bool] = {}
 
 
@@ -1469,9 +1385,6 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     import shutil
     import subprocess
 
-    # No Windows, o npm instala `claude` como `claude.ps1` e `claude.cmd`
-    # lado a lado. Quando PATHEXT lista `.PS1` antes de `.CMD`,
-    # `shutil. which("claude")` retorna `claude.ps1`, que `CreateProcess`
     # não pode ser executado diretamente - gera `[WinError 2] O sistema não pode
     # encontre o arquivo especificado`. `claude.cmd` É executável por CreateProcess,
     # então prefira explicitamente no Windows. Consulte a edição nº 1072.
@@ -1500,14 +1413,10 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     # anexado - o que você gostaria que eu fizesse com isso?"). Essa prosa analisa para
     # zero nós/arestas, então _response_is_hollow sinaliza isso como truncamento e o
     # o caminho de nova tentativa adaptativa divide o pedaço indefinidamente, nunca convergindo e
-    # never writing graph.json (verified against Claude Code 2.1.197).
-    #
     # Colocar o esquema de extração completo mais um imperativo explícito no
     # a vez do usuário - e descartando --system-prompt - faz a CLI emitir o JSON
     # objeto diretamente. As proteções <untrusted_source> em _extraction_system
     # ainda se aplica porque o texto do esquema é transmitido literalmente; apenas o seu
-    # delivery channel changes.
-    #
     # Quando houver imagens presentes, anexe a instrução Read-the-paths e
     # coloque na lista de permissões cada diretório que contém para que a ferramenta de leitura da CLI possa abri-los.
     add_dir_args: list[str] = []
@@ -1542,14 +1451,6 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
     cli_model = os.environ.get("OMNIGRAPH_CLAUDE_CLI_MODEL", "").strip()
     if cli_model:
         cli_args.extend(["--model", cli_model])
-    # Constrain the output shape structurally where the CLI supports it. Newer
-    # Claude Code releases increasingly treat a bare file-dump prompt as an
-    # agentic task and REPORT the extraction in prose ("Knowledge graph
-    # extracted — 21 nodes, 20 edges…") instead of returning it; that parses to
-    # zero nodes, reads as truncation, and gets bisected without ever
-    # converging. --json-schema pins the object shape regardless of
-    # that framing; the user-turn prompt above stays as the fallback for older
-    # CLIs that predate the flag.
     if _claude_cli_supports_json_schema(claude_cmd):
         cli_args.extend(["--json-schema", _EXTRACTION_JSON_SCHEMA])
     proc = subprocess.run(
@@ -1572,12 +1473,6 @@ def _call_claude_cli(user_message: str, max_tokens: int = 8192, *, deep_mode: bo
 
     envelope = _claude_cli_envelope(proc.stdout)
 
-    # When --json-schema is in effect the CLI puts the CONSTRAINED object in the
-    # `structured_output` envelope field; `result` stays the model's discretionary
-    # text, which on a "reporting" turn is prose even with the flag set (verified
-    # live on Claude Code 2.1.185). Prefer the structured channel and route it
-    # through the same _parse_llm_json normalizer; fall back to parsing `result`
-    # for older CLIs that don't emit structured_output (review).
     structured = envelope.get("structured_output")
     if isinstance(structured, dict):
         raw_content = json.dumps(structured)
@@ -1682,11 +1577,6 @@ def _call_bedrock(model: str, user_message: str, max_tokens: int = 8192, *, deep
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
     profile = os.environ.get("AWS_PROFILE")
     session = boto3.Session(profile_name=profile, region_name=region)
-    # Wire OMNIGRAPH_API_TIMEOUT into the botocore read timeout. Without an
-    # explicit config, Converse uses botocore's 60s default and a long
-    # generation dies with "Read timeout on endpoint URL" no matter what the
-    # env var / --api-timeout is set to — the same gap closed for
-    # the claude-cli and secondary-dispatch paths, on the last cloud backend.
     client = session.client(
         "bedrock-runtime",
         config=botocore.config.Config(
@@ -1780,7 +1670,6 @@ def extract_files_direct(
             f"Set {_format_backend_env_keys(backend)} or pass api_key=."
         )
     mdl = model or _default_model_for_backend(backend)
-    # Separe imagens raster de arquivos semelhantes a texto. O texto passa por _read_files
     # como antes; as imagens tornam-se referências estruturadas, o back-end é renderizado como pixels
     # (backends de visão) ou como um nó de referência de texto (todo o resto).
     text_files, image_files = _partition_semantic_files(files)
@@ -1824,7 +1713,6 @@ def extract_files_direct(
             user_msg,
             temperature=_resolve_temperature(cfg.get("temperature", 0), mdl),
             reasoning_effort=cfg.get("reasoning_effort"),
-            # Honre max_completion_tokens (gemini) ou a chave max_tokens mais antiga
             # (ollama/deepseek/kimi/openai) – a maioria das configurações openai-compat definem o
             # último, portanto, a leitura apenas de max_completion_tokens limitou silenciosamente seu
             # saída no substituto 8192 e JSON de modo profundo truncado.
@@ -1837,10 +1725,6 @@ def extract_files_direct(
             extra_body=cfg.get("extra_body"),
         )
 
-    # Verify code-typed nodes against the source the model read and downgrade the
-    # confidence of any whose symbol name has no evidence there. Runs on the bytes
-    # the model actually saw (text_files, same cap as _read_files); images are
-    # excluded (binary, unverifiable). Best-effort — never abort extraction.
     if isinstance(result, dict):
         try:
             _n_unverified = _bind_node_evidence(result, text_files, root)
@@ -2170,10 +2054,6 @@ def _extract_with_adaptive_retry(
             f"max_completion_tokens — partial result kept (not cached as complete)",
             file=sys.stderr,
         )
-        # The node set is incomplete; mark it so it is not promoted to the
-        # semantic cache as authoritative and is re-dispatched next run. Also
-        # record the chunk's files so a truncation that parsed to nothing (an
-        # empty item set) still marks the file partial (empty-parse gap).
         _mark_partial(result)
         result["_partial_files"] = sorted(
             set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
@@ -2186,10 +2066,6 @@ def _extract_with_adaptive_retry(
             f"depth {_depth} (max {max_depth}) — partial result kept (not cached as complete)",
             file=sys.stderr,
         )
-        # Conservative: this marks every file in the merged chunk partial, even
-        # ones that finished cleanly during recursion. Over-marking only costs a
-        # re-extraction next run; under-marking would serve a truncated file as
-        # complete, so err toward re-extraction.
         _mark_partial(result)
         result["_partial_files"] = sorted(
             set(_chunk_partial_files(chunk)) | set(result.get("_partial_files", []) or [])
@@ -2219,7 +2095,6 @@ def _extract_with_adaptive_retry(
         "model": result.get("model"),
         # Ambas as metades tiveram sucesso ou já revelaram seus próprios
         # aviso de truncamento; o resultado mesclado não é mais truncado como um
-        # logical unit.
         "finish_reason": "stop",
         "_partial_files": _merged_partial_files(left, right),
     }
@@ -2287,7 +2162,6 @@ def extract_corpus_parallel(
     files = [f if isinstance(f, (Path, FileSlice)) else Path(f) for f in files]
     # Divida documentos divisíveis grandes em fatias que cobrem todo o arquivo
     # antes de embalar, então o conteúdo anterior a _FILE_CHAR_CAP é extraído em vez de
-    # caiu silenciosamente. Os arquivos na/abaixo da tampa passam inalterados.
     files = expand_oversized_files(files, _FILE_CHAR_CAP)
     if token_budget is not None:
         chunks = _pack_chunks_by_tokens(files, token_budget=token_budget)
@@ -2341,9 +2215,6 @@ def extract_corpus_parallel(
             # Escopo a gravação nos arquivos realmente despachados neste bloco
             #. O modelo pode atribuir o source_file de um nó a outro
             # arquivo de corpus; sem esse limite, esse nó perdido destruiria o
-            # entrada completa do cache de outro arquivo (ou, com merge_existing, poluir
-            # isto). Use unit_path para um FileSlice (uma fatia de um documento grande)
-            # resolve para seu arquivo pai; um caminho vazio passa. (o
             # o antigo atributo `.rel` não existe no FileSlice, então cada fatia
             # chunk vazou o objeto FileSlice na lista de permissões e na gravação
             # gerou TypeError, derrotando silenciosamente o ponto de verificação.)
@@ -2360,13 +2231,7 @@ def extract_corpus_parallel(
                 merge_existing=True,
                 allowed_source_files=allowed,
                 mode="deep" if deep_mode else None,
-                # Stamp the entry with the prompt that produced it, so a release
-                # that changes _EXTRACTION_SYSTEM re-extracts instead of replaying
-                # this vintage forever.
                 prompt=_extraction_system(deep=deep_mode),
-                # A truncated/partial chunk must not be checkpointed as
-                # authoritative: pass the partial file set so its entry is
-                # stamped ``partial: True`` and re-dispatched next run.
                 partial_source_files=_partial_source_files(result) or None,
             )
         except Exception as _exc:  # noqa: BLE001 — checkpoint is best-effort
@@ -2390,7 +2255,6 @@ def extract_corpus_parallel(
     else:
         # Mesclar em ordem de envio determinística, NÃO em ordem de conclusão. Mesclando
         # conforme os blocos terminam, a ordem de nós/arestas no corpus retornado
-        # (e, portanto, graph.json) dependem de qual chamada de rede aconteceu
         # retorne primeiro - então a entrada idêntica foi agitada de execução para execução. Coletar
         # resultados codificados por índice de bloco e mesclados em ordem de classificação após o pool
         # drenos; isso corresponde à ordem do caminho serial. O retorno de chamada de progresso
@@ -2429,7 +2293,6 @@ def extract_corpus_parallel(
     # resposta que simplesmente omite alguns dos documentos que lhe foram entregues; esses documentos então
     # desaparece do grafo sem nó, sem aviso e sem carimbo de cache/manifesto, então
     # eles são silenciosamente reenviados (e reomitidos) para sempre. Difere os arquivos que
-    # despachado contra os source_files que realmente voltaram e revelaram a lacuna.
     dispatched = {unit_path(f) for chunk in chunks for f in chunk}
 
     # Filtro de nó fora do escopo. O guarda cache já recusa
@@ -2438,7 +2301,6 @@ def extract_corpus_parallel(
     # resultado e pousou em graph.json. Espelhe a condição aqui: resolver
     # cada source_file contra root e descarte o nó somente quando ele resolver para
     # um arquivo existente (.is_file()) fora do conjunto despachado — não-arquivo
-    # source_files (concepts, model-invented anchors) pass through untouched.
     # Executa ANTES da reconciliação coberta/descoberta para que a diferença
     # reflete o grafo pós-filtro.
     def _resolve_against_root(value: "str | Path") -> Path:
@@ -2473,7 +2335,6 @@ def extract_corpus_parallel(
     merged["out_of_scope_dropped"] = dropped_node_count
     if dropped_node_count:
         merged["nodes"] = kept_nodes
-        # Mantenha o grafo consistente: uma aresta ou hiperaresta referenciando um
         # ID do nó descartado (ou ele próprio atribuído a um real não despachado
         # arquivo) não deve sobreviver ao seu ponto final.
         merged["edges"] = [
@@ -2527,9 +2388,6 @@ def _merge_into(merged: dict, result: dict) -> None:
     merged["hyperedges"].extend(result.get("hyperedges", []))
     merged["input_tokens"] += result.get("input_tokens", 0)
     merged["output_tokens"] += result.get("output_tokens", 0)
-    # Carry forward files a chunk truncated to an empty parse: these have
-    # no items to ride the merge, so they'd otherwise be lost from the run-level
-    # partial set the manifest stamp consults.
     incoming = result.get("_partial_files")
     if incoming:
         merged["_partial_files"] = sorted(
@@ -2629,8 +2487,6 @@ def _call_llm(
             detail = proc.stderr.strip() or cli_error or "(no stderr, no error envelope)"
             raise RuntimeError(f"claude -p exited {proc.returncode}: {detail[:500]}")
         if cli_error:
-            # Without this the error text is returned as the model's reply and
-            # the caller writes it into the graph as a community label.
             raise RuntimeError(f"claude -p reported an error: {cli_error[:500]}")
         envelope = _claude_cli_envelope(proc.stdout)
         cli_usage = envelope.get("usage") or {}
@@ -2694,7 +2550,6 @@ def _call_llm(
             _rec(getattr(au, "prompt_tokens", 0), getattr(au, "completion_tokens", 0))
         return resp.choices[0].message.content or ""
 
-    # OpenAI-compatible (kimi, openai, gemini, ollama)
     try:
         from openai import OpenAI
     except ImportError as exc:
@@ -2707,7 +2562,6 @@ def _call_llm(
         # Forçar uma única resposta não transmitida: alguns gateways compatíveis com OpenAI
         # o padrão é streaming SSE quando `stream` é omitido, mas o resultado aqui
         # é sempre lido como resp.choices[0]. Mesma correção de _call_openai_compat
-        # — este caminho alimenta o desempatador --dedup-llm.
         "stream": False,
     }
     temperature = _resolve_temperature(cfg.get("temperature", 0), mdl)
@@ -2715,7 +2569,6 @@ def _call_llm(
         kwargs["temperature"] = temperature
     if cfg.get("reasoning_effort"):
         kwargs["reasoning_effort"] = cfg["reasoning_effort"]
-    # Custom providers can override via providers.json `extra_body`; falls back
     # para o padrão moonshot para preservar o comportamento existente.
     if cfg.get("extra_body") is not None:
         kwargs["extra_body"] = cfg["extra_body"]
@@ -2751,7 +2604,7 @@ def _ollama_host_is_link_local_or_metadata(host: str) -> bool:
     import socket
     if host in ("metadata.google.internal", "metadata.google.com", "0.0.0.0", "::", "[::]"):  # nosec B104 - lista de bloqueio, não um vínculo
         return True
-    if host.startswith("169.254."):  # literal link-local, inclui o IP de metadados
+    if host.startswith("169.254."):
         return True
     try:
         infos = socket.getaddrinfo(host, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
@@ -2762,7 +2615,7 @@ def _ollama_host_is_link_local_or_metadata(host: str) -> bool:
             ip = ipaddress.ip_address(info[4][0])
         except ValueError:
             continue
-        if ip.is_link_local:  # 169.254.0.0/16 e fe80::/10 (inclui o IP de metadados)
+        if ip.is_link_local:
             return True
     return False
 
@@ -2832,10 +2685,6 @@ def detect_backend() -> str | None:
         return "azure"
     if os.environ.get("AWS_PROFILE") or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"):
         return "bedrock"
-    # Honor Ollama's own OLLAMA_HOST here too, not just OLLAMA_BASE_URL —
-    # otherwise a user who set the standard Ollama var but no --backend still
-    # gets "no LLM API key found". Empty default -> falsy when neither is set,
-    # so ollama stays opt-in and never shadows a paid key (checked first above).
     ollama_url = _resolve_ollama_base_url("")
     if ollama_url:
         _validate_ollama_base_url(ollama_url)
@@ -2847,20 +2696,18 @@ def detect_backend() -> str | None:
     return None
 
 
-# ── Community labeling ────────────────────────────────────────────────────────
 # Quando o zspekfy é executado dentro de um agente de orquestração (Claude Code/Gemini CLI),
 # o próprio agente nomeia as comunidades por habilidade.md Etapa 5 - ele lê a análise
 # arquivo e escreve nomes de 2 a 5 palavras com seu próprio raciocínio, sem chamada de API. Quando
 # omnigraph é executado como uma CLI simples (``omnigraph extract . --backend X``), não há
 # agente faça essa etapa, então os rótulos da comunidade permanecem ``Community 0/1/2...``. Esses
 # ajudantes preenchem essa lacuna: peça ao back-end configurado para nomear comunidades em UMA
-# chamada em lote e retornar um mapa ``{cid: name}`` completo.
 
 _LABEL_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE)
-_LABEL_MAX_COMMUNITIES = 200   # soft-cap legado; mantido para chamadores que o fixam.
+_LABEL_MAX_COMMUNITIES = 200
 _LABEL_TOP_K = 12              # rótulos de nós amostrados por comunidade para o prompt
 _LABEL_MAXLEN = 60             # truncar rótulos individuais para manter o prompt pequeno
-_LABEL_BATCH_SIZE = 100        # comunidades por chamada LLM; dimensionado para janelas de contexto de aproximadamente 16k
+_LABEL_BATCH_SIZE = 100
 
 
 def _placeholder_community_labels(communities) -> dict[int, str]:
@@ -2889,10 +2736,6 @@ def _community_label_lines(G, communities, gods, max_communities, top_k):
             if len(names) >= top_k:
                 break
         if names:
-            # Bare id key, NOT "Community {cid}: ..." — that string doubles as the
-            # placeholder sentinel (_placeholder_community_labels), so a model that
-            # echoed the key back produced a "name" indistinguishable from the
-            # no-backend fallback and the caller's sentinel filter dropped it.
             lines.append(f"{cid}: {', '.join(names)}")
             labeled_cids.append(int(cid))
     return lines, labeled_cids
@@ -2914,11 +2757,8 @@ def _parse_label_response(text: str, labeled_cids: list[int]) -> dict[int, str]:
     except (json.JSONDecodeError, ValueError):
         data = None
     if data is None:
-        # Salvamento: extraia os pares "<cid>": "<nome>" completos diretamente. Um modelo
         # pode truncar sua resposta no meio do objeto (um orçamento de token mesquinho ou um preâmbulo
         # comendo a conclusão), que costumava falhar em todo o lote com
-        # por exemplo `Valor esperado: linha 1 coluna 6` em um fragmento `{"0":`.
-        # Recuperar os pares que chegaram rotula essas comunidades
         # de descartar o lote inteiro em espaços reservados.
         pairs = re.findall(r'"?(-?\d+)"?\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', cleaned)
         if pairs:
@@ -2976,8 +2816,6 @@ def _label_batch_with_retry(
     call_kwargs: dict = {"backend": backend, "max_tokens": max_tokens}
     if model is not None:
         call_kwargs["model"] = model
-    # Somente encaminhe o usage_out quando o chamador desejar contabilidade, portanto existente
-    # chamadores (e suas duplicatas de teste) veem a assinatura _call_llm inalterada.
     if usage_out is not None:
         call_kwargs["usage_out"] = usage_out
 
@@ -3066,7 +2904,6 @@ def label_communities(
         end = min(start + batch_size, len(labeled_cids))
         # Acumule o uso de token em um dicionário por lote para que trabalhadores simultâneos
         # nunca corra no acumulador compartilhado; ele é mesclado no thread principal
-        # em _merge.
         batch_usage: dict = {} if usage_out is not None else None
         batch_kwargs = {"usage_out": batch_usage} if usage_out is not None else {}
         try:
@@ -3083,7 +2920,6 @@ def label_communities(
 
     def _merge(batch_idx: int, parsed, exc, batch_usage=None) -> None:
         nonlocal written
-        # Contar tokens mesmo para um lote com falha: a chamada LLM foi cobrada independentemente de
         # ou não a resposta analisada.
         if usage_out is not None and batch_usage:
             usage_out["input"] = usage_out.get("input", 0) + batch_usage.get("input", 0)

@@ -5,6 +5,9 @@ import json
 import os
 import re
 import shlex
+import stat
+import subprocess
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
@@ -30,7 +33,10 @@ class FileType(str, Enum):
 
 _MANIFEST_PATH = str(out_path("manifest.json"))
 
-CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger'}
+_MTIME_COARSE_S = 2.0
+_MTIME_SUBSECOND_S = 0.05
+
+CODE_EXTENSIONS = {'.py', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.ejs', '.ets', '.go', '.rs', '.java', '.groovy', '.gradle', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp', '.cu', '.cuh', '.metal', '.rb', '.rake', '.swift', '.kt', '.kts', '.cs', '.scala', '.php', '.lua', '.luau', '.toc', '.zig', '.ps1', '.psm1', '.psd1', '.ex', '.exs', '.m', '.mm', '.ml', '.mli', '.jl', '.vue', '.svelte', '.astro', '.dart', '.v', '.sv', '.svh', '.sql', '.r', '.f', '.F', '.f90', '.F90', '.f95', '.F95', '.f03', '.F03', '.f08', '.F08', '.pas', '.pp', '.dpr', '.dpk', '.lpr', '.inc', '.dfm', '.lfm', '.lpk', '.sh', '.bash', '.json', '.tf', '.tfvars', '.hcl', '.dm', '.dme', '.dmi', '.dmm', '.dmf', '.sln', '.slnx', '.csproj', '.fsproj', '.vbproj', '.xaml', '.razor', '.cshtml', '.cls', '.trigger', '.lisp', '.cl', '.lsp', '.asd'}
 DOC_EXTENSIONS = {'.md', '.mdx', '.qmd', '.skill', '.txt', '.rst', '.html', '.yaml', '.yml'}
 PAPER_EXTENSIONS = {'.pdf'}
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
@@ -38,17 +44,16 @@ OFFICE_EXTENSIONS = {'.docx', '.xlsx'}
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'}
 
 CORPUS_WARN_THRESHOLD = 50_000    # palavras - abaixo disso, avise "você pode não precisar de um grafo"
-CORPUS_UPPER_THRESHOLD = 500_000  # palavras - acima disso, alertar sobre o custo do token
-FILE_COUNT_UPPER = 500             # arquivos - acima disso, avise sobre o custo do token
+CORPUS_UPPER_THRESHOLD = 500_000
+FILE_COUNT_UPPER = 500
 
 # Limites de recursos para analisar arquivos Office/PDF não confiáveis ​​(F2). Um corpus é
 # controlável pelo invasor (omnigraph é executado em pastas clonadas/compartilhadas) e .docx/.xlsx
 # são contêineres zip + XML: uma bomba zip de alguns KB pode descompactar para gigabytes e
 # OOM elimine o processo no momento load_workbook/Document. Faça a triagem do arquivo antes de qualquer
-# analisador toca nele.
-_OFFICE_MAX_RAW_BYTES = 50 * 1024 * 1024            # 50 MiB em disco
-_OFFICE_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024  # 512 MiB total uncompressed
-_OFFICE_MAX_COMPRESSION_RATIO = 200                 # uncompressed : compressed
+_OFFICE_MAX_RAW_BYTES = 50 * 1024 * 1024
+_OFFICE_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024
+_OFFICE_MAX_COMPRESSION_RATIO = 200
 
 
 def _file_within_size_cap(path: Path, cap: int = _OFFICE_MAX_RAW_BYTES) -> bool:
@@ -96,19 +101,10 @@ def _zip_within_caps(path: Path) -> bool:
         return False
     return True
 
-# Dedicated credential-store directories: everything beneath them is sensitive,
-# with no carve-out — a .py inside ~/.ssh or ~/.aws is tooling for key material,
-# not a source package, and keys there are routinely extensionless.
-# Both sets are checked against path.parts[:-1] (parents only) so a root-level
-# file named "credentials" or "secrets" is not falsely flagged by this stage.
 _CREDENTIAL_STORE_DIRS = frozenset({
     ".ssh", ".gnupg", ".aws", ".gcloud",
 })
 
-# Bare-name directories that are as often legitimate source packages (Go
-# internal/secrets, a credentials/ service module) as credential stores. Their
-# contents are sensitive EXCEPT genuine programming-language source, mirroring
-# the Stage 3 keyword carve-out at the directory level.
 _AMBIGUOUS_SENSITIVE_DIRS = frozenset({
     "secrets", ".secrets", "credentials",
 })
@@ -118,21 +114,11 @@ _AMBIGUOUS_SENSITIVE_DIRS = frozenset({
 _SENSITIVE_PATTERNS = [
     re.compile(r'(^|[\\/])\.(env|envrc)(\.|$)', re.IGNORECASE),
     re.compile(r'\.(pem|key|p12|pfx|cert|crt|der|p8)$', re.IGNORECASE),
-    # SSH/GPG private keys. Left boundary + IGNORECASE so `grid_rsa` (alpha before
-    # `id_rsa`) and `ID_RSA` are handled correctly, not matched as a substring.
     re.compile(r'(^|[^A-Za-z0-9])(id_rsa|id_dsa|id_ecdsa|id_ed25519)(\.pub)?$', re.IGNORECASE),
-    re.compile(r'^secring(\.(gpg|pgp))?$', re.IGNORECASE),  # GPG private keyring
-    # Auth/credential dotfiles that routinely hold tokens (.npmrc/.pypirc/
-    # .git-credentials/.boto were silently indexed before).
+    re.compile(r'^secring(\.(gpg|pgp))?$', re.IGNORECASE),
     re.compile(r'(\.netrc|\.pgpass|\.htpasswd|\.npmrc|\.pypirc|\.git-credentials|\.boto)$', re.IGNORECASE),
-    # NOTE: aws_credentials/gcloud_credentials/service_account moved to the
-    # boundary-checked Stage 3 keyword path. The old unbounded
-    # `service.account` substring (regex `.` wildcard) matched real source like
-    # google/oauth2/service_account.py and prose like aws_credentials_rotation.md.
 ]
 
-# Committed dotenv / envrc templates — placeholders only, not live secrets.
-# Stage 2's `.env.` regex otherwise treats these like `.env.local`.
 _ENV_TEMPLATE_SUFFIXES = (".example", ".sample", ".template", ".dist")
 
 
@@ -141,14 +127,11 @@ def _is_env_template(name: str) -> bool:
     lower = name.lower()
     if not lower.endswith(_ENV_TEMPLATE_SUFFIXES):
         return False
-    # Basename must still be an .env* / .envrc* file (not e.g. secrets.example).
     return bool(re.match(r"\.(env|envrc)\.", lower))
 
 # Padrões de palavras-chave genéricas - contam apenas quando a palavra-chave é LOAD-BEARING
-# no nome do arquivo (consulte _generic_keyword_hit), porque uma palavra-chave enterrada no meio da frase
 # em um longo slug descritivo nomeia um tópico, não um armazenamento de credenciais:
 # "token-economics-of-recall.md" é uma nota SOBRE tokens; "api_token.txt" É um.
-# Usa lookarounds em vez de \b nomes com prefixo de sublinhado como api_token.txt
 # corresponder. Ambos os padrões usam (?![a-zA-Z]) para que o comportamento do sublinhado à direita
 # é consistente: "secret_store.txt" ESTÁ sinalizado, "tokenizer.py" NÃO é (porque
 # "i" depois de "token" é alfa e bloqueia a correspondência).
@@ -157,40 +140,22 @@ def _is_env_template(name: str) -> bool:
 _GENERIC_KEYWORD_PATTERNS = [
     re.compile(r'(?<![a-zA-Z0-9])(credential|secret|passwd|password|private_key)s?(?![a-zA-Z])', re.IGNORECASE),
     re.compile(r'(?<![a-zA-Z0-9])tokens?(?![a-zA-Z])', re.IGNORECASE),
-    # service_account / service-account / serviceaccount (GCP key files). In the
-    # keyword path so `service_account.py` (real source) is spared while
-    # `service-account.json` (a downloaded key) and bare names are still caught
-    # (; was an unbounded Stage 2 substring). aws_credentials/gcloud_credentials
-    # are already covered by the `credential` keyword above.
     re.compile(r'(?<![a-zA-Z0-9])service[._-]?account(?![a-zA-Z])', re.IGNORECASE),
 ]
 
-# Prose/note formats: a heavily-linked wiki article whose topic slug ends in a
-# keyword (privacy-tokens.md, token-economics.md) is a document ABOUT the topic,
-# not a credential store, so it must not be silently dropped. A BARE
-# keyword name (secrets.md, token.md, passwords.md) still reads as a dump and
-# stays excluded — see _is_prose_note.
 _PROSE_EXTS = frozenset({".md", ".markdown", ".rst", ".org", ".adoc", ".tex"})
 
 # Extensões de dados/serialização que normalmente SÃO armazenamentos secretos quando seu nome
-# hits a generic keyword (credentials.json, secrets.yaml, token.toml) or they sit
-# in an ambiguous sensitive dir (secrets/db.json). These stay subject to the
-# Stage 1 ambiguous-dir drop and the Stage 3 keyword drop even though some route
-# through the CODE path for manifest parsing — only real programming-language
-# source is exempt.
 _SECRET_PRONE_DATA_EXTS = frozenset({
     ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".config",
     ".xml", ".properties", ".env", ".txt",
-    # .tfvars is Terraform's canonical VALUES store (routinely holds real
-    # secrets), not source — keep it out of the graph even though it sits in
-    # CODE_EXTENSIONS. .tf/.hcl are genuine infra source and stay graphable.
     ".tfvars",
 })
 
 # Separadores de palavras para verificação de suporte de carga (sublinhado incluído intencionalmente;
 # palavras-chave com várias palavras, como private_key, são tratadas pela verificação de fim de radical,
 # que é executado antes da contagem de palavras).
-_WORD_SPLIT = re.compile(r'[-_\s.]+')  # '.' included so `token.economics.notes` counts as 3 words
+_WORD_SPLIT = re.compile(r'[-_\s.]+')
 
 
 def _is_prose_note(path: Path) -> bool:
@@ -214,10 +179,6 @@ def _generic_keyword_hit(name: str) -> bool:
     ("token-economics-of-recall.md", "password-policy-discussion.md") and must
     not cause the file to be silently dropped from the graph (#436, #718).
     """
-    # Stem = name minus only the FINAL extension (not up to the first dot), so a
-    # multi-dot topic slug like `token.economics.notes.md` keeps all its words and
-    # doesn't collapse to a bare `token`. Leading dots stripped so
-    # dotfiles like `.token` keep their keyword.
     stem = Path(name).stem.lstrip('.') or Path(name).stem
     for pat in _GENERIC_KEYWORD_PATTERNS:
         hit = False
@@ -226,7 +187,7 @@ def _generic_keyword_hit(name: str) -> bool:
             if m.end() == len(stem):  # palavra-chave termina o radical -> nomeia o conteúdo
                 return True
         if hit and len([w for w in _WORD_SPLIT.split(stem) if w]) <= 2:
-            return True  # short name like token_config.yaml / secret_handler.txt
+            return True
     return False
 
 # Sinaliza que um arquivo .md/.txt é na verdade um artigo acadêmico convertido
@@ -237,13 +198,13 @@ _PAPER_SIGNALS = [
     re.compile(r'\bproceedings\b', re.IGNORECASE),
     re.compile(r'\bjournal\b', re.IGNORECASE),
     re.compile(r'\bpreprint\b', re.IGNORECASE),
-    re.compile(r'\\cite\{'),          # LaTeX citation
-    re.compile(r'\[\d+\]'),           # Numbered citation [1], [23] (inline)
-    re.compile(r'\[\n\d+\n\]'),       # Numbered citation spread across lines (markdown conversion)
+    re.compile(r'\\cite\{'),
+    re.compile(r'\[\d+\]'),
+    re.compile(r'\[\n\d+\n\]'),
     re.compile(r'eq\.\s*\d+|equation\s+\d+', re.IGNORECASE),
-    re.compile(r'\d{4}\.\d{4,5}'),   # arXiv ID like 1706.03762
-    re.compile(r'\bwe propose\b', re.IGNORECASE),   # common academic phrasing
-    re.compile(r'\bliterature\b', re.IGNORECASE),   # "da literatura"
+    re.compile(r'\d{4}\.\d{4,5}'),
+    re.compile(r'\bwe propose\b', re.IGNORECASE),
+    re.compile(r'\bliterature\b', re.IGNORECASE),
 ]
 _PAPER_SIGNAL_THRESHOLD = 3  # precisa de pelo menos tantos sinais para chamá-lo de papel
 
@@ -262,20 +223,11 @@ def _is_sensitive(path: Path) -> bool:
     """Return True if this file likely contains secrets and should be skipped."""
     # Estágio 1: qualquer diretório PARENT é um diretório de segredos conhecido (partes[:-1] exclui
     # o próprio nome do arquivo para que um arquivo de nível raiz chamado "credenciais" não seja falsamente
-    # skipped — the name patterns in Stage 2 handle the filename). Dedicated
-    # credential stores drop everything unconditionally; ambiguous bare-name dirs
-    # (secrets/, credentials/) spare genuine source, which still falls
-    # through so Stages 2-3 screen its filename like anywhere else.
     parents = path.parts[:-1]
-    # Lowercase the segment comparison so `Secrets/`/`SECRETS/` (real on
-    # case-insensitive macOS/Windows filesystems) are still caught.
     if any(part.lower() in _CREDENTIAL_STORE_DIRS for part in parents):
         return True
     if any(part.lower() in _AMBIGUOUS_SENSITIVE_DIRS for part in parents) and not _is_graphable_source(path):
         return True
-    # Stage 2: filename pattern match. Template suffixes (.example/.sample/…)
-    # on .env / .envrc are the usual "safe to commit" convention — keep them
-    # in the graph without opening a broad Stage 2 allowlist.
     name = path.name
     if any(p.search(name) for p in _SENSITIVE_PATTERNS) and not _is_env_template(name):
         return True
@@ -288,8 +240,6 @@ def _is_sensitive(path: Path) -> bool:
     # lojas secretas que esta fase deve capturar. Os padrões específicos do Estágio 2 (.env, .pem,
     # id_rsa, ...) ainda se aplicam a tudo, independentemente da extensão.
     if _generic_keyword_hit(name):
-        # Genuine source AND multi-word prose notes are exempt; a bare-keyword
-        # name (secrets.md, token.txt) still drops.
         return not (_is_graphable_source(path) or _is_prose_note(path))
     return False
 
@@ -297,7 +247,6 @@ def _is_sensitive(path: Path) -> bool:
 def _looks_like_paper(path: Path) -> bool:
     """Heuristic: does this text file read like an academic paper?"""
     try:
-        # Digitalize apenas os primeiros 3.000 caracteres para verificar a velocidade
         text = path.read_text(encoding="utf-8", errors="ignore")[:3000]
         hits = sum(1 for pattern in _PAPER_SIGNALS if pattern.search(text))
         return hits >= _PAPER_SIGNAL_THRESHOLD
@@ -405,7 +354,6 @@ def _env_command_args(args: list[str], *, allow_split: bool = True) -> list[str]
             i += 2
             continue
 
-        # Clumped short option + operand
         if (
             arg.startswith(("-u", "-C", "-P", "-a"))
             and len(arg) > 2
@@ -419,13 +367,11 @@ def _env_command_args(args: list[str], *, allow_split: bool = True) -> list[str]
             i += 1
             continue
 
-        # Sinalizadores sem operando
         if arg in {"-", "-i", "-0", "-v", "--ignore-environment", "--null",
                    "--debug", "--list-signal-handling"}:
             i += 1
             continue
 
-        # Flags longos para tratamento de sinais (com ou sem operando =SIG - tratamos
         # como sem efeito para fins de resolução do intérprete)
         if arg.startswith(("--default-signal", "--ignore-signal", "--block-signal")):
             i += 1
@@ -435,7 +381,6 @@ def _env_command_args(args: list[str], *, allow_split: bool = True) -> list[str]
         if arg.startswith("-"):
             return []
 
-        # Inline NAME=value assignment
         if "=" in arg:
             i += 1
             continue
@@ -490,7 +435,6 @@ def _shebang_file_type(path: Path) -> FileType | None:
 
 
 def classify_file(path: Path) -> FileType | None:
-    # Package manifests (apm.yml, pyproject.toml, Cargo.toml, go.mod, pom.xml) are parsed
     # deterministicamente, então encaminhe-os para o caminho AST (CODE) em vez do LLM
     # caminho do documento - caso contrário, apm.yml (um "documento" .yml) seria extraído do LLM
     # e um pacote seria dividido em nós duplicados ancorados em arquivos.
@@ -568,7 +512,6 @@ def docx_to_markdown(path: Path) -> str:
                 lines.append(f"- {text}")
             else:
                 lines.append(text)
-        # Tables
         for table in doc.tables:
             rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
             if not rows:
@@ -638,7 +581,6 @@ def xlsx_extract_structure(path: Path) -> dict:
 
     # F-035: correção de erro de digitação — era `_re.sub` (NameError, mas inacessível porque o
     # todo o codepath xlsx está atualmente atrás de um sinalizador de recurso / ainda não conectado
-    # no despachante). Antes de reativar esse caminho, audite-o novamente para
     # bombas zip/XML (openpyxl é construído sobre zipfile e XML estilo lxml
     # análise - um .xlsx malicioso pode explodir a memória no momento do load_workbook).
     stem = re.sub(r"[^a-z0-9]", "_", path.stem.lower())
@@ -666,14 +608,13 @@ def xlsx_extract_structure(path: Path) -> dict:
         _add(sheet_nid, f"{sheet_name} (sheet)")
         _edge(file_nid, sheet_nid, "contains")
 
-        # Named Excel Tables (ListObjects)
         if hasattr(ws, "tables"):
             for tbl in ws.tables.values():
                 tbl_nid = _nid(stem, sheet_name, tbl.name)
                 _add(tbl_nid, tbl.name)
                 _edge(sheet_nid, tbl_nid, "contains")
                 # Cabeçalhos de coluna da linha de cabeçalho da tabela
-                ref = tbl.ref  # e.g. "A1:D10"
+                ref = tbl.ref
                 if ref:
                     try:
                         from openpyxl.utils import range_boundaries
@@ -726,28 +667,13 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
 
     out_dir.mkdir(parents=True, exist_ok=True)
     # Use um nome estável derivado do caminho original para evitar colisões.
-    # Hash the path RELATIVE to the scan root, not the absolute path: the
-    # absolute form salts the name with the checkout location, so the same
-    # tracked .xlsx in two clones/worktrees emits two differently-named,
-    # byte-identical sidecars — unbounded duplicates when omnigraph-out/ is
-    # committed, each ingested as a distinct source doc. The relative
-    # path still disambiguates same-stem files in different directories.
-    # Normalize to NFC before hashing: on macOS (HFS+/APFS) os.walk/rglob return
-    # filenames in NFD, while Python string literals and directly-constructed
-    # Path objects are NFC, so the same source file would otherwise hash to
-    # different sidecar names across runs — making --update treat every Office
-    # file as new and re-extract it.
     import hashlib
     import unicodedata
     if root is None:
-        # Default layout: out_dir is <root>/<omnigraph-out>/converted.
         root = out_dir.parent.parent
     try:
         key = path.resolve().relative_to(Path(root).resolve()).as_posix()
     except (ValueError, OSError):
-        # Not under the scan root (custom OMNIGRAPH_OUT layouts, --include
-        # sources, direct API callers): keep the previous absolute form rather
-        # than guessing, so behavior is unchanged for those cases.
         key = str(path.resolve())
     normalized_path = unicodedata.normalize("NFC", key)
     name_hash = hashlib.sha256(normalized_path.encode()).hexdigest()[:8]
@@ -758,7 +684,6 @@ def convert_office_file(path: Path, out_dir: Path, root: "Path | None" = None) -
     # relatou "inalterado" para sempre e congela o grafo. Reconversão
     # quando a fonte é mais recente, aumenta o mtime/conteúdo do sidecar, que o
     # a verificação incremental de hash é então selecionada corretamente. Uma fonte inalterada mantém
-    # seu sidecar (mais novo ou igual) intacto para que nunca se agite (# 1226).
     try:
         if out_path.exists() and os.stat(_os_path(out_path)).st_mtime >= os.stat(_os_path(path)).st_mtime:
             return out_path
@@ -781,35 +706,49 @@ def count_words(path: Path) -> int:
             return len(docx_to_markdown(path).split())
         if ext == ".xlsx":
             return len(xlsx_to_markdown(path).split())
+        if not stat.S_ISREG(os.stat(_os_path(path)).st_mode):
+            return 0
         with open(_os_path(path), encoding="utf-8", errors="ignore") as f:
             return len(f.read().split())
     except Exception:
         return 0
 
 
+def _is_regular_file(path: Path) -> bool:
+    """True only for regular files (symlinks followed).
+
+    Named pipes, sockets and device nodes must never reach a reader:
+    ``open()`` on a FIFO with no writer blocks forever and never raises, so a
+    single ``pipe.py`` in a scanned repository hangs the run with no output.
+    A symlink is resolved deliberately — a link pointing at a FIFO blocks
+    exactly like the FIFO itself. A path that cannot be stat'ed is treated as
+    not readable rather than raising.
+    """
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except OSError:
+        return False
+
+
 # Nomes de diretórios a serem sempre ignorados – venvs, caches, artefatos de construção, dependências
 _SKIP_DIRS = {
-    "venv", ".venv",  # "env"/".env"/"*_env" are gated on venv markers below
+    "venv", ".venv",
     "node_modules", "__pycache__", ".git",
     "dist", "build", "target", "out",
     "site-packages", "lib64",
     ".pytest_cache", ".mypy_cache", ".ruff_cache",
     ".tox", ".nox", ".eggs", "*.egg-info",  # nox é o sucessor de tox, mesmo formato.nox/venv
-    "omnigraph-out",  # never treat the default output as source input
-    # Coverage/test-artefact dirs — generated, never architecturally meaningful
-    "lcov-report",                          # Vitest/Istanbul/nyc HTML reports;
-                                            # bare "coverage" is gated on report
-                                            # artefacts below
-    "visual-tests", "visual-test",          # Playwright/visual-regression bundles
-    "__snapshots__",                        # Jest/Vitest snapshot dir (unambiguous)
-    "storybook-static",                     # Storybook production build output
+    "omnigraph-out",
+    "lcov-report",
+    "visual-tests", "visual-test",
+    "__snapshots__",
+    "storybook-static",
     "dist-protected",                       # Variantes dist protegidas (mesmo ruído que dist)
-    # Framework cache/build dirs — generated, never architecturally meaningful
     ".next", ".nuxt", ".turbo", ".angular",
     ".idea", ".cache", ".parcel-cache", ".svelte-kit", ".terraform", ".serverless",
-    ".omnigraph",  # omnigraph's own extraction cache — never index self-generated data
-    ".obsidian", ".smart-env",  # Obsidian vault metadata and plugin caches
-    ".worktrees",  # git worktree convention — sibling checkouts, always redundant
+    ".omnigraph",
+    ".obsidian", ".smart-env",
+    ".worktrees",
 }
 
 # Arquivos gerados grandes que nunca são úteis para extrair
@@ -817,8 +756,6 @@ _SKIP_FILES = {
     "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
     "Cargo.lock", "poetry.lock", "Gemfile.lock",
     "composer.lock", "go.sum", "go.work.sum",
-    # Removed allowlist config — no longer consumed, so keep a leftover
-    # file out of the unclassified list instead of surfacing it as scan input.
     ".omnigraphinclude",
 }
 
@@ -829,10 +766,6 @@ _SKIP_FILES = {
 # podado incondicionalmente acima; apenas o nome ambíguo é bloqueado aqui.
 _JS_SNAPSHOT_TEST_ROOTS = frozenset({"__tests__", "__test__"})
 
-# Files a coverage tool writes into its own output dir. Any one of them is proof
-# the directory is generated: lcov (lcov.info), nyc/Istanbul (coverage-final.json,
-# clover.xml, the lcov-report/ subtree), coverage.py (coverage.xml, .coverage),
-# JaCoCo/Cobertura (jacoco.xml, cobertura-coverage.xml).
 _COVERAGE_ARTIFACT_FILES = frozenset({
     "lcov.info", "coverage-final.json", "coverage-summary.json",
     "clover.xml", "coverage.xml", "cobertura-coverage.xml", "jacoco.xml",
@@ -891,14 +824,10 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
     if part in _SKIP_DIRS:
         return True
     if part in ("env", ".env") or part.endswith("_env"):
-        # Ambiguous: a real venv OR a real source dir. Prune only on actual venv
-        # evidence, mirroring the "snapshots" gating.
         if parent is None:
             return False  # não pode verificar; mantenha um diretório de código possivelmente real
         return _has_venv_markers(parent / part)
     if part == "coverage":
-        # Ambiguous: a generated report dir OR a real package named coverage.
-        # Prune only on actual coverage-artefact evidence.
         if parent is None:
             return False  # não pode verificar; mantenha um diretório de código possivelmente real
         return _has_coverage_artifacts(parent / part)
@@ -915,8 +844,6 @@ def _is_noise_dir(part: str, parent: "Path | None" = None) -> bool:
         except OSError:
             pass
         return False
-    # Catch *_venv (unambiguous — "venv" is always a virtualenv signal). "*_env"
-    # is gated on markers above, not pruned by name.
     if part.endswith("_venv"):
         return True
     if part.endswith(".egg-info"):
@@ -964,9 +891,7 @@ def _parse_gitignore_line(raw: str) -> str:
         return ""
     # Remover comentários embutidos: requer espaço em branco antes de # (extensão gitignore)
     line = re.sub(r"\s+#+[^\\].*$", "", line)
-    # Unescape \# → literal #
     line = line.replace("\\#", "#")
-    # Remove unescaped trailing spaces (per gitignore spec)
     line = re.sub(r"(?<!\\) +$", "", line)
     return _nfc(line)
 
@@ -982,6 +907,62 @@ def _find_vcs_root(start: Path) -> Path | None:
         if parent == current or current == home:
             return None
         current = parent
+
+
+def _path_identity(path: Path) -> str:
+    """Portable comparison key for an existing filesystem path."""
+    return _nfc(os.path.normcase(os.path.abspath(os.fspath(path))))
+
+
+def _git_tracked_path_keys(root: Path) -> tuple[set[str], set[str]]:
+    """Return tracked-file keys and their ancestor-directory keys under *root*.
+
+    Gitignore rules do not apply to paths already present in Git's index. Ask
+    Git once per scan/predicate construction with NUL-delimited output so every
+    valid filename is preserved. Missing Git, a non-Git VCS marker, command
+    failure, and malformed output all fail closed to the historical ignore
+    behavior rather than making discovery fail (#2759).
+    """
+    root = root.resolve()
+    vcs_root = _find_vcs_root(root)
+    if vcs_root is None or not (vcs_root / ".git").exists():
+        return set(), set()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(vcs_root), "ls-files", "-z", "--cached"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set(), set()
+    if proc.returncode != 0:
+        return set(), set()
+
+    tracked_files: set[str] = set()
+    tracked_dirs: set[str] = set()
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        path = Path(os.path.abspath(vcs_root / os.fsdecode(raw)))
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        if not _is_regular_file(path):
+            continue
+        tracked_files.add(_path_identity(path))
+        parent = path.parent
+        while parent != root:
+            parent_key = _path_identity(parent)
+            if parent_key in tracked_dirs:
+                break
+            tracked_dirs.add(parent_key)
+            parent = parent.parent
+    return tracked_files, tracked_dirs
 
 
 def _git_info_exclude(vcs_root: Path) -> Path | None:
@@ -1026,6 +1007,58 @@ def _git_info_exclude(vcs_root: Path) -> Path | None:
     return exclude if exclude.is_file() else None
 
 
+_warned_ignore_encodings: set[str] = set()
+
+
+def _read_ignore_text(path: Path) -> str:
+    """Read an ignore file, preferring UTF-8 but never silently dropping a rule.
+
+    These files were read with ``errors="ignore"``, which turns a mis-encoded
+    byte into *no* byte. An ignore file saved in the host's ANSI codepage — the
+    historical Notepad default on Windows, and still what ``Set-Content`` writes
+    without ``-Encoding`` — is not valid UTF-8, so ``Or\xe7amento/`` decoded to
+    the pattern ``Oramento/``. That matches nothing, and nothing said so: the
+    directory was scanned despite an explicit exclusion, which for a rule
+    covering documents or PDFs means they reach the semantic pass anyway.
+
+    So: UTF-8 (BOM-tolerant) first, since that is what the format should be and
+    what every other reader here assumes. Only if that fails do we fall back to
+    the host encoding, then to latin-1, which cannot fail and maps every byte to
+    a codepoint — a rule spelled in some third encoding still comes out wrong,
+    but it comes out *whole*, and the warning names the file so it is fixable.
+    Decoding never raises, matching the previous contract.
+    """
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    import locale
+    import sys as _sys
+    fallback = locale.getpreferredencoding(False) or "latin-1"
+    for enc in (fallback, "latin-1"):
+        try:
+            text = raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        key = str(path)
+        if key not in _warned_ignore_encodings:
+            _warned_ignore_encodings.add(key)
+            print(
+                f"[omnigraph] WARNING: {path} is not valid UTF-8; read it as "
+                f"{enc} instead. Re-save it as UTF-8 — patterns with non-ASCII "
+                "characters may not match as written.",
+                file=_sys.stderr,
+            )
+        return text
+    return raw.decode("utf-8", errors="ignore")
+
+
 def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path, str]]:
     """Read .gitignore/.omnigraphignore directly inside *d* (not its ancestors).
 
@@ -1046,7 +1079,7 @@ def _load_dir_own_ignore(d: Path, *, gitignore: bool = True) -> list[tuple[Path,
     for fname in ((".gitignore", ".omnigraphignore") if gitignore else (".omnigraphignore",)):
         ignore_file = d / fname
         if ignore_file.exists():
-            for raw in ignore_file.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+            for raw in _read_ignore_text(ignore_file).splitlines():
                 line = _parse_gitignore_line(raw)
                 if line:
                     patterns.append((d, line))
@@ -1078,17 +1111,16 @@ def _load_omnigraphignore(root: Path, *, gitignore: bool = True) -> list[tuple[P
         if current == ceiling:
             break
         current = current.parent
-    dirs.reverse()  # ceiling first, scan root last
+    dirs.reverse()
 
     patterns: list[tuple[Path, str]] = []
 
     # $GIT_DIR/info/exclude tem escopo de raiz de repositório e, por git, está classificado abaixo de cada
     # por diretório .gitignore/.omnigraphignore - então carregue-o primeiro (prioridade mais baixa
     # sob vitórias na última partida) ancorado na raiz do VCS, deixando um `!` mais próximo
-    # reincluir ainda o substitui.
     info_exclude = _git_info_exclude(ceiling) if gitignore else None
     if info_exclude is not None:
-        for raw in info_exclude.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+        for raw in _read_ignore_text(info_exclude).splitlines():
             line = _parse_gitignore_line(raw)
             if line:
                 patterns.append((ceiling, line))
@@ -1223,6 +1255,32 @@ def _is_ignored(
     return _eval(path)
 
 
+def _is_scan_ignored(
+    path: Path,
+    root: Path,
+    patterns: list[tuple[Path, str]],
+    explicit_patterns: list[tuple[Path, str]],
+    tracked_files: set[str],
+    tracked_dirs: set[str],
+    *,
+    cache: dict[Path, bool],
+    explicit_cache: dict[Path, bool],
+) -> bool:
+    """Apply ignore rules while preserving Git-tracked paths.
+
+    ``patterns`` combines Git and graph-specific rules. ``explicit_patterns``
+    contains only .omnigraphignore/--exclude rules, which remain authoritative
+    even for tracked files. A tracked file's ancestor directories are preserved
+    from Git-only pruning so the walk can reach the file (#2759).
+    """
+    if not _is_ignored(path, root, patterns, _cache=cache):
+        return False
+    if _is_ignored(path, root, explicit_patterns, _cache=explicit_cache):
+        return True
+    identity = _path_identity(path)
+    return identity not in tracked_files and identity not in tracked_dirs
+
+
 def ignored_predicate(
     root: Path,
     *,
@@ -1249,13 +1307,20 @@ def ignored_predicate(
     """
     root = root.resolve()
     patterns = _load_omnigraphignore(root, gitignore=gitignore)
+    explicit_patterns = _load_omnigraphignore(root, gitignore=False)
+    tracked_files, tracked_dirs = (
+        _git_tracked_path_keys(root)
+        if gitignore and len(patterns) > len(explicit_patterns)
+        else (set(), set())
+    )
     if extra_excludes:
         for pat in extra_excludes:
             line = _parse_gitignore_line(pat)
             if line:
                 patterns.append((root, line))
+                explicit_patterns.append((root, line))
     cache: dict[Path, bool] = {}
-    # root's own ignore file is the last entry of _load_omnigraphignore's chain.
+    explicit_cache: dict[Path, bool] = {}
     loaded_dirs: set[Path] = {root}
 
     def _ignored(path: Path) -> bool:
@@ -1263,25 +1328,33 @@ def ignored_predicate(
         try:
             rel_parts = path.relative_to(root).parts
         except ValueError:
-            return False  # outside the scan root: detect() never considered it
+            return False
         if path.name in _SKIP_FILES:
             return True
-        # Noise-dir pruning: os.walk never descends these, so anything beneath
-        # one is excluded from the corpus regardless of ignore patterns.
         parent = root
         for part in rel_parts[:-1]:
             if _is_noise_dir(part, parent):
                 return True
             parent = parent / part
-        # Load ignore files along this path's own lineage — detect()'s walk
-        # would have loaded exactly these before reaching the file.
         ancestor = root
         for part in rel_parts[:-1]:
             ancestor = ancestor / part
             if ancestor not in loaded_dirs:
                 loaded_dirs.add(ancestor)
                 patterns.extend(_load_dir_own_ignore(ancestor, gitignore=gitignore))
-        return _is_ignored(path, root, patterns, _cache=cache)
+                explicit_patterns.extend(
+                    _load_dir_own_ignore(ancestor, gitignore=False)
+                )
+        return _is_scan_ignored(
+            path,
+            root,
+            patterns,
+            explicit_patterns,
+            tracked_files,
+            tracked_dirs,
+            cache=cache,
+            explicit_cache=explicit_cache,
+        )
 
     return _ignored
 
@@ -1320,10 +1393,6 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     except (OSError, RuntimeError):
         configured_out_dir = configured_out_dir.absolute()
     configured_out_names.add(configured_out_dir.name)
-    #.omnigraphinclude support was removed: its loader and matchers had
-    # no consumers, so the file has been a silent no-op since dot directories
-    # became indexed by default. Surface that once per scan so a
-    # leftover allowlist file is not a silent behavior change.
     if (root / ".omnigraphinclude").is_file():
         import sys as _sys
         print(
@@ -1349,7 +1418,6 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         # Contagens de palavras em cache em relação à assinatura estatística de cada arquivo, de forma inalterada
         # PDFs/docx não são analisados ​​novamente a cada execução apenas para dimensionar o corpus.
         # cache_root (quando fornecido, por exemplo, de `extract --out`) mantém esse cache fora
-        # do corpus digitalizado.
         from omnigraph import cache as _cache
         return _cache.cached_word_count(path, root, count_words, cache_root=cache_root)
 
@@ -1362,7 +1430,14 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     ignored: list[str] = []
     pruned_noise: list[str] = []
     ignore_patterns = _load_omnigraphignore(root, gitignore=gitignore)
-    ignore_cache: dict[Path, bool] = {}  # compartilhado entre todas as chamadas _is_ignored nesta varredura
+    explicit_ignore_patterns = _load_omnigraphignore(root, gitignore=False)
+    tracked_files, tracked_dirs = (
+        _git_tracked_path_keys(root)
+        if gitignore and len(ignore_patterns) > len(explicit_ignore_patterns)
+        else (set(), set())
+    )
+    ignore_cache: dict[Path, bool] = {}
+    explicit_ignore_cache: dict[Path, bool] = {}
     # Os padrões CLI --exclude são ancorados na raiz da varredura e anexados por último
     # então eles vencem qualquer regra.omnigraphignore/.gitignore.
     if extra_excludes:
@@ -1370,8 +1445,20 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             line = _parse_gitignore_line(pat)
             if line:
                 ignore_patterns.append((root, line))
+                explicit_ignore_patterns.append((root, line))
 
-    # Sempre inclua omnigraph-out/memory/ - resultados da consulta arquivados novamente no grafo
+    def _ignored_for_scan(path: Path) -> bool:
+        return _is_scan_ignored(
+            path,
+            root,
+            ignore_patterns,
+            explicit_ignore_patterns,
+            tracked_files,
+            tracked_dirs,
+            cache=ignore_cache,
+            explicit_cache=explicit_ignore_cache,
+        )
+
     memory_dir = root / OMNIGRAPH_OUT / "memory"
     scan_paths = [root]
     if memory_dir.exists():
@@ -1383,7 +1470,6 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     # os.walk engole erros os.scandir por padrão (sem onerror -> a falha
     # a subárvore do diretório é ignorada silenciosamente). Isso se torna um transitório
     # PermissionError ou um diretório criado/excluído no meio da caminhada (por exemplo, simultâneo
-    # escreve correndo a varredura), em uma lista de arquivos parcial e, a jusante, um
     # silenciosamente parcial graph.json. Grave e exiba todos os diretórios ignorados
     # portanto, uma enumeração incompleta é visível e não silenciosa.
     walk_errors: list[str] = []
@@ -1415,10 +1501,12 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                 # a última entrada na sua cadeia ancestral); todos os outros diretórios
                 # alcançado pelo passeio é um descendente abaixo da raiz scan, cujo
                 # próprio .gitignore/.omnigraphignore é desconhecido até chegarmos aqui.
-                # Carregue-o agora, antes de remover os filhos do dp, para ignorar aninhado
                 # file governa sua própria subárvore da mesma forma que o git a honra.
                 if dp != root:
                     ignore_patterns.extend(_load_dir_own_ignore(dp, gitignore=gitignore))
+                    explicit_ignore_patterns.extend(
+                        _load_dir_own_ignore(dp, gitignore=False)
+                    )
                 # Remova os diretórios de ruído no local para que os.walk nunca desça até eles.
                 # Dirs de ponto são permitidos - os usuários geralmente desejam .github/, .claude/, etc.
                 # Caches de estrutura (.next, .nuxt,…) são capturados por _is_noise_dir.
@@ -1444,12 +1532,9 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                         pruned_noise.append(str(child) + os.sep)
                         continue
                     if _is_noise_dir(d, dp):
-                        # Record pruned-as-noise dirs so a wrongly-pruned real
-                        # source dir is at least traceable in the output rather
-                        # than vanishing silently.
                         pruned_noise.append(str(dp / d) + os.sep)
                         continue
-                    if _is_ignored(dp / d, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(dp / d):
                         ignored.append(str(dp / d) + os.sep)
                         continue
                     kept_dirs.append(d)
@@ -1479,14 +1564,16 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
         # Para arquivos de diretório de memória, pule a filtragem oculta/de ruído
         in_memory = memory_dir.exists() and str(p).startswith(str(memory_dir))
         if not in_memory:
-            # Skip files inside our own converted/ dir (avoid re-processing sidecars)
             if str(p).startswith(str(converted_dir)):
                 continue
-        if not in_memory and _is_ignored(p, root, ignore_patterns, _cache=ignore_cache):
+        if not in_memory and _ignored_for_scan(p):
             ignored.append(str(p))
             continue
         if not _resolves_under_root(p, root):
             skipped_sensitive.append(str(p) + " [symlink target outside scan root]")
+            continue
+        if not _is_regular_file(p):
+            skipped_sensitive.append(str(p) + " [not a regular file]")
             continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -1514,7 +1601,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
                     skipped_sensitive.append(str(p) + f" [Google Workspace export failed: {exc}]")
                     continue
                 if md_path:
-                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(md_path):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)
@@ -1525,7 +1612,7 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
             if p.suffix.lower() in OFFICE_EXTENSIONS:
                 md_path = convert_office_file(p, converted_dir, root=root)
                 if md_path:
-                    if _is_ignored(md_path, root, ignore_patterns, _cache=ignore_cache):
+                    if _ignored_for_scan(md_path):
                         continue
                     files[ftype].append(str(md_path))
                     total_words += _wc(md_path)
@@ -1543,7 +1630,6 @@ def detect(root: Path, *, follow_symlinks: bool | None = None, google_workspace:
     total_files = sum(len(v) for v in files.values())
     needs_graph = total_words >= CORPUS_WARN_THRESHOLD
 
-    # Determine o aviso – limite inferior, limite superior ou arquivos confidenciais ignorados
     warning: str | None = None
     if not needs_graph:
         warning = (
@@ -1592,11 +1678,10 @@ def _os_path(path: Path) -> str:
     if s.startswith("\\\\?\\"):
         return s
     try:
-        s = os.path.abspath(s)  # \\?\ requer um caminho totalmente qualificado
+        s = os.path.abspath(s)
     except Exception:
         return str(path)
     if s.startswith("\\\\"):
-        # UNC share \\server\share -> \\?\UNC\server\share
         return "\\\\?\\UNC\\" + s[2:]
     return "\\\\?\\" + s
 
@@ -1662,10 +1747,8 @@ def _to_relative_for_storage(key: str, root: Path) -> str:
         base = _nfc(str(Path(root).resolve()))
         rel = os.path.relpath(_nfc(str(p)), base)
     except (ValueError, OSError):
-        return key  # outside root (e.g. Windows cross-drive)
-    # ``os.path.relpath`` felizmente produz ``../foo`` para caminhos fora
+        return key
     # raiz; espelhar a semântica anterior ``relative_to``-raises-ValueError por
-    # mantendo entradas fora da raiz em sua forma absoluta.
     if rel == ".." or rel.startswith(".." + os.sep) or rel.startswith("../"):
         return key
     return rel.replace(os.sep, "/")
@@ -1685,8 +1768,6 @@ def _to_absolute_from_storage(key: str, root: Path) -> str:
     p = Path(key)
     if p.is_absolute():
         return str(p)
-    # NFC the joined result so an NFD-resolved root + relative key lands on
-    # the same form load_manifest / detect_incremental compare against.
     return _nfc(str(Path(root).resolve() / p))
 
 
@@ -1769,8 +1850,6 @@ def save_manifest(
     """
     existing = load_manifest(manifest_path, root=root)
 
-    # Index both raw and NFC forms so scan/clear membership survives the
-    # same NFC/NFD mismatch that breaks manifest lookups.
     def _path_index(paths: set[str] | list[str] | None) -> set[str] | None:
         if paths is None:
             return None
@@ -1821,7 +1900,6 @@ def save_manifest(
 
     def _in_root(path_str: str) -> bool:
         # Sem uma raiz não podemos distinguir entre raiz e fora de raiz; falha aberta
-        # (mantenha a linha) para que os corpora fora da raiz nunca sejam podados por acidente.
         if root_res is None:
             return False
         p = Path(path_str)
@@ -1845,7 +1923,6 @@ def save_manifest(
             return entry
         return None
 
-    # Semente do manifesto existente para que chamadores incrementais passem um subconjunto
     # dos arquivos não apagam silenciosamente entradas de arquivos intocados.
     # Remover entradas cujo arquivo não existe mais no disco – elas são genuínas
     # exclusões que detect_incremental() devem tratar como desaparecidas. Quando o
@@ -1865,12 +1942,8 @@ def save_manifest(
         if scan_set is not None and not _in_scan(f) and _in_root(f):
             continue  # excluído, mas vivo: elimina a linha obsoleta
         if clear_ast_set is not None and _in_clear_ast(f):
-            # AST failure this run (missing extra / zero nodes): blank
-            # both hashes so either detect_incremental kind re-queues.
             normalised = {**normalised, "ast_hash": "", "semantic_hash": ""}
         elif clear_set is not None and _in_clear(f):
-            # Dispatched-but-omitted this run: don't inherit the stale
-            # semantic_hash, or detect_incremental would call it unchanged.
             normalised = {**normalised, "semantic_hash": ""}
         manifest[f] = normalised
 
@@ -1887,7 +1960,7 @@ def save_manifest(
         mtime, h = hashed[f]
         key = _nfc(f)
         prev = _normalise_entry(existing.get(key, {})) or {}
-        entry: dict = {"mtime": mtime}
+        entry: dict = {"mtime": mtime, "seen": time.time()}
         if kind in ("ast", "both"):
             entry["ast_hash"] = h
         else:
@@ -1901,17 +1974,39 @@ def save_manifest(
     if root is not None:
         # Persistir em formato portátil: caminhos relativos com barra. Chaves fora
         # ``root`` (corpora com links simbólicos fora da árvore, --include fontes) mantém
-        # sua forma absoluta, de modo que as viagens de ida e volta manifestas na economia
         # máquina, mesmo quando nem todas as entradas podem ser codificadas de forma portátil.
-        # NFC after relativize so on-disk keys match what load_manifest
-        # re-anchors and compares against.
         manifest = {_nfc(_to_relative_for_storage(k, root)): v for k, v in manifest.items()}
     else:
         manifest = {_nfc(k): v for k, v in manifest.items()}
     from omnigraph.paths import write_json_atomic
-    # Atomic write: a crash mid-write must not leave a truncated manifest that
-    # detect_incremental then fails to parse.
     write_json_atomic(manifest_path, manifest, indent=2)
+
+
+def _mtime_may_hide_a_rewrite(current_mtime: float, stored: dict) -> bool:
+    """Was this manifest row written in the same tick as the file it describes?
+
+    The incremental gate treats "mtime unchanged" as proof the content is
+    unchanged. That is only true while the filesystem can distinguish the two
+    writes: an edit keeping the file the same length and landing in the same
+    timestamp tick moves neither size nor mtime, so the file silently skips
+    re-extraction and the graph keeps serving the old content.
+
+    ``seen`` records when the row was stamped. If the file's mtime falls inside
+    the same tick, this row cannot prove currency and the caller pays for one
+    MD5. Every other row — the whole settled corpus, and any manifest written
+    by an earlier run — keeps the free stat-only fastpath.
+
+    Rows predating ``seen`` are treated as safe: they necessarily come from an
+    earlier process, where a later write would have had to move mtime.
+    """
+    seen = stored.get("seen")
+    if not isinstance(seen, (int, float)):
+        return False
+    delta = float(seen) - float(current_mtime)
+    if delta < 0:
+        return False
+    coarse = float(current_mtime).is_integer()
+    return delta < (_MTIME_COARSE_S if coarse else _MTIME_SUBSECOND_S)
 
 
 def detect_incremental(
@@ -1953,9 +2048,7 @@ def detect_incremental(
         extra_excludes=extra_excludes,
         gitignore=gitignore,
     )
-    # Passe ``root`` para que um manifesto escrito com chaves relativas (post-) seja
     # reancorado à forma absoluta, o resto desta função compara
-    # against. Legacy absolute-keyed manifests pass through unchanged.
     manifest = load_manifest(manifest_path, root=root)
 
     if not manifest:
@@ -1973,24 +2066,19 @@ def detect_incremental(
 
     for ftype, file_list in full["files"].items():
         for f in file_list:
-            # Manifest keys are NFC; scan paths may arrive NFD.
             stored = manifest.get(_nfc(f))
             try:
                 current_mtime = os.stat(_os_path(Path(f))).st_mtime
             except Exception:
                 current_mtime = 0
 
-            # Manifesto legado: o valor flutuante simples armazena apenas mtime.
             # Compare com `!=` então movimento mtime para trás (git checkout de um
             # commit mais antigo, restauração tarball, rsync --times) ainda aciona um
-            # reextrair; o `>` anterior manteve silenciosamente o cache obsoleto e
-            # o grafo saiu do disco. Nenhum hash armazenado significa que
             # não é possível verificar o conteúdo - qualquer delta mtime força uma nova extração,
             # e o próximo salvamento promove a entrada no esquema dict.
             if isinstance(stored, (int, float)):
                 changed = current_mtime != stored
             elif isinstance(stored, dict):
-                # Normalize o legado {mtime, hash} para o novo esquema
                 if "hash" in stored and "ast_hash" not in stored:
                     stored = {"mtime": stored.get("mtime", 0), "ast_hash": stored["hash"], "semantic_hash": ""}
                 hash_key = "semantic_hash" if kind == "semantic" else "ast_hash"
@@ -2009,6 +2097,8 @@ def detect_incremental(
                     if stored_mtime is None or current_mtime != stored_mtime:
                         # mtime bumped – verifique com hash de conteúdo antes de extrair novamente
                         changed = _md5_file(Path(f)) != stored_hash
+                    elif _mtime_may_hide_a_rewrite(current_mtime, stored):
+                        changed = _md5_file(Path(f)) != stored_hash
                     else:
                         changed = False
             else:
@@ -2024,7 +2114,6 @@ def detect_incremental(
     # nós são fantasmas); uma linha cujo arquivo ainda existe, mas está fora do
     # a varredura atual foi EXCLUÍDA (ignorar regras / --exclude alterada) e deve
     # não será relatado como excluído. Espelha o lado do relógio excluído versus excluído
-    # distinction.
     current_files = {_nfc(f) for flist in full["files"].values() for f in flist}
     deleted_files: list[str] = []
     excluded_files: list[str] = []

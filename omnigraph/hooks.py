@@ -15,7 +15,6 @@ _CHECKOUT_MARKER_END = "# omnigraph-checkout-hook-end"
 # instala o intérprete dentro de um ambiente isolado, então o inicializador em
 # PATH é o único ponto de entrada - e os clientes git da GUI/executores de CI geralmente têm um
 # PATH mínimo que omite ~/.local/bin.  Fixando sys.executable no momento da instalação
-# faz o gancho funcionar independentemente do PATH no momento do gatilho do git.
 _PYTHON_DETECT = """\
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs).
 # _PINNED was recorded at hook-install time; tried first so the hook works even
@@ -102,7 +101,6 @@ fi
 # O Python que a reconstrução executa, compartilhado por ambos os ganchos. Incorporado literalmente em
 # o iniciador abaixo e executado novamente no filho desanexado. Não deve conter o
 # caracteres de aspas duplas, $, crase ou barra invertida: é transportado dentro de um
-# shell double-quoted `-c "..."` argument (see _detached_launch).
 _REBUILD_BODY_COMMIT = """\
 import os, signal, sys, threading
 from pathlib import Path
@@ -214,10 +212,7 @@ except Exception as exc:
 # ainda retornou 0, então o grafo ficou obsoleto e sem sinal. omnigraph já
 # requer Python, então deixamos o Python fazer a separação: um pequeno processo externo gera
 # a reconstrução real é totalmente desvinculada e retorna imediatamente, para que o gancho nunca
-# blocos. POSIX usa start_new_session (o equivalente setsid); Windows usa
-# CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, breaking away from any job object
 # quando permitido. Esta carga útil é transportada dentro de um argumento -c entre aspas duplas do shell,
-# portanto, ele usa deliberadamente apenas strings Python entre aspas simples (sem ", $, ` ou \\).
 _LAUNCHER_TEMPLATE = """\
 import os, subprocess, sys
 _src = '''
@@ -262,7 +257,6 @@ def _detached_launch(rebuild_body: str) -> str:
 # o usuário nunca solicitou e corre o deploy/CI `git clean` contra o desanexado
 # reconstruir ("falha ao remover omnigraph-out/: diretório não vazio").
 # Uma árvore de trabalho vinculada possui git-dir! = git-common-dir. Ambos são resolvidos para absoluto
-# via `cd ... && pwd` antes de comparar: o GIT_DIR / --git-dir exportado do git pode ser
 # absoluto enquanto --git-common-dir é o relativo ".git", e uma comparação bruta seria
 # falso positivo no checkout PRIMARY e ignorá-lo erroneamente.
 _WORKTREE_GUARD = """\
@@ -283,7 +277,7 @@ _HOOK_SCRIPT = """\
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
 # churn run-to-run. Pinning it makes omnigraph-out reproducible.
 export PYTHONHASHSEED=0
-
+__VIZ_LIMIT_EXPORT__
 # Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
 # and agent shells. Keep hook-triggered rebuilds sequential by default there;
 # explicit OMNIGRAPH_MAX_WORKERS still wins for users who want parallelism.
@@ -338,7 +332,7 @@ _CHECKOUT_SCRIPT = """\
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
 # churn run-to-run. Pinning it makes omnigraph-out reproducible.
 export PYTHONHASHSEED=0
-
+__VIZ_LIMIT_EXPORT__
 # Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
 # and agent shells. Keep hook-triggered rebuilds sequential by default there;
 # explicit OMNIGRAPH_MAX_WORKERS still wins for users who want parallelism.
@@ -354,6 +348,10 @@ BRANCH_SWITCH=$3
 if [ "$BRANCH_SWITCH" != "1" ]; then
     exit 0
 fi
+
+# A no-op checkout (e.g. `git checkout -b` with no start point) reports a
+# branch switch but leaves the tree unchanged ΓÇö nothing to rebuild (#2421).
+[ "$PREV_HEAD" = "$NEW_HEAD" ] && exit 0
 
 # Only run if omnigraph-out/ exists (graph has been built before)
 if [ ! -d "omnigraph-out" ]; then
@@ -380,6 +378,41 @@ export OMNIGRAPH_REBUILD_LOG="$_OMNIGRAPH_LOG"
 echo "[omnigraph] Branch switched - launching background rebuild (log: $_OMNIGRAPH_LOG)"
 """ + _detached_launch(_REBUILD_BODY_CHECKOUT) + """# omnigraph-checkout-hook-end
 """
+
+
+def _load_omnigraphrc(root: Path) -> dict[str, str | int]:
+    """Load key/value options from <root>/.omnigraphrc if present.
+
+    Supported options:
+      viz_node_limit: integer >= 0 (e.g. viz_node_limit=0)
+    """
+    rc_path = root / ".omnigraphrc"
+    if not rc_path.is_file():
+        return {}
+
+    cfg: dict[str, str | int] = {}
+    content = rc_path.read_text(encoding="utf-8")
+    for line_num, raw in enumerate(content.splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError(f"Invalid line {line_num} in {rc_path}: {raw!r} (expected key=value)")
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip()
+        if key == "viz_node_limit":
+            try:
+                parsed_val = int(val)
+                if parsed_val < 0:
+                    raise ValueError("must be a non-negative integer")
+                cfg["viz_node_limit"] = parsed_val
+            except ValueError as exc:
+                raise ValueError(
+                    f"Invalid viz_node_limit in {rc_path} at line {line_num}: {val!r}. "
+                    f"Must be a non-negative integer."
+                ) from exc
+    return cfg
 
 
 def _git_root(path: Path) -> Path | None:
@@ -425,9 +458,7 @@ def _hooks_dir(root: Path) -> Path:
     are still surfaced: git itself fails on them, and its stderr is printed.
     """
     # NOTA: NÃO passe --path-format=absolute — adicionado no git 2.31; idiota mais velho
-    # ecoa de volta como um argumento literal, contaminando stdout e causando um
     # diretório fantasma a ser criado. git -C <root> já retorna um
-    # caminho absoluto para casos de worktree/external-gitdir e um caminho relativo a
     # <root> para repositórios normais — a ancoragem na raiz cobre ambos.
     import subprocess as _sp
     try:
@@ -461,12 +492,29 @@ def _hooks_dir(root: Path) -> Path:
     return d
 
 
-def _install_hook(hooks_dir: Path, name: str, script: str, marker: str) -> str:
-    """Install a single git hook, appending if an existing hook is present."""
+def _install_hook(
+    hooks_dir: Path,
+    name: str,
+    script: str,
+    marker: str,
+    marker_end: str = "",
+) -> str:
+    """Install a single git hook, appending if an existing hook is present, or updating
+    an existing omnigraph block in-place."""
     hook_path = hooks_dir / name
     if hook_path.exists():
         content = hook_path.read_text(encoding="utf-8")
         if marker in content:
+            if marker_end and marker_end in content:
+                start_idx = content.find(marker)
+                end_idx = content.find(marker_end)
+                if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                    end_idx += len(marker_end)
+                    new_content = content[:start_idx] + script.rstrip() + content[end_idx:]
+                    if new_content == content:
+                        return f"already installed at {hook_path}"
+                    hook_path.write_text(new_content, encoding="utf-8", newline="\n")
+                    return f"updated existing {name} hook at {hook_path}"
             return f"already installed at {hook_path}"
         hook_path.write_text(content.rstrip() + "\n\n" + script, encoding="utf-8", newline="\n")
         return f"appended to existing {name} hook at {hook_path}"
@@ -558,11 +606,6 @@ def _register_merge_driver(root: Path) -> str:
     import subprocess as _sp
     pinned = _pinned_python()
     if pinned:
-        # Double-quoted: the allowlist in _pinned_python() permits a space (Windows
-        # profile paths), and git runs this driver string through a shell, so an
-        # unquoted "C:\\Users\\First Last\\...\\python.exe" would split into two
-        # words and the driver would never run. The same allowlist keeps
-        # '$' and backticks out, so double quotes cannot introduce expansion.
         driver = f'"{pinned}" -m omnigraph merge-driver %O %A %B'
     else:
         driver = "omnigraph merge-driver %O %A %B"
@@ -584,7 +627,6 @@ def _register_merge_driver(root: Path) -> str:
         content = attrs.read_text(encoding="utf-8")
         if _has_merge_attr(content):
             return f"already registered ({line})"
-        # Nunca destrua outras entradas; preservar uma nova linha final.
         if content and not content.endswith("\n"):
             content += "\n"
         attrs.write_text(content + line + "\n", encoding="utf-8", newline="\n")
@@ -598,7 +640,6 @@ def _unregister_merge_driver(root: Path) -> str:
     import subprocess as _sp
     for key in ("merge.omnigraph.name", "merge.omnigraph.driver"):
         try:
-            # --unset sai diferente de zero se a chave estiver ausente; tudo bem.
             _sp.run(
                 ["git", "-C", str(root), "config", "--unset", key],
                 capture_output=True, text=True,
@@ -616,7 +657,6 @@ def _unregister_merge_driver(root: Path) -> str:
     if kept == content.splitlines():
         return "gitattributes entry not found - nothing to remove."
     if kept:
-        # Outras entradas sobreviveram; o arquivo permanece.
         attrs.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
         return "removed from .gitattributes (other entries preserved)"
     attrs.unlink()
@@ -666,20 +706,19 @@ def install(path: Path = Path(".")) -> str:
 
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
 
-    # Fixe o intérprete atual para que o gancho funcione mesmo quando o omnigraph
-    # o iniciador não está no PATH no momento do disparo do git (ferramenta uv/isolamento pipx).
-    # sys.executable é o Python executando este comando de instalação, então é
-    # sempre o intérprete correto de venv isolado.  O espaço reservado é substituído
-    # em ambos os roteiros antes de escrever; a lista de permissões em faixas _pinned_python()
-    # quaisquer caracteres inseguros em um caminho do shell (resultado vazio -> o teste fixado é
-    # ignorado) e a verificação de importação captura um caminho fixado obsoleto para que seja seguro
-    # passa para a detecção dinâmica.
-    pinned = _pinned_python()
-    hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned)
-    checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned)
+    cfg = _load_omnigraphrc(root)
+    viz_limit = cfg.get("viz_node_limit")
+    if viz_limit is not None:
+        viz_export = f'export OMNIGRAPH_VIZ_NODE_LIMIT="${{OMNIGRAPH_VIZ_NODE_LIMIT:-{viz_limit}}}"\n'
+    else:
+        viz_export = ""
 
-    commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER)
-    checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER)
+    pinned = _pinned_python()
+    hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+    checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+
+    commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER, _HOOK_MARKER_END)
+    checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
     merge_msg = _register_merge_driver(root)
 
     return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
@@ -705,14 +744,39 @@ def status(path: Path = Path(".")) -> str:
     if root is None:
         return "Not in a git repository."
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
+    try:
+        cfg = _load_omnigraphrc(root)
+    except ValueError as exc:
+        cfg = {}
+        print(f"  warning: {exc}")
+    cfg_limit = cfg.get("viz_node_limit")
 
     def _check(name: str, marker: str) -> str:
         p = hooks_dir / name
         if not p.exists():
             return "not installed"
-        return "installed" if marker in p.read_text(encoding="utf-8") else "not installed (hook exists but omnigraph not found)"
+        text = p.read_text(encoding="utf-8")
+        if marker not in text:
+            return "not installed (hook exists but omnigraph not found)"
+        if cfg_limit is not None:
+            m = re.search(
+                r'export OMNIGRAPH_VIZ_NODE_LIMIT="(?:\$\{OMNIGRAPH_VIZ_NODE_LIMIT:-(\d+)\}|(\d+))"',
+                text,
+            )
+            installed_limit = int(m.group(1) or m.group(2)) if m else None
+            if installed_limit != cfg_limit:
+                return (
+                    f"installed (out of date: hook has limit "
+                    f"{installed_limit if installed_limit is not None else 'unset'}, "
+                    f".omnigraphrc has {cfg_limit})"
+                )
+        return "installed"
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)
     merge = _merge_driver_status(root)
-    return f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
+
+    res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
+    if cfg_limit is not None:
+        res += f"\nviz node limit: {cfg_limit}"
+    return res

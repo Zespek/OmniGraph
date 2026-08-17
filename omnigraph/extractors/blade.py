@@ -19,7 +19,6 @@ def extract_blade(path: Path) -> dict:
               "source_file": str(path), "source_location": None}]
     edges = []
 
-    # @include('path.to.partial') ou @include("path.to.partial")
     for m in re.finditer(r"@include\(['\"]([^'\"]+)['\"]", src):
         tgt = m.group(1).replace(".", "/")
         tgt_nid = _make_id(tgt)
@@ -30,7 +29,6 @@ def extract_blade(path: Path) -> dict:
                       "confidence": "EXTRACTED", "confidence_score": 1.0,
                       "source_file": str(path), "source_location": None, "weight": 1.0})
 
-    # <livewire:component.name /> ou <livewire:component.name>
     for m in re.finditer(r"<livewire:([\w.\-]+)", src):
         tgt_nid = _make_id(m.group(1))
         if tgt_nid not in {n["id"] for n in nodes}:
@@ -40,7 +38,6 @@ def extract_blade(path: Path) -> dict:
                       "confidence": "EXTRACTED", "confidence_score": 1.0,
                       "source_file": str(path), "source_location": None, "weight": 1.0})
 
-    # wire:click="methodName"
     for m in re.finditer(r'wire:click=["\']([^"\']+)["\']', src):
         tgt_nid = _make_id(m.group(1))
         if tgt_nid not in {n["id"] for n in nodes}:

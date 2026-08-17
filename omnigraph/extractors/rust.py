@@ -232,9 +232,6 @@ def extract_rust(path: Path) -> dict:
                                 if tgt != item_nid:
                                     add_edge(item_nid, tgt, "references",
                                              field.start_point[0] + 1, context=ctx)
-                    # Estruturas de tupla (`struct Wrapper(pub Logger, Config);`) aninham seus
-                    # positional field types directly under ordered_field_declaration_list
-                    # sem wrapper field_declaration - a mesma forma tratada para tupla
                     # variantes enum abaixo. Sem esta ramificação, essas referências de tipo de campo
                     # são silenciosamente descartados.
                     for c in node.children:
@@ -254,9 +251,6 @@ def extract_rust(path: Path) -> dict:
                                 if tgt != item_nid:
                                     add_edge(item_nid, tgt, "references", fline, context=ctx)
                 if t == "enum_item":
-                    # Variant payload types nest under enum_variant_list ->
-                    # enum_variant -> ordered_field_declaration_list (tuple variant,
-                    # `Click(Logger)`) | field_declaration_list (struct variant,
                     # `Redimensionar { tamanho: Dim }`). Nenhum dos dois foi percorrido, então cada
                     # a referência do tipo enum-variant foi descartada silenciosamente.
                     _TYPE_NODES = ("type_identifier", "generic_type",
@@ -363,7 +357,6 @@ def extract_rust(path: Path) -> dict:
                         callee_name = _read_text(field, source)
                 elif func_node.type == "scoped_identifier":
                     # Type::method() — ainda permite correspondência EXTRACTED no arquivo, mas
-                    # skip cross-file resolution: bare last-segment lookup ignores
                     # limites da caixa e produz arestas INFERIDAS espúrias.
                     is_scoped_call = True
                     name = func_node.child_by_field_name("name")

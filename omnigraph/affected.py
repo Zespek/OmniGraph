@@ -15,11 +15,6 @@ DEFAULT_AFFECTED_RELATIONS = (
     "references",
     "imports",
     "imports_from",
-    # `import('…')` — emitted by the Svelte/Astro/Vue rescue passes and (since
-    #) by plain JS/TS too. Omitting it made every dynamic import
-    # invisible to blast-radius traversal even where the edge WAS in the
-    # graph, and dynamic import is precisely how codebases break require
-    # cycles, so the missing edges sat under the most load-bearing modules.
     "dynamic_import",
     "re_exports",
     "inherits",
@@ -37,9 +32,6 @@ class AffectedHit:
     node_id: str
     depth: int
     via_relation: str
-    # The traversed edge's location — the actual call/import/reference SITE in
-    # this node's file, not the node's own definition line (#BUG1). Defaults keep
-    # existing constructors/tests working; None falls back to the node's def line.
     via_file: "str | None" = None
     via_location: "str | None" = None
 
@@ -65,6 +57,36 @@ def _bare_name(label: str) -> str:
 
 def _normalize_label(label: str) -> str:
     return unicodedata.normalize("NFC", label).casefold()
+
+
+def _as_repo_relative(query: str, root: Path | None = None) -> str:
+    """Repo-relative form of a path query, for matching a stored `source_file`.
+
+    The graph stores repo-relative paths, so `./src/x.py` and
+    `/abs/repo/src/x.py` name the same file as `src/x.py` and yet matched
+    nothing. `affected` then printed an empty list and exited 0 — a blast-radius
+    tool answering "nothing depends on this" about a file with sixteen
+    dependents, and indistinguishable from a genuine zero or a typo.
+
+    An absolute path is anchored to `root` when given — the repo root derived
+    from the graph's own location — so a seed resolves regardless of the caller's
+    working directory (#2706: an absolute-path seed previously only matched when
+    cwd happened to be the analysed repo root, which no editor or script can
+    guarantee). `root` falls back to the current directory to preserve the prior
+    behaviour when a caller has no graph location to derive it from.
+
+    Non-path queries pass through unchanged: `Path("myFunc()").as_posix()` is
+    `"myFunc()"`, so label resolution is untouched. An absolute path rooted
+    outside `root` is left alone — no basename guessing.
+    """
+    path = Path(query)
+    if path.is_absolute():
+        anchor = root if root is not None else Path.cwd()
+        try:
+            return path.relative_to(anchor).as_posix()
+        except ValueError:
+            return query
+    return path.as_posix()
 
 
 def _prefer_file_node(
@@ -102,7 +124,7 @@ def _prefer_file_node(
     return None
 
 
-def resolve_seed(graph: nx.Graph, query: str) -> str | None:
+def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str | None:
     # Um separador de caminho final não deve alterar uma correspondência de arquivo de origem - serviço
     # _find_node tokeniza o caminho (que o elimina), então retire-o aqui para obter paridade
     # (caso contrário, `afetado "src/x.ts/"` retornou None enquanto `explain` resolveu).
@@ -128,15 +150,18 @@ def resolve_seed(graph: nx.Graph, query: str) -> str | None:
     ]
     if len(bare_name_matches) == 1:
         return bare_name_matches[0]
+    query_path = _normalize_label(_as_repo_relative(query, root))
     exact_source_matches = [
         str(node_id)
         for node_id, data in graph.nodes(data=True)
-        if _normalize_label(str(data.get("source_file", ""))) == query_lower
+        if _normalize_label(str(data.get("source_file", ""))) in (query_lower, query_path)
     ]
     if len(exact_source_matches) == 1:
         return exact_source_matches[0]
     if exact_source_matches:
-        preferred_file_node = _prefer_file_node(graph, exact_source_matches, query)
+        preferred_file_node = _prefer_file_node(
+            graph, exact_source_matches, _as_repo_relative(query, root)
+        )
         if preferred_file_node is not None:
             return preferred_file_node
     contains_matches = [
@@ -202,10 +227,6 @@ def affected_nodes(
             if source in seen:
                 continue
             seen.add(source)
-            # Carry the matched edge's location (taken from the SAME edge dict
-            # whose relation passed the filter, so relation and location stay
-            # consistent) — that is the call/import/reference site in `source`'s
-            # own file, which is where the user should click (#BUG1).
             hit = AffectedHit(
                 source, current_depth + 1, relation,
                 via_file=str(data.get("source_file") or "") or None,
@@ -223,9 +244,10 @@ def format_affected(
     *,
     relations: Iterable[str] = DEFAULT_AFFECTED_RELATIONS,
     depth: int = 2,
+    root: Path | None = None,
 ) -> str:
     relation_list = tuple(relations)
-    seed = resolve_seed(graph, query)
+    seed = resolve_seed(graph, query, root)
     if seed is None:
         return f"No unique node match for {query}"
 
@@ -242,11 +264,9 @@ def format_affected(
     for hit in hits:
         data = graph.nodes[hit.node_id]
         if hit.via_location:
-            # The relation SITE in this node's file (call/import/reference line),
-            # labeled by [via_relation] so it's never mistaken for a def line.
             location = f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
         else:
-            location = _format_location(data)  # honest fallback: the node's own def line
+            location = _format_location(data)
         lines.append(
             f"- {_node_label(graph, hit.node_id)} [{hit.via_relation}] {location}"
         )
@@ -265,7 +285,6 @@ def load_graph(path: Path) -> nx.Graph:
             "Re-run 'omnigraph extract' to regenerate it."
         ) from exc
     # A força direcionada para que a direção do chamador → chamador armazenado sobreviva à viagem de ida e volta;
-    # espelha serve.py e __main__.py.
     raw = {**raw, "directed": True}
     # Normalize a chave de aresta: a saída `extract` do omnigraph usa "arestas" enquanto
     # O padrão node_link_data do networkx é "links". Sem isso, uma chave de arestas

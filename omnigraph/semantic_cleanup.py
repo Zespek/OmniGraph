@@ -1,13 +1,4 @@
-# Semantic fragment sanitizer — converts sentence-like rationale nodes into
 # atributos em nós relacionados e remove valores file_type inválidos.
-#
-# Called from the skill merge path (see skill-devin.md) and from the in-process
-# `omnigraph merge-chunks` command — both ingest untrusted agent-written chunk
-# JSON, and validate_semantic_fragment() rejects malformed/oversized payloads and
-# crafted node/edge IDs before they touch the graph. The primary build/load paths
-# (build_from_json, load_graph_json) deliberately do NOT run this: they must keep
-# loading valid pre-existing graphs whose AST node IDs predate the stricter
-# semantic-ID charset.
 from __future__ import annotations
 
 import json
@@ -25,7 +16,6 @@ _RATIONALE_MIN_WORDS = 8
 # validate_semantic_fragment(). Problema nº 825: normalização JSON retornada para
 # Os agentes OpenCode e Codex requerem um limite de aplicação do Python para que um
 # a resposta do agente malicioso ou descontrolado não pode esgotar a memória ou escapar do
-# omnigraph-out chunk directory via crafted node/edge IDs.
 MAX_SEMANTIC_FRAGMENT_BYTES = 25 * 1024 * 1024
 MAX_SEMANTIC_FRAGMENT_NODES = 10_000
 MAX_SEMANTIC_FRAGMENT_EDGES = 100_000
@@ -33,11 +23,6 @@ MAX_SEMANTIC_FRAGMENT_HYPEREDGES = 10_000
 MAX_SEMANTIC_HYPEREDGE_NODES = 256
 MAX_SEMANTIC_ID_LENGTH = 256
 VALID_SEMANTIC_FILE_TYPES = frozenset({"code", "document", "paper", "image", "rationale", "concept"})
-# Unicode word characters are allowed: build's normalize_id preserves CJK /
-# Cyrillic / accented-Latin identifiers, so an ASCII-only gate would reject valid
-# ids that the loader accepts. The explicit path-separator / ".." check in
-# _validate_semantic_id still blocks directory escape; "/", "\\", spaces,
-# "@", "#" etc. are not \w and remain rejected.
 _SEMANTIC_ID_RE = re.compile(r"^[\w.:-]+$")
 
 
@@ -81,12 +66,6 @@ def validate_semantic_fragment(fragment: object) -> list[str]:
             errors.append(f"nodes[{i}] must be an object")
             continue
         _validate_semantic_id(errors, f"nodes[{i}].id", node.get("id"))
-        # file_type is intentionally NOT rejected here. It carries no security
-        # risk (it can't exhaust memory or escape a directory), and
-        # build_from_json already coerces every value via _FILE_TYPE_SYNONYMS
-        # (unknown -> "concept"). Rejecting a whole chunk over a synonym
-        # like "markdown"/"tool"/"framework" that the loader would happily map is
-        # pure data loss, so leave file_type normalization to build.
 
     for i, edge in enumerate(edges):
         if not isinstance(edge, dict):
@@ -110,7 +89,6 @@ def validate_semantic_fragment(fragment: object) -> list[str]:
             if not isinstance(he, dict):
                 errors.append(f"hyperedges[{i}] must be an object")
                 continue
-            # Dobre as chaves dos membros do alias (members/node_ids) em `nodes` para
             # uma hiperedge com chave de alias não é rejeitada aqui para "os nós devem ser um
             # list" antes mesmo de atingir a normalização do build.
             _normalize_hyperedge_members(he)
@@ -196,7 +174,6 @@ def sanitize_semantic_fragment(fragment: dict) -> dict:
     edges: list[dict] = fragment.get("edges", [])
     hyperedges: list[dict] = fragment.get("hyperedges", []) or []
 
-    # ---- build lookup maps --------------------------------------------------
     node_by_id: dict[str, dict] = {}
     for n in nodes:
         nid = n.get("id", "")
@@ -239,11 +216,9 @@ def sanitize_semantic_fragment(fragment: dict) -> dict:
             continue
         keep_nodes.append(n)
 
-    # ---- pass 2: convert sentence-nodes → rationale attributes --------------
     # Apenas as arestas `rationale_for` propagam o texto de justificativa. Outras saídas
     # arestas (por exemplo, referências, conceitualmente relacionadas a) NÃO são usadas como
     # caminhos de propagação de atributos - que corromperiam nós não relacionados por
-    # anexar justificativa destinada a um alvo diferente.
     rationale_attrs: dict[str, list[str]] = {}
     for rn in rationale_candidates:
         rn_id = rn.get("id", "")
@@ -262,7 +237,6 @@ def sanitize_semantic_fragment(fragment: dict) -> dict:
         if target_id in node_by_id and target_id not in remove_ids:
             _append_rationale_attr(node_by_id[target_id], texts)
 
-    # ---- pass 3: strip edges referencing removed nodes ----------------------
     keep_edges: list[dict] = []
     for e in edges:
         src = e.get("source", "")
@@ -278,7 +252,6 @@ def sanitize_semantic_fragment(fragment: dict) -> dict:
     for he in hyperedges:
         if not isinstance(he, dict):
             continue
-        # Dobre as chaves dos membros do alias (members/node_ids) em `nodes` para que um
         # hiperedge com chave de alias não é colocado silenciosamente abaixo por falta
         # A lista de `nós` antes da construção pode canonizá-la.
         _normalize_hyperedge_members(he)
@@ -287,7 +260,6 @@ def sanitize_semantic_fragment(fragment: dict) -> dict:
             continue
         filtered = [ref for ref in he_nodes if isinstance(ref, str) and ref in surviving_ids]
         if len(filtered) < 2:
-            # Uma hiperarestas precisa de pelo menos dois membros sobreviventes para ser significativa.
             continue
         if len(filtered) != len(he_nodes):
             he = dict(he)

@@ -101,13 +101,11 @@ def extract_julia(path: Path) -> dict:
             return
         if t == "call_expression" and body_node.children:
             callee = body_node.children[0]
-            # Direct call: foo(...)
             if callee.type == "identifier":
                 callee_name = _read_text(callee, source)
                 target_nid = _make_id(stem, callee_name)
                 add_edge(func_nid, target_nid, "calls", body_node.start_point[0] + 1,
                          confidence="EXTRACTED", context="call")
-            # Method call: obj.method(...)
             elif callee.type == "field_expression" and len(callee.children) >= 3:
                 method_node = callee.children[-1]
                 method_name = _read_text(method_node, source)
@@ -120,7 +118,6 @@ def extract_julia(path: Path) -> dict:
     def walk(node, scope_nid: str) -> None:
         t = node.type
 
-        # Module
         if t == "module_definition":
             name_node = next((c for c in node.children if c.type == "identifier"), None)
             if name_node:
@@ -133,7 +130,6 @@ def extract_julia(path: Path) -> dict:
                     walk(child, mod_nid)
             return
 
-        # Struct (struct / mutable struct - ambos mapeiam para struct_definition em tree-sitter-julia)
         if t == "struct_definition":
             # type_head pode conter: identificador (simples) ou expressão_binária (Foo <: Bar)
             type_head = next((c for c in node.children if c.type == "type_head"), None)
@@ -173,9 +169,7 @@ def extract_julia(path: Path) -> dict:
                             struct_nid, type_nid, "field", str_path, field_line))
             return
 
-        # Abstract type
         if t == "abstract_definition":
-            # type_head > identifier
             type_head = next((c for c in node.children if c.type == "type_head"), None)
             if type_head:
                 name_node = next((c for c in type_head.children if c.type == "identifier"), None)
@@ -187,7 +181,6 @@ def extract_julia(path: Path) -> dict:
                     add_edge(scope_nid, abs_nid, "defines", line)
             return
 
-        # Function: function foo(...) ... end
         if t == "function_definition":
             sig_node = next((c for c in node.children if c.type == "signature"), None)
             if sig_node:
@@ -200,7 +193,6 @@ def extract_julia(path: Path) -> dict:
                     function_bodies.append((func_nid, node))
             return
 
-        # Short function: foo(x) = expr
         if t == "assignment":
             lhs = node.children[0] if node.children else None
             if lhs and lhs.type == "call_expression" and lhs.children:
@@ -217,15 +209,12 @@ def extract_julia(path: Path) -> dict:
                         function_bodies.append((func_nid, rhs))
             return
 
-        # Using / Import
         if t in ("using_statement", "import_statement"):
             line = node.start_point[0] + 1
 
             def _julia_mod_name(n):
-                # identificador (`Foo`), identificador de escopo (`Base.Threads`) ou
                 # import_path (relativo `..Sibling`) -> o nome do módulo. Apenas nu
                 # identificadores foram tratados, portanto, importações qualificadas/relativas - e o
-                # pacote com escopo definido de um `selected_import` - foram descartados silenciosamente.
                 if n.type == "import_path":
                     ids = [c for c in n.children if c.type == "identifier"]
                     return _read_text(ids[-1], source) if ids else None
@@ -244,7 +233,6 @@ def extract_julia(path: Path) -> dict:
                 if child.type in ("identifier", "scoped_identifier", "import_path"):
                     _emit_import(_julia_mod_name(child))
                 elif child.type == "selected_import":
-                    # `import Base.Threads: nthreads` — o pacote (primeiro nomeado
                     # filho) pode ser um identificador de escopo/caminho de importação.
                     pkg = next(
                         (c for c in child.children
@@ -264,7 +252,6 @@ def extract_julia(path: Path) -> dict:
         # Para nós function_definition, caminhe os filhos diretamente para evitar
         # a verificação de limite retornando antecipadamente no próprio nó de nível superior.
         # Ignore o filho "assinatura" - ele contém a própria call_expression da função
-        # o que criaria um auto-loop.
         if body_node.type == "function_definition":
             for child in body_node.children:
                 if child.type != "signature":

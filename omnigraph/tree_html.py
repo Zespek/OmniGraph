@@ -43,7 +43,6 @@ from typing import Any, Dict, List, Optional
 DEFAULT_MAX_CHILDREN = 200
 
 
-# ── Tree builder (filesystem hierarchy → JSON) ──────────────────
 
 
 def _common_root(paths: List[str]) -> str:
@@ -96,7 +95,6 @@ def build_tree(
     for n in file_nodes:
         by_file[n["source_file"]].append(n)
 
-    # Build dir tree.
     dir_index: Dict[str, Dict[str, Any]] = {}
     label_root = project_label or root_path.name or root or "/"
     root_node: Dict[str, Any] = {
@@ -132,8 +130,6 @@ def build_tree(
         sym_children: List[Dict[str, Any]] = []
         for n in syms:
             label = n.get("label", n.get("id", "?"))
-            # Skip the redundant file-name node omnigraph emits (bare basename or
-            # the directory-qualified form from the disambiguation pass).
             if n.get("file_type") == "code":
                 from omnigraph.build import _is_file_node_label
                 if _is_file_node_label(label, src_file):
@@ -160,10 +156,6 @@ def build_tree(
         }
         parent_dir["children"].append(file_node)
 
-    # An explicit --root that matches NOTHING would silently flatten the whole
-    # hierarchy (every file attaches to the root); the common case is passing an
-    # absolute checkout path while source_file is stored repo-relative.
-    # A PARTIAL match stays fine — files outside the root legitimately attach flat.
     if explicit_root and matched_files == 0:
         sample = min(by_file)
         raise ValueError(
@@ -190,10 +182,8 @@ def build_tree(
     return root_node
 
 
-# ── HTML emitter (single-data-blob substitution) ──────────────────
 
 
-# Emitimos uma string F do Python com colchetes CSS/JS literais escapados como {{ }}.
 _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -569,7 +559,6 @@ def emit_html(
     svg_height: int = 8000,
 ) -> str:
     # Escape de sequências </script> para que o JSON incorporado não possa sair do
-    # tag <script> e valores de escape HTML que chegam a <title>/<h1>.
     data_json = json.dumps(tree, ensure_ascii=True, separators=(",", ":")).replace("</", "<\\/")
     return _HTML_TEMPLATE.format(
         title=_html.escape(title),
@@ -587,7 +576,6 @@ def write_tree_html(
     root: Optional[str] = None,
     max_children: int = DEFAULT_MAX_CHILDREN,
     project_label: Optional[str] = None,
-    # mantido para compatibilidade CLI com a assinatura mais antiga; ignorado agora
     top_k_edges: int = 0,
 ) -> Path:
     from omnigraph.security import check_graph_file_size_cap

@@ -9,9 +9,7 @@ from omnigraph.ids import make_id
 # construtores ou funções de coerção (por exemplo, String(x), Number(x), Boolean(x)).
 # Sem esse filtro, eles se tornam god node, acumulando arestas espúrias de
 # cada site de chamada. Filtro aplicado na resolução do mesmo arquivo e entre arquivos.
-# See issue.
 _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
-    # JavaScript / TypeScript ECMAScript built-ins
     "String", "Number", "Boolean", "Object", "Array", "Symbol", "BigInt",
     "Date", "RegExp", "Error", "TypeError", "RangeError", "SyntaxError",
     "ReferenceError", "EvalError", "URIError",
@@ -19,7 +17,6 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "Reflect", "Proxy", "Intl",
     "parseInt", "parseFloat", "isNaN", "isFinite",
     "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI",
-    # Browser / Node common globals
     "URL", "URLSearchParams", "FormData", "Blob", "File",
     "Headers", "Request", "Response", "AbortController", "AbortSignal",
     "TextEncoder", "TextDecoder", "console",
@@ -29,10 +26,6 @@ _LANGUAGE_BUILTIN_GLOBALS: frozenset[str] = frozenset({
     "print", "open", "isinstance", "type", "super", "sorted", "reversed",
     "any", "all", "abs", "round", "next", "iter", "hash", "id", "repr",
     "callable", "getattr", "setattr", "hasattr", "delattr", "vars", "dir",
-    # Swift standard library / Foundation / SwiftUI. Value-type
-    # initializers (Data(x), Int(x), UUID()) and protocol conformance targets
-    # appear from virtually every file of a Swift codebase, exactly like the
-    # ECMAScript constructors above. String/Date/URL/Error are already listed.
     "Int", "Int8", "Int16", "Int32", "Int64",
     "UInt", "UInt8", "UInt16", "UInt32", "UInt64",
     "Double", "Float", "Bool", "Character",

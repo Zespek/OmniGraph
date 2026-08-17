@@ -78,7 +78,7 @@ def _best_cut(text: str, start: int, end: int) -> int:
         idx = window.rfind(sep)
         if idx > 0:  # um limite estritamente dentro da janela (fatia anterior não vazia)
             if sep == "\n#":
-                return start + idx + 1  # mantenha a nova linha com a fatia anterior
+                return start + idx + 1
             return start + idx + len(sep)
     return end
 
@@ -97,7 +97,7 @@ def slice_boundaries(text: str, max_chars: int) -> list[tuple[int, int]]:
     while pos < n:
         hard = min(pos + max_chars, n)
         end = _best_cut(text, pos, hard) if hard < n else n
-        if end <= pos:  # defensive: never stall
+        if end <= pos:
             end = hard
         bounds.append((pos, end))
         pos = end

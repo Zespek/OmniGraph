@@ -41,18 +41,12 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
     to its target (rather than replacing the link with a regular file), keeping
     the shared-output/worktree symlink setups this module documents working.
     """
-    # Resolve symlinks so the temp lands on the target's filesystem (same-fs
-    # atomic rename) and the replace writes through the link, not over it.
     real = Path(os.path.realpath(str(path)))
     real.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(real.parent), prefix=f".{real.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             write_fn(f)
-        # mkstemp creates the temp file 0600; match the destination's existing
-        # mode (or the umask default for a new file) so an atomic replace never
-        # silently tightens a previously group/world-readable output to
-        # owner-only. Best-effort — a chmod failure must not fail the write.
         try:
             mode = stat.S_IMODE(os.stat(real).st_mode)
         except OSError:
@@ -66,9 +60,6 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
         try:
             os.replace(tmp, str(real))
         except PermissionError:
-            # Windows: os.replace fails (WinError 5/32) when the destination is
-            # briefly locked by another handle (antivirus, an open reader). Fall
-            # back to copy-then-delete, matching omnigraph.cache's atomic writer.
             import shutil
             shutil.copy2(tmp, str(real))
             os.unlink(tmp)
@@ -76,7 +67,11 @@ def _atomic_replace(path: "str | Path", write_fn) -> None:
         try:
             os.unlink(tmp)
         except OSError:
-            pass
+            try:
+                os.chmod(tmp, stat.S_IWRITE)
+                os.unlink(tmp)
+            except OSError:
+                pass
         raise
 
 
@@ -100,12 +95,6 @@ _TEST_DIR_SEGMENTS = frozenset({"tests", "test", "spec", "specs", "__tests__"})
 
 # Padrões de nome de arquivo que marcam um arquivo como um teste, comparados com o *nome do arquivo*
 # apenas (sem distinção entre maiúsculas e minúsculas). Estas são convenções entre ecossistemas:
-#   test_*.py            pytest / unittest
-#   *_test.*             Go / Python / Rust
-#   *.test.*             JS/TS (jest, vitest)
-#   *.spec.* / *_spec.*  Jasmine / RSpec / Karma
-#   *.Tests.ps1          PowerShell Pester
-#   *Test.java / *Tests.cs (case-sensitive convention, handled below)
 _TEST_FILENAME_PATTERNS = (
     re.compile(r"^test_.*", re.IGNORECASE),
     re.compile(r".*_test\..+$", re.IGNORECASE),
@@ -113,7 +102,6 @@ _TEST_FILENAME_PATTERNS = (
     re.compile(r".*\.spec\..+$", re.IGNORECASE),
     re.compile(r".*_spec\..+$", re.IGNORECASE),
     re.compile(r".*\.tests\.ps1$", re.IGNORECASE),
-    # Java `FooTest.java` / `FooTests.java`, estilo C# `FooTests.cs`. Exigir um
     # `Test`/`Tests` em letras maiúsculas imediatamente antes da extensão tão simples
     # palavras como "greatest"/"contest.cs" não correspondem.
     re.compile(r".*Test\.java$"),
@@ -136,14 +124,12 @@ def _is_test_path(path: str) -> bool:
     """
     if not path:
         return False
-    # Aceite os separadores POSIX e Windows, independentemente do sistema operacional host, para que o
     # o classificador é estável nos caminhos mistos que fluem pela extração.
     norm = str(path).replace("\\", "/")
     pure = PurePosixPath(norm)
     segments = list(pure.parts)
     # Retire um segmento de unidade/âncora principal (por exemplo, "C:/") que PureWindowsPath
     # viria à tona; com a troca manual "\\"->"/" acima PurePosixPath mantém
-    # o corpo do caminho intacto, mas proteja-se contra uma unidade do Windows incorporada como um
     # segmento por precaução.
     for segment in segments:
         if segment.lower() in _TEST_DIR_SEGMENTS:
@@ -177,15 +163,13 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
     call_norm = str(call_site_file).replace("\\", "/")
     call_dir = PurePosixPath(call_norm).parent
 
-    # Tier 1: exact same file.
     same_file = [cid for cid, f in candidate_files.items()
                  if str(f).replace("\\", "/") == call_norm]
     if len(same_file) == 1:
         return same_file[0]
     if len(same_file) > 1:
-        return None  # genuinely ambiguous within one file; bail
+        return None
 
-    # Tier 2: same directory.
     same_dir = [cid for cid, f in candidate_files.items()
                 if PurePosixPath(str(f).replace("\\", "/")).parent == call_dir]
     if len(same_dir) == 1:
@@ -193,7 +177,6 @@ def _path_proximity_winner(call_site_file: str, candidate_files: dict[str, str])
     if len(same_dir) > 1:
         return None
 
-    # Camada 3: prefixo de caminho comum mais longo, calculado sobre segmentos de caminho. O
     # o vencedor deve ser um máximo estrito e único, caso contrário, nós desistiremos (guarda).
     call_parts = call_dir.parts
 
@@ -265,7 +248,6 @@ def disambiguate_ambiguous_candidates(
         else:
             survivors = nontest_cands or candidates
     else:
-        # Non-test call site: drop test mocks/stubs entirely.
         survivors = nontest_cands
 
     if len(survivors) == 1:
@@ -273,14 +255,11 @@ def disambiguate_ambiguous_candidates(
     if not survivors:
         return None
 
-    # Passo 2: proximidade do caminho sobre os sobreviventes.
     return _path_proximity_winner(
         call_site_file,
         {c: candidate_files.get(c, "") for c in survivors},
     )
 
-# Bare directory name even when OMNIGRAPH_OUT is an absolute path. Used by path
-# guards that walk parents looking for the output directory by name.
 OMNIGRAPH_OUT_NAME = os.path.basename(os.path.normpath(OMNIGRAPH_OUT))
 
 
@@ -338,6 +317,44 @@ def is_absolute_any_platform(p: "str | Path | None") -> bool:
     return PurePosixPath(s).is_absolute() or PureWindowsPath(s).is_absolute()
 
 
+_WINDOWS_MAX_PATH = 260
+
+_MIN_STEM_BUDGET = 16
+
+
+def stem_filename_budget(output_dir: "str | Path", *, reserve: int = 0, limit: int = 200) -> int:
+    """Largest filename stem an exporter may write directly into ``output_dir``.
+
+    Exporters cap note/article filenames so they stay under the filesystem's
+    per-component limit (conventionally NAME_MAX=255 bytes, hence the 200
+    default). That is the right question on POSIX and the wrong one on Windows,
+    where the constraint is on the WHOLE path, not the component: a 200-char
+    stem under a perfectly ordinary vault directory such as
+    ``C:\\Users\\me\\projects\\svc\\omnigraph-out\\obsidian`` exceeds MAX_PATH and
+    the write dies with ``FileNotFoundError``, aborting the export mid-vault.
+
+    Returns ``limit`` unchanged on POSIX, so existing output is byte-for-byte
+    stable there. On Windows it returns the smaller of ``limit`` and whatever
+    still fits inside MAX_PATH once ``output_dir``, the separator, ``reserve``
+    (room for caller-added prefixes/collision suffixes) and the ``.md``
+    extension are accounted for.
+
+    The budget is a CHARACTER count, but callers that cap UTF-8 BYTES may pass
+    it straight through: a string's UTF-8 length is never below its character
+    length, so a byte-capped stem always satisfies the character ceiling too.
+    """
+    if os.name != "nt":
+        return limit
+    try:
+        base = os.path.abspath(str(output_dir))
+    except (OSError, ValueError):
+        return limit
+    if base.startswith("\\\\?\\"):
+        return limit
+    budget = (_WINDOWS_MAX_PATH - 1) - len(base) - len(os.sep) - reserve - len(".md")
+    return max(_MIN_STEM_BUDGET, min(limit, budget))
+
+
 def nfc(s: str) -> str:
     """NFC-normalize a path string.
 
@@ -368,12 +385,12 @@ def load_node_link_graph(path_or_data):
     data = path_or_data
     if not isinstance(data, dict):
         p = Path(data)
-        from omnigraph.security import check_graph_file_size_cap  # lazy: security imports paths
+        from omnigraph.security import check_graph_file_size_cap
         check_graph_file_size_cap(p)
         data = json.loads(p.read_text(encoding="utf-8"))
     if isinstance(data, dict) and "links" not in data and "edges" in data:
         data = dict(data, links=data["edges"])
     try:
         return json_graph.node_link_graph(data, edges="links")
-    except TypeError:  # networkx too old for the edges kwarg; default is "links"
+    except TypeError:
         return json_graph.node_link_graph(data)

@@ -32,8 +32,13 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
     try:
         import tree_sitter_sql as tssql
         from tree_sitter import Language, Parser
-    except ImportError:
-        return {"nodes": [], "edges": [], "error": "tree_sitter_sql not installed. Run: pip install tree-sitter-sql"}
+    except ImportError as e:
+        import importlib.util
+        if importlib.util.find_spec("tree_sitter_sql") is None:
+            return {"nodes": [], "edges": [],
+                    "error": "tree_sitter_sql not installed. Run: pip install tree-sitter-sql"}
+        return {"nodes": [], "edges": [],
+                "error": f"tree_sitter_sql is installed but failed to load: {e}"}
 
     try:
         language = Language(tssql.language())
@@ -114,14 +119,12 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 nid = _make_id(stem, name)
                 _add_node(nid, name, line)
                 table_nids[_norm_ident(name)] = nid
-                # Foreign key REFERENCES
                 for col in node.children:
                     if col.type == "column_definitions":
                         has_error = any(cd.type == "ERROR" for cd in col.children)
                         seen_refs: set[str] = set()
                         for cd in col.children:
                             if cd.type == "column_definition":
-                                # Inline column-level REFERENCES
                                 ref_name: str | None = None
                                 found_ref = False
                                 for cc in cd.children:
@@ -135,7 +138,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                                     _add_edge(nid, ref_nid, "references", line)
                                     seen_refs.add(_norm_ident(ref_name))
                             elif cd.type == "constraints":
-                                # Table-level FOREIGN KEY ... REFERENCES ... constraints
                                 for constraint in cd.children:
                                     if constraint.type != "constraint":
                                         continue
@@ -154,7 +156,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                         if has_error:
                             # Sintaxe específica do dialeto (por exemplo, Firebird COMPUTED BY) causa ERRO
                             # nós que fazem o analisador eliminar o bloco de restrições final.
-                            # Varredura Regex do texto bruto column_definitions como substituto.
                             col_text = _read(col)
                             for rm in re.finditer(r"\bREFERENCES\s+([\w$]+)", col_text, re.IGNORECASE):
                                 ref_name = rm.group(1)
@@ -191,8 +192,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
             if name:
                 src_nid = table_nids.get(_norm_ident(name))
                 if not src_nid:
-                    # Subject table not defined in this file: sourceless stub,
-                    # not a sourced wrong-stem node.
                     src_nid = _ref_stub(name)
                     table_nids[_norm_ident(name)] = src_nid
                 for child in node.children:
@@ -235,20 +234,11 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     _add_edge(trig_nid, tbl_nid, "triggers", line)
 
         elif t == "ERROR":
-            # tree-sitter-sql cannot parse PL/pgSQL CREATE FUNCTION/PROCEDURE
             # corpos (parâmetros OUT/INOUT, cotações de dólar marcadas, PERFORM, :=) e
             # em vez disso, emite um nó ERROR, descartando silenciosamente o objeto.
-            # Varredura Regex do texto bruto como substituto, espelhando o
-            # fb_proc_or_trigger recovery below. One ERROR blob can swallow
             # várias instruções, então procure por cada CREATE nela. Nós deliberadamente
             # não verifique o corpo em busca de referências FROM/JOIN: loop PL/pgSQL
             # variáveis ​​​​e locais produziriam alvos reads_from indesejados.
-            #
-            # Each name part is either a bare identifier or a double-quoted
-            # (delimited) one, so schema-qualified generated DDL such as
-            # CREATE OR REPLACE FUNCTION "public"."fn"(...) is recovered too.
-            # A bare [\w$.]+ stops dead at the leading quote, which silently
-            # dropped every quoted PL/pgSQL routine.
             text = _read(node)
             for m in re.finditer(
                 r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"
@@ -284,10 +274,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                     "select", "where", "set", "dual", "null", "true", "false",
                     "first", "skip", "rows", "next", "only", "lateral",
                 }
-                # Same CTE-blindness as the AST path: a `WITH <name> AS (`
-                # binding is statement-local, not a table, so its name must not
-                # become a reads_from stub. The regex has no scope tree, so the
-                # skip is body-wide — the right trade for a recovery path.
                 for cm in re.finditer(
                     r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([\w$]+)\s*(?:\([^()]*\))?\s+AS\s*\(",
                     text, re.IGNORECASE,
@@ -334,8 +320,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for c in node.children:
             if c.type != "cte":
                 continue
-            # First identifier is the CTE's name; later ones are its column
-            # list (`WITH levels(a, b) AS (...)`), which must not be skipped.
             for cc in c.children:
                 if cc.type in ("identifier", "object_reference"):
                     own.add(_norm_ident(_read(cc)))
@@ -356,9 +340,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
         for child in node.children:
             _walk_from_refs(child, caller_nid, line, cte_names)
 
-    # Pre-pass: register every table/view DEFINED in this file before walking,
-    # so forward references (a FK to a table created later in the same file)
-    # still resolve to the real sourced node instead of falling back to a stub.
     def _collect_defined_names(node) -> None:
         if node.type in ("create_table", "create_view"):
             name = _obj_name(node)
@@ -369,10 +350,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
 
     _collect_defined_names(root)
 
-    # Secondary bare-name aliases: a reference written without a schema
-    # (`REFERENCES users`) should resolve to a schema-qualified definition
-    # (`public.users`) when that is unambiguous. Never shadow an explicit
-    # definition, and skip bare names defined under more than one schema.
     bare_candidates: dict[str, str | None] = {}
     for key, alias_nid in table_nids.items():
         if "." in key:
@@ -412,24 +389,6 @@ def extract_sql(path: Path, content: str | bytes | None = None) -> dict:
                 _add_edge(tbl_nid, ref_nid, "references", tbl_line)
                 emitted.add((tbl_nid, ref_nid))
 
-    # Global regex fallback for routines. PL/pgSQL bodies break the parse
-    # in more than one shape, and only the first was recovered before:
-    #   1. the whole CREATE lands in one ERROR node          -> handled in walk()
-    #   2. the statement is shredded into loose top-level tokens
-    #      (keyword_create/keyword_function/object_reference/... ) and the ERROR
-    #      node holds only the offending body line, e.g. `PERFORM x();` or
-    #      `x := 1;` -- so no CREATE text is inside any ERROR node at all
-    #   3. the name is a quoted identifier ("public"."fn"), which a bare
-    #      [\w$.]+ pattern cannot match
-    # Shapes 2 and 3 silently dropped the routine: no node, no warning, exit 0.
-    # Scanning the raw source catches all three, and _add_node dedupes by id so
-    # routines already recovered from the tree are not emitted twice.
-    #
-    # Gate on a failed parse: a cleanly-parsing file must NOT have routines
-    # fabricated from commented-out DDL, DDL inside EXECUTE '...' string bodies,
-    # or MySQL `CREATE FUNCTION IF NOT EXISTS` (which would capture `IF`). Every
-    # observed drop shape leaves an ERROR node in the tree, so has_error loses
-    # nothing while protecting clean corpora (follow-up).
     if root.has_error:
         for m in re.finditer(
             r"CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\s+"

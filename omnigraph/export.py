@@ -1,4 +1,3 @@
-# escrever grafo em HTML, JSON, SVG, GraphML, Obsidian vault e Neo4j Cypher
 from __future__ import annotations
 import hashlib
 import html as _html
@@ -16,6 +15,7 @@ from networkx.readwrite import json_graph
 from omnigraph.security import sanitize_label
 from omnigraph.analyze import _node_community_map
 from omnigraph.build import edge_data
+from omnigraph.paths import stem_filename_budget
 
 from omnigraph.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -162,7 +162,7 @@ _CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.5, "AMBIGUOUS": 0.
 def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
     """Store hyperedges in the graph's metadata dict."""
     existing = G.graph.get("hyperedges", [])
-    seen_ids = {h["id"] for h in existing}
+    seen_ids = {h["id"] for h in existing if h.get("id")}
     for h in hyperedges:
         if h.get("id") and h["id"] not in seen_ids:
             existing.append(h)
@@ -170,20 +170,26 @@ def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
     G.graph["hyperedges"] = existing
 
 
-def _git_head() -> str | None:
-    """Return the current git HEAD commit hash, or None if not in a git repo."""
+def _git_head(cwd: "str | Path | None" = None) -> str | None:
+    """Return git HEAD for the repo containing ``cwd``, or None outside a repo.
+
+    ``cwd`` selects the repository to ask, exactly as in watch._git_head
+    (#2316). Without it the command inherits the caller's working directory,
+    which stamps the *invoking* repo's commit when the graph being written
+    describes a different repo — provenance must come from the repo the graph
+    describes, so callers pass the graph's own location.
+    """
     import subprocess as _sp
     try:
-        r = _sp.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3)
+        r = _sp.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=3,
+            cwd=str(cwd) if cwd is not None else None,
+        )
         return r.stdout.strip() if r.returncode == 0 else None
     except Exception:
         return None
 
 
-# Sentinel: an existing graph.json is present and non-empty but cannot be parsed
-# into a node count (corrupt, mid-write, or structurally wrong). The caller must
-# fail CLOSED on this — the same way to_json's guard refuses to overwrite
-# such a file — because we cannot prove the new graph isn't a silent shrink.
 MALFORMED_GRAPH = object()
 
 
@@ -209,12 +215,10 @@ def existing_graph_node_count(path: "str | Path"):
     try:
         check_graph_file_size_cap(p)
     except Exception:
-        # Oversized: reading it to compare would be the DoS the cap guards against.
         return None
     try:
         raw = p.read_text(encoding="utf-8")
     except Exception:
-        # Present but unreadable: fail closed if it has bytes, else nothing to lose.
         try:
             return MALFORMED_GRAPH if p.stat().st_size > 0 else None
         except Exception:
@@ -239,7 +243,6 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         except Exception:
             # O graph.json existente ultrapassa o limite de tamanho; lê-lo para comparar seria
             # seja o mesmo DoS contra o qual o limite se protege. Não é possível verificar. Deixe o novo
-            # grafo substitua o arquivo superdimensionado.
             oversized = True
         else:
             oversized = False
@@ -259,7 +262,6 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 except Exception as exc:
                     # Grafo existente não vazio, mas não analisável (corrompido ou um
                     # mid-write): não podemos verificar se o novo grafo não é silencioso
-                    # encolher. Fail SAFE – recuse em vez de substituir. UM
                     # fail-OPEN aqui (o comportamento anterior) é a perda silenciosa de dados
                     # o caminho existe para evitar: um texto transitoriamente ilegível
                     # graph.json permitiria que uma reconstrução parcial fosse boa.
@@ -306,8 +308,6 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if "confidence_score" not in link:
             conf = link.get("confidence", "EXTRACTED")
             link["confidence_score"] = _CONFIDENCE_SCORE_DEFAULTS.get(conf, 1.0)
-        # Restore original edge direction. Undirected NetworkX storage may
-        # canonicalizar a ordem dos endpoints, invertendo `chamadas` e outros direcionais
         # arestas em graph.json. O caminho de construção armazena os endpoints verdadeiros em
         # _src/_tgt exatamente para esse propósito.
         true_src = link.pop("_src", None)
@@ -318,15 +318,6 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     data["nodes"].sort(key=_json_sort_key)
     data["links"].sort(key=_json_sort_key)
     if "hyperedges" not in getattr(G, "graph", {}):
-        # Hardening: a graph with NO hyperedges key at all was built by
-        # a path that never engaged hyperedge metadata — distinct from an
-        # intentional empty set ([], which build_from_json now stores
-        # explicitly after a full-wipeout revalidation). If the file on disk
-        # already holds a non-empty set, emptying it without a trace is silent
-        # data loss; warn loudly so the wipeout is attributable. We still write
-        # the graph's truth rather than preserving the stale set — resurrecting
-        # hyperedges whose members may no longer exist would reintroduce the
-        # dangling-member shape removed.
         _prev_hyperedges = None
         try:
             if existing_path.exists():
@@ -349,11 +340,10 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
-    commit = built_at_commit if built_at_commit is not None else _git_head()
+    commit = built_at_commit if built_at_commit is not None else _git_head(Path(output_path).resolve().parent)
     if commit:
         data["built_at_commit"] = commit
     from omnigraph.paths import write_json_atomic
-    # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
     write_json_atomic(output_path, data, indent=2)
     return True
 
@@ -461,12 +451,12 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     if len(b) <= limit:
         return s
     digest = hashlib.sha1(s.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]  # nosec - não é segurança
-    keep = limit - 9  # "_" + 8 hex chars
+    keep = limit - 9
     truncated = b[:keep].decode("utf-8", "ignore")  # "ignorar" descarta um caractere dividido à direita
     return f"{truncated}_{digest}"
 
 
-def _obsidian_safe_stem(label: str) -> str:
+def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
     """Filename stem for an Obsidian note / canvas card from a node label.
 
     Strips filesystem-unsafe characters, a trailing ``.md``-family extension
@@ -481,20 +471,18 @@ def _obsidian_safe_stem(label: str) -> str:
         label.replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
     ).strip()
     cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
-    # Obsidian treats a leading-dot filename as a hidden file. Only
-    # prefix when something nameable remains after the dots: an all-dots label
-    # like "..." would otherwise become the meaningless stem "dot-" instead of
-    # falling through to the "unnamed" guard below.
     if cleaned.startswith(".") and re.search(r"\w", cleaned.lstrip("."), flags=re.UNICODE):
         cleaned = "dot-" + cleaned.lstrip(".")
     # Um radical apenas de pontuação (por exemplo, "@", "*", "#") sobrevive ao caractere inseguro
-    # faixa acima, mas fica vazia quando uma ferramenta downstream reinstala caracteres de palavras
-    # (por exemplo, handelize() do qmd reduz "@" -> "" e aumenta, abortando todo o
     # `atualização qmd`). Exigir pelo menos um caractere de palavra; senão recuamos para nunca mais
-    # emita um nome de arquivo no estilo "@.md".
     if not re.search(r"\w", cleaned, flags=re.UNICODE):
         return "unnamed"
-    return _cap_filename(cleaned)
+    return _cap_filename(cleaned, limit)
+
+
+_DEDUP_SUFFIX_RESERVE = 5
+
+_COMMUNITY_PREFIX = "_COMMUNITY_"
 
 
 def _dedup_node_filenames(G: nx.Graph, safe_name) -> dict[str, str]:
@@ -563,9 +551,13 @@ def to_obsidian(
 
     node_community = _node_community_map(communities)
 
+    _stem_limit = stem_filename_budget(out, reserve=_DEDUP_SUFFIX_RESERVE)
+
     # Mapeie node_id → nome de arquivo seguro para que os wikilinks permaneçam consistentes.
     # Desduplicar: se dois nós produzirem o mesmo nome de arquivo, anexe um sufixo numérico.
-    node_filename = _dedup_node_filenames(G, _obsidian_safe_stem)
+    node_filename = _dedup_node_filenames(
+        G, lambda label: _obsidian_safe_stem(label, _stem_limit)
+    )
 
     # Auxiliar: calcula a confiança dominante para um nó em todas as suas arestas
     def _dominant_confidence(node_id: str) -> str:
@@ -576,7 +568,6 @@ def to_obsidian(
             return "EXTRACTED"
         return Counter(confs).most_common(1)[0][0]
 
-    # Map file_type → omnigraph tag
     _FTYPE_TAG = {
         "code": "omnigraph/code",
         "document": "omnigraph/document",
@@ -584,7 +575,6 @@ def to_obsidian(
         "image": "omnigraph/image",
     }
 
-    # Write one .md file per node
     node_notes_written = 0
     for node_id, data in G.nodes(data=True):
         label = data.get("label", node_id)
@@ -606,7 +596,6 @@ def to_obsidian(
         lines: list[str] = []
 
         # Frontmatter YAML - legível no painel de propriedades do Obsidian.
-        # Todos os escalares passam por _yaml_str, portanto, um source_file hostil ou
         # o rótulo da comunidade não pode ser quebrado e injetado chaves irmãs (F-009).
         lines += [
             "---",
@@ -616,7 +605,6 @@ def to_obsidian(
         ]
         if data.get("source_location"):
             lines.append(f'location: "{_yaml_str(str(data["source_location"]))}"')
-        # Adicionar lista de tags ao frontmatter
         lines.append("tags:")
         for tag in node_tags:
             lines.append(f"  - {tag}")
@@ -634,7 +622,6 @@ def to_obsidian(
                 lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
             lines.append("")
 
-        # Tags embutidas na parte inferior do corpo da nota (para painel de tags Obsidian)
         inline_tags = " ".join(f"#{t}" for t in node_tags)
         lines.append(inline_tags)
 
@@ -642,7 +629,6 @@ def to_obsidian(
         if _owned_write(fname, "\n".join(lines)):
             node_notes_written += 1
 
-    # Escreva uma nota geral _COMMUNITY_name.md por comunidade
     # Crie contagens de vantagem intercomunitárias para "Conexões com outras comunidades"
     inter_community_edges: dict[int, dict[int, int]] = {}
     for cid in communities:
@@ -672,15 +658,17 @@ def to_obsidian(
             else f"Community {cid}"
         )
 
-    # Um nome de arquivo desduplicado e dobrado por caixa por comunidade, calculado uma vez para que a nota que
     # write e cada referência cruzada [[_COMMUNITY_...]] é resolvida para o mesmo arquivo.
     # Dois rótulos de comunidade diferindo apenas por caso (por exemplo, rótulos LLM "API" vs "Api")
     # caso contrário, sobrescreveriam uns aos outros em sistemas de arquivos que não diferenciam maiúsculas de minúsculas - e
     # esse caminho não teve nenhuma desduplicação, portanto, até rótulos duplicados no mesmo caso colidiram.
     community_filename: dict = {}
     used_community: set[str] = set()
+    _community_stem_limit = stem_filename_budget(
+        out, reserve=_DEDUP_SUFFIX_RESERVE + len(_COMMUNITY_PREFIX)
+    )
     for cid in communities:
-        base = f"_COMMUNITY_{_obsidian_safe_stem(_community_name(cid))}"
+        base = f"{_COMMUNITY_PREFIX}{_obsidian_safe_stem(_community_name(cid), _community_stem_limit)}"
         candidate = base
         n = 1
         while candidate.lower() in used_community:
@@ -694,16 +682,13 @@ def to_obsidian(
         community_name = _community_name(cid)
         # A lista de membros de uma comunidade pode conter ids sem nó de apoio em G
         # (por exemplo, nós removidos, atribuições de comunidade obsoletas de uma execução anterior ou
-        # ids de artefato sintetizados/mesclados). Desreferenciando aqueles via G.nodes[n] ou
         # node_filename[n] gera KeyError e aborta toda a exportação do vault, então
-        # pule membros pendentes em vez de travar (problema).
         members = [m for m in all_members if m in G and m in node_filename]
         n_members = len(members)
         coh_value = cohesion.get(cid) if cohesion else None
 
         lines: list[str] = []
 
-        # YAML frontmatter
         lines.append("---")
         lines.append("type: community")
         if coh_value is not None:
@@ -714,7 +699,6 @@ def to_obsidian(
         lines.append(f"# {community_name}")
         lines.append("")
 
-        # Cohesion + member count summary
         if coh_value is not None:
             cohesion_desc = (
                 "tightly connected" if coh_value >= 0.7
@@ -725,7 +709,6 @@ def to_obsidian(
         lines.append(f"**Members:** {n_members} nodes")
         lines.append("")
 
-        # Members section
         lines.append("## Members")
         for node_id in sorted(members, key=lambda n: G.nodes[n].get("label", n)):
             data = G.nodes[node_id]
@@ -740,7 +723,6 @@ def to_obsidian(
             lines.append(entry)
         lines.append("")
 
-        # Dataview live query (improvement 2)
         comm_tag_name = _obsidian_tag(community_name)
         lines.append("## Live Query (requires Dataview plugin)")
         lines.append("")
@@ -755,7 +737,10 @@ def to_obsidian(
         if cross:
             lines.append("## Connections to other communities")
             for other_cid, edge_count in sorted(cross.items(), key=lambda x: -x[1]):
-                other_fname = community_filename.get(other_cid) or f"_COMMUNITY_{_obsidian_safe_stem(_community_name(other_cid))}"
+                other_fname = community_filename.get(other_cid) or (
+                    f"{_COMMUNITY_PREFIX}"
+                    f"{_obsidian_safe_stem(_community_name(other_cid), _community_stem_limit)}"
+                )
                 lines.append(f"- {edge_count} edge{'s' if edge_count != 1 else ''} to [[{other_fname}]]")
             lines.append("")
 
@@ -798,8 +783,6 @@ def to_obsidian(
     # notas de remoção para nós que saíram do grafo. Somente arquiva o
     # o manifesto diz que os proprietários do omnigraph são candidatos e qualquer coisa escrita ou ignorada
     # esta execução é excluída - portanto, a nota do próprio usuário nunca é tocada (arquivos estrangeiros
-    # terreno em _skipped, nunca _owned). Proteja cada caminho para permanecer dentro do cofre em
-    # caso um manifesto corrompido/hostil contenha entradas `../`.
     stale = _owned - set(_written) - set(_skipped)
     pruned = 0
     for rel_name in sorted(stale):
@@ -851,13 +834,16 @@ def to_canvas(
     Opens in Obsidian as an infinite canvas with community groupings visible.
     """
     # Códigos de cores da tela Obsidian (percorrer para comunidades)
-    CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]  # red, orange, yellow, green, cyan, purple
+    CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]
 
-    # Crie node_filenames se não for fornecido (mesma lógica de desduplicação de to_obsidian)
+    _stem_limit = stem_filename_budget(
+        Path(output_path).parent, reserve=_DEDUP_SUFFIX_RESERVE
+    )
     if node_filenames is None:
-        node_filenames = _dedup_node_filenames(G, _obsidian_safe_stem)
+        node_filenames = _dedup_node_filenames(
+            G, lambda label: _obsidian_safe_stem(label, _stem_limit)
+        )
 
-    # Fallback: sem dados da comunidade (por exemplo, --no-cluster builds ou faltando
     # sidecar de análise) a grade abaixo não produz nada e a tela é escrita
     # como um shell vazio de 32 bytes em um grafo preenchido de outra forma. Emitir cada nó
     # em uma comunidade sintética para que a tela sempre reflita o grafo.
@@ -871,7 +857,6 @@ def to_canvas(
     canvas_nodes: list[dict] = []
     canvas_edges: list[dict] = []
 
-    # Disponha as comunidades em uma grade
     gap = 80
     group_x_offsets: list[int] = []
     group_y_offsets: list[int] = []
@@ -879,14 +864,12 @@ def to_canvas(
     # Pré-calcule os tamanhos dos grupos para que possamos calcular as compensações.
     # inner_cols é a largura da grade por comunidade; as dimensões da caixa E o nó
     # o loop de posicionamento abaixo de ambos deriva dele, então os cartões sempre preenchem a caixa
-    # em vez de embrulhar em uma tira estreita dentro de uma caixa grande.
     sorted_cids = sorted(communities.keys())
     group_sizes: dict[int, tuple[int, int]] = {}
     group_cols: dict[int, int] = {}
     for cid in sorted_cids:
         # Ignore os membros pendentes da comunidade sem nó/nome de arquivo de apoio, então caixa
         # o dimensionamento corresponde aos cartões realmente dispostos e `G.nodes[m]` nunca
-        # KeyErrors abaixo — espelha o guarda to_obsidian.
         members = [m for m in communities[cid] if m in G and m in node_filenames]
         n = len(members)
         inner_cols = max(1, math.ceil(math.sqrt(n)))
@@ -895,7 +878,6 @@ def to_canvas(
         group_sizes[cid] = (w, h)
         group_cols[cid] = inner_cols
 
-    # Calcule alturas cumulativas de linhas e larguras de colunas para posicionamento da grade
     # Cada célula da grade usa a largura/altura máxima em sua coluna/linha
     col_widths: list[int] = []
     row_heights: list[int] = []
@@ -919,7 +901,6 @@ def to_canvas(
                 max_h = max(max_h, h)
         row_heights.append(max_h)
 
-    # Mapa de cid → (group_x, group_y, group_w, group_h)
     group_layout: dict[int, tuple[int, int, int, int]] = {}
     for idx, cid in enumerate(sorted_cids):
         col_idx = idx % cols
@@ -945,7 +926,6 @@ def to_canvas(
         gx, gy, gw, gh = group_layout[cid]
         canvas_color = CANVAS_COLORS[idx % len(CANVAS_COLORS)]
 
-        # Group node
         canvas_nodes.append({
             "id": f"g{cid}",
             "type": "group",
@@ -969,7 +949,10 @@ def to_canvas(
             row = m_idx // inner_cols
             nx_x = gx + 20 + col * (180 + 20)
             nx_y = gy + 80 + row * (60 + 20)
-            fname = node_filenames.get(node_id, _obsidian_safe_stem(G.nodes[node_id].get("label", node_id)))
+            fname = node_filenames.get(
+                node_id,
+                _obsidian_safe_stem(G.nodes[node_id].get("label", node_id), _stem_limit),
+            )
             canvas_nodes.append({
                 "id": f"n_{node_id}",
                 "type": "file",
@@ -1026,16 +1009,14 @@ def to_graphml(
     for _, _, attrs in H.edges(data=True):
         for k in [k for k in attrs if k.startswith("_")]:
             del attrs[k]
-    # nx.write_graphml aceita apenas valores de atributos escalares: Nenhum aumenta e um
     # valor de dict/lista (por exemplo, um dict `metadados` por nó ou o nível de grafo
-    # lista `hyperedges` definida por attach_hyperedges()) aumenta
     # "GraphML não suporta o tipo <class 'dict'/'list'> como valores de dados".
     # Coerce None -> "" e não escalares -> uma string JSON, em todos os três escopos.
     def _graphml_safe(val):
         if val is None:
             return ""
         if isinstance(val, bool) or isinstance(val, (int, float, str)):
-            return val  # GraphML-native scalars pass through unchanged
+            return val
         try:
             return json.dumps(val, default=str, sort_keys=True)
         except (TypeError, ValueError):
@@ -1118,7 +1099,6 @@ def to_svg(
                             labels={n: G.nodes[n].get("label", n) for n in G.nodes()},
                             font_size=7, font_color="white")
 
-    # Legend
     if community_labels:
         patches = [
             mpatches.Patch(

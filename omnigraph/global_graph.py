@@ -102,7 +102,6 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     if existing.get("source_hash") == src_hash:
         return {"repo_tag": repo_tag, "nodes_added": 0, "nodes_removed": 0, "skipped": True}
 
-    # Load source graph
     from omnigraph.security import check_graph_file_size_cap
     check_graph_file_size_cap(source_path)
     data = json.loads(source_path.read_text(encoding="utf-8"))
@@ -113,7 +112,6 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
     except TypeError:
         src_G = _jg.node_link_graph(data)
 
-    # IDs de prefixo para isolamento entre projetos
     prefixed = prefix_graph_for_global(src_G, repo_tag)
 
     # Carregar grafo global e remover nós obsoletos para este repositório
@@ -127,20 +125,18 @@ def global_add(source_path: Path, repo_tag: str) -> dict:
         if not d.get("source_file") and d.get("label")
     }
     # Mapeie cada externo desduplicado no nó global existente para que
-    # as arestas incidentes a ele podem ser reconectadas em vez de descartadas.
     remap = {}
     for node, data in prefixed.nodes(data=True):
         if not data.get("source_file") and data.get("label") in external_labels:
             remap[node] = external_labels[data["label"]]
 
-    # Compose: add prefixed nodes (except deduplicated externals) into global graph
     for node, data in prefixed.nodes(data=True):
         if node not in remap:
             G.add_node(node, **data)
     for u, v, data in prefixed.edges(data=True):
         u = remap.get(u, u)
         v = remap.get(v, v)
-        if u != v:  # don't introduce self-loops via remapping
+        if u != v:
             G.add_edge(u, v, **data)
 
     added = prefixed.number_of_nodes() - len(remap)

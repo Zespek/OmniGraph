@@ -19,13 +19,10 @@ except Exception:
     __version__ = "unknown"
 
 # Diretório de saída - substitua por OMNIGRAPH_OUT env var para árvores de trabalho ou configurações de saída compartilhada.
-# Aceita um nome relativo ("omnigraph-out-feature") ou um caminho absoluto ("/shared/omnigraph-out").
 # Definido uma vez em zspekfy.paths para que os guardas do caminho de segurança/fluxo de chamada honrem o
-# same override.
 from omnigraph.paths import OMNIGRAPH_OUT as _OMNIGRAPH_OUT
 
 # Subsistema de instalação/desinstalação movido para zspekfy/install.py; reexportado aqui então
-# `from omnigraph.__main__ import <nome>` continua funcionando inalterado.
 from omnigraph.install import (  # noqa: E402,F401
     dispatch_install_cli,
     _agents_install,
@@ -71,7 +68,6 @@ from omnigraph.install import (  # noqa: E402,F401
     _project_scope_root,
     _project_uninstall,
     _project_uninstall_all,
-    _refresh_all_version_stamps,
     _remove_claude_skill_registration,
     _remove_skill_file,
     _replace_or_append_section,
@@ -148,7 +144,6 @@ def __getattr__(name: str) -> str:
     # PEP 562: resolve preguiçosamente as constantes de seção herdadas sempre ativas para externos
     # importadores (por exemplo, os testes de string de instalação). O código no módulo chama _always_on()
     # diretamente; nada é lido no momento da importação, então um bloco ausente não pode mais
-    # coloque a CLI em `import omnigraph.__main__` (follow-up).
     base = _ALWAYS_ON_ALIASES.get(name)
     if base is not None:
         return _always_on(base)
@@ -195,7 +190,6 @@ def _check_skill_version(skill_dst: Path) -> None:
             # escreve a habilidade agrupada PRÓPRIA (mais antiga) do pacote e carimba novamente a versão,
             # portanto, seguir o antigo conselho de "executar instalação" seria silenciosamente DOWNGRADE o
             # habilidade. A verdadeira solução é atualizar o pacote. Comum para um obsoleto
-            # `uv tool` CLI, ou um contribuidor cujo dev checkout carimbou uma habilidade mais recente.
             print(
                 f"  warning: skill is from omnigraph {installed}, but the package is "
                 f"{__version__} (older). Upgrade the package "
@@ -245,15 +239,12 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 # PreToolUse nudge payloads, emitidos literalmente pelo shell agnóstico
-# Subcomando `omnigraph hook-guard` (veja _run_hook_guard). Os ganchos anteriores
-# bash POSIX embutido (case/esac, [ -f ], echo entre aspas simples) que o Windows
 # cmd.exe/PowerShell não pode ser analisado, portanto, no Windows, o gancho falhou e o empurrão
 # desapareceu silenciosamente — os usuários tiveram que invocar /omnigraph manualmente. Movendo o
 # lógica em um subcomando Python invocado por meio de um caminho exe absoluto torna o gancho
 # analise de forma idêntica em sh, cmd.exe e PowerShell. Código Claude aceita
 # adicionalContext em PreToolUse (Codex Desktop não - esse caminho permanece um
 # não operacional via `hook-check`). Separadores compactos mantêm a carga útil byte por byte
-# mesmo JSON que o antigo `echo` emitiu.
 
 
 # Extensões de origem/doc que o protetor Read|Glob ativa (literalmente do antigo gancho).
@@ -278,9 +269,7 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 # Os blocos de instruções sempre ativos são empacotados em omnigraph/always_on/,
-# gerado por ferramentas/skillgen e protegido por `skillgen --check`. Lendo-os em
 # load mantém o contrato install-string / issue- byte por byte enquanto permite
-# um humano edita um fragmento em vez de um literal entre aspas triplas aqui.
 
 
 
@@ -290,11 +279,6 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 
-# Texto de deslocamento do gancho Gemini CLI BeforeTool. O gancho sempre retorna
-# {"decision":"allow"} (nunca bloqueia uma ferramenta) e anexa isso como adicionalContext
-# quando existe um grafo. Emitido por `omnigraph hook-guard gemini`. O velho gancho era um
-# `python -c "..."` one-liner que dependia de um `python` vazio em PATH (geralmente
-# `python`/`py` ou ausente no Windows) e crases incorporados + aspas de escape que
 # Mangles do Windows PowerShell (acompanhamento nº 522); o formulário do subcomando não possui tal
 # dependência e analisa em cada shell.
 
@@ -376,9 +360,6 @@ _CODEX_HOOK = {
                     {
                         "type": "command",
                         # Use a própria CLI zspekfy para que o gancho seja independente do shell:
-                        # sem sintaxe bash [-f], sem problema de python3 vs python Conda,
-                        # nenhum JSON escapando dentro das strings do PowerShell. Funciona em
-                        # Windows (PowerShell/cmd.exe), macOS e Linux.
                         "command": "omnigraph hook-check",
                     }
                 ],
@@ -698,8 +679,6 @@ def _run_cli() -> None:
     cmd = sys.argv[1]
 
     # Guarda de ajuda universal: -h/--help/-? em qualquer lugar após o comando mostrar ajuda
-    # e paradas — evita que sinalizadores acionem subcomandos destrutivos silenciosamente
-    # (por exemplo, "cursor install --help" foi instalado silenciosamente no Cursor).
     # Isento: comandos de texto livre (a string do usuário pode conter esses tokens) e
     # "instalar"/"desinstalar" que possuem seus próprios manipuladores de ajuda por subcomando.
     _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}

@@ -18,8 +18,6 @@ _BUILTIN_NOISE_LABELS = frozenset({
     "Callable", "Type", "ClassVar", "Final", "Literal", "Protocol",
     "Counter", "defaultdict", "OrderedDict", "datetime", "Enum",
     "os", "sys", "re", "json", "io", "abc", "typing",
-    # Swift / Foundation / SwiftUI framework symbols and module imports that
-    # otherwise dominate god-node rankings on Swift codebases
     "Foundation", "SwiftUI", "UIKit", "AppKit", "Combine",
     "String", "Int", "Double", "Float", "Bool", "Data", "URL", "Date", "UUID",
     "Sendable", "Codable", "Decodable", "Encodable", "Equatable", "Hashable",
@@ -72,8 +70,6 @@ def _is_file_node(G: nx.Graph, node_id: str) -> bool:
     label = attrs.get("label", "")
     if not label:
         return False
-    # File-level hub: label matches the actual source filename — bare basename OR
-    # the directory-qualified form the disambiguation pass may assign.
     source_file = attrs.get("source_file", "")
     if source_file:
         from omnigraph.build import _is_file_node_label
@@ -148,7 +144,6 @@ def surprising_connections(
     Concept nodes (empty source_file, or injected semantic annotations) are excluded
     from surprising connections because they are intentional, not discovered.
     """
-    # Identify unique source files (ignore empty/null source_file)
     source_files = {
         data.get("source_file", "")
         for _, data in G.nodes(data=True)
@@ -245,7 +240,6 @@ def _surprise_score(
         score += 2
         reasons.append(f"crosses file types ({cat_u} ↔ {cat_v})")
 
-    # 3. Cross-repo bonus - different top-level directory
     if _top_level_dir(u_source) != _top_level_dir(v_source) and not _suppress_structural:
         score += 2
         reasons.append("connects across different repos/directories")
@@ -257,7 +251,6 @@ def _surprise_score(
         score += 1
         reasons.append("bridges separate communities")
 
-    # 4b. Semantic similarity bonus - non-obvious conceptual links score higher
     if data.get("relation") == "semantically_similar_to":
         score = int(score * 1.5)
         reasons.append("semantically similar concepts with no structural link")
@@ -373,7 +366,6 @@ def _cross_community_surprises(
             })
         return result
 
-    # Build node → community map
     node_community = _node_community_map(communities)
 
     surprises = []
@@ -388,7 +380,6 @@ def _cross_community_surprises(
         relation = data.get("relation", "")
         if relation in ("imports", "imports_from", "contains", "method"):
             continue
-        # Esta vantagem ultrapassa os limites da comunidade - interessante
         confidence = data.get("confidence", "EXTRACTED")
         src_id = data.get("_src", u)
         if src_id not in G.nodes:
@@ -413,7 +404,6 @@ def _cross_community_surprises(
     order = {"AMBIGUOUS": 0, "INFERRED": 1, "EXTRACTED": 2}
     surprises.sort(key=lambda x: order.get(x["confidence"], 3))
 
-    # Desduplicar por par de comunidades - uma aresta representativa por limite (A→B).
     # Sem isso, um único god node intermediário domina todos os resultados.
     seen_pairs: set[tuple] = set()
     deduped = []
@@ -442,7 +432,6 @@ def suggest_questions(
     questions = []
     node_community = _node_community_map(communities)
 
-    # 1. AMBIGUOUS edges → unresolved relationship questions
     for u, v, data in G.edges(data=True):
         if data.get("confidence") == "AMBIGUOUS":
             ul = G.nodes[u].get("label", u)
@@ -454,7 +443,6 @@ def suggest_questions(
                 "why": f"Edge tagged AMBIGUOUS (relation: {relation}) - confidence is low.",
             })
 
-    # 2. Bridge nodes (high betweenness) → cross-cutting concern questions
     if G.number_of_edges() > 0:
         k = min(100, G.number_of_nodes()) if G.number_of_nodes() > 1000 else None
         betweenness = nx.betweenness_centrality(G, k=k, seed=42)
@@ -526,7 +514,6 @@ def suggest_questions(
             "why": f"{len(isolated)} weakly-connected nodes found - possible documentation gaps or missing edges.",
         })
 
-    # 5. Low-cohesion communities → structural questions
     from .cluster import cohesion_score
     for cid, nodes in communities.items():
         score = cohesion_score(G, nodes)
@@ -687,16 +674,12 @@ def find_import_cycles(
         u_file = _endpoint_source_file(u)
         v_file = _endpoint_source_file(v)
 
-        # Funciona para entradas DiGraph e Graph:
-        # oriente a aresta do ponto final edge.source_file para o ponto final oposto.
         if u_file == src_file_attr:
             tgt_file = v_file
         elif v_file == src_file_attr:
             tgt_file = u_file
         else:
             # Fallback: se o endpoint de origem não puder ser correspondido exatamente,
-            # ainda trate edge.source_file como fonte e escolha o endpoint oposto
-            # somente se um endpoint tiver um source_file real.
             tgt_file = v_file if v_file and v_file != src_file_attr else u_file
 
         if not tgt_file:
@@ -707,7 +690,6 @@ def find_import_cycles(
     if not file_graph.edges():
         return []
 
-    # Etapa 2: Encontre ciclos simples, limitados por comprimento.
     # Passe length_bound para que o networkx seja removido durante a enumeração, em vez de
     # enumerando todos os ciclos elementares e pós-filtragem - evita exponencial
     # explosão em grafos densos com muitos ciclos longos.
@@ -719,11 +701,9 @@ def find_import_cycles(
             # Pare cedo para evitar explosão combinatória
             break
 
-    # Etapa 3: Classifique por comprimento (acoplamento mais curto = mais apertado) e desduplique.
     cycles.sort(key=len)
 
     # Desduplicar rotações: normalize cada ciclo começando do
-    # lexicographically smallest element.
     seen: set[tuple[str, ...]] = set()
     unique_cycles: list[list[str]] = []
     for cycle in cycles:

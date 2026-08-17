@@ -33,9 +33,6 @@ from html import escape
 from omnigraph.paths import OMNIGRAPH_OUT, OMNIGRAPH_OUT_NAME
 
 
-# ──────────────────────────────────────────────
-# 1. CSS template (fixed, project-agnostic)
-# ──────────────────────────────────────────────
 
 CSS = """:root {
   --bg: #0f172a; --surface: #1e293b; --border: #334155;
@@ -87,9 +84,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
 """
 
 
-# ──────────────────────────────────────────────
 # 2. Auxiliares de carregamento e normalização de dados
-# ──────────────────────────────────────────────
 
 def read_json(path: str | Path, default=None):
     """Read JSON with a useful error message."""
@@ -227,21 +222,8 @@ def _node_link_payload(data: dict) -> tuple[list, list] | None:
         return None
 
     try:
-        # Shared loader normalizes the raw writer's "edges" key to "links"
-        # before parsing; without it an edges-keyed payload raised
-        # KeyError: 'links' and this function silently returned None even
-        # though the shape check above accepts "edges".
         from omnigraph.paths import load_node_link_graph
 
-        # Force directed/multigraph so the stored caller->callee direction and
-        # parallel edges survive the round-trip; mirrors affected.py,
-        # serve.py and cli.py and the directed-view fix for
-        # path/shortest_path. graph.json is written with
-        # "directed": false for backward compatibility, so without this
-        # networkx returns an undirected Graph and edge orientation becomes
-        # arbitrary -- which silently swaps the Caller and Callee columns of
-        # the call table and drops parallel edges. The _src/_tgt override
-        # below still wins on legacy marker files.
         graph = load_node_link_graph({**data, "directed": True, "multigraph": True})
     except Exception:
         return None
@@ -339,9 +321,6 @@ def load_report(path: str | Path | None) -> str:
     return ""
 
 
-# ──────────────────────────────────────────────
-# 3. Mermaid-safe label helpers
-# ──────────────────────────────────────────────
 
 def safe_mermaid_text(text: str) -> str:
     """Sanitize text for use inside a Mermaid node label.
@@ -640,9 +619,7 @@ def mermaid_class_defs() -> list:
     ]
 
 
-# ──────────────────────────────────────────────
 # 4. Indexação de comunidades e seções
-# ──────────────────────────────────────────────
 
 def build_community_index(nodes: list) -> dict:
     """Map community_id (str) -> list of nodes."""
@@ -913,9 +890,6 @@ def node_in_section(node_id: str, section_node_ids: set) -> bool:
     return node_id in section_node_ids
 
 
-# ──────────────────────────────────────────────
-# 5. Edge analysis
-# ──────────────────────────────────────────────
 
 def classify_edges(edges: list, section_nodes_map: dict) -> dict:
     """Classify edges as intra-section or inter-section.
@@ -927,7 +901,6 @@ def classify_edges(edges: list, section_nodes_map: dict) -> dict:
             "orphan": [edges]  # one endpoint not in any section
         }
     """
-    # Build node -> section lookup
     node_section = {}
     for sid, nodes in section_nodes_map.items():
         for n in nodes:
@@ -966,9 +939,6 @@ def should_include_edge(edge: dict) -> bool:
     return False
 
 
-# ──────────────────────────────────────────────
-# 6. Mermaid diagram generators
-# ──────────────────────────────────────────────
 
 def node_degree_scores(edges: list) -> Counter:
     """Score nodes by useful edge participation."""
@@ -1178,9 +1148,6 @@ def generate_section_flowchart(section_id: str, section_name: str,
     return "\n".join(lines)
 
 
-# ──────────────────────────────────────────────
-# 7. HTML generators
-# ──────────────────────────────────────────────
 
 def generate_nav(sections: list) -> str:
     """Generate the sticky navigation bar."""
@@ -1240,7 +1207,6 @@ def generate_call_table_rows(
     if not nodes:
         return ""
 
-    # Crie pesquisa de origem/destino a partir das arestas
     node_by_id = {n.get("id"): n for n in (all_nodes or nodes)}
     callers = defaultdict(set)
     callees = defaultdict(set)
@@ -1252,7 +1218,7 @@ def generate_call_table_rows(
             callees[src].add(tgt)
 
     rows = []
-    for i, n in enumerate(nodes[:30], 1):  # limite em 30 linhas
+    for i, n in enumerate(nodes[:30], 1):
         nid = n.get("id", "")
         label = n.get("label", nid)
         source_file = safe_file_path(n.get("source_file", ""))
@@ -1533,9 +1499,6 @@ def generate_section_cards(sec: dict, nodes: list, section_edges: list, lang: st
 </div>"""
 
 
-# ──────────────────────────────────────────────
-# 8. Main entry point
-# ──────────────────────────────────────────────
 
 class CallflowOptions:
     """Options for call-flow architecture HTML generation."""
@@ -1644,7 +1607,6 @@ def write_callflow_html(
             "Run omnigraph first or pass --graph /path/to/graph.json."
         )
 
-    # Load data
     nodes, edges, hyperedges, meta = load_graph(paths["graph"])
     labels = load_labels(paths["labels"])
     lang = detect_lang(args.lang, nodes, labels)
@@ -1684,13 +1646,11 @@ def write_callflow_html(
         print(f"Loaded: {len(nodes)} nodes, {len(edges)} edges, {len(sections)} sections")
         print(f"Graph: {paths['graph']}")
 
-    # Build index
     comm_idx = build_community_index(nodes)
     meta["community_count"] = len(comm_idx)
     section_nodes_map = build_section_node_map(sections, comm_idx)
     classified = classify_edges(edges, section_nodes_map)
 
-    # Build HTML
     html = []
     doc_title = (
         f"{meta.get('project_name', 'Project')} — 完整调用流程与架构文档"
@@ -1714,10 +1674,8 @@ def write_callflow_html(
 <div class="container">
 """)
 
-    # Header + nav
     html.append(generate_header(sections, meta, lang))
 
-    # ── Architecture Overview (Section "overview") ──
     overview_name = sections[0].get("name", "Architecture Overview") if sections else "Architecture Overview"
     html.append(f"""<!-- ====== Architecture Overview ====== -->
 <h2 id="overview">1. {escape(str(overview_name))}</h2>
@@ -1733,7 +1691,6 @@ def write_callflow_html(
         html.append(f'<div class="grid">\n  {report_card}\n</div>')
     html.append("<hr>")
 
-    # ── Per-section content ──
     section_num = 1  # a visão geral foi nº 1
     for sec in sections:
         if sec["id"] == "overview":
@@ -1799,7 +1756,6 @@ def write_callflow_html(
             html.append("    </ul>\n  </div>")
         html.append("</div>\n<hr>")
 
-    # ── Section: Statistics ──
     total_sections = sum(1 for s in sections if s["id"] != "overview")
     html.append(f"""<h2 id="stats">Project Statistics</h2>
 
@@ -1825,14 +1781,12 @@ def write_callflow_html(
 </div>
 """)
 
-    # ── Footer ──
     html.append(f"""<div style="text-align:center; padding:40px 0; color: var(--muted); font-size:0.9rem;">
   <p>{escape(str(meta.get('project_name', 'Project')))} — Architecture Documentation</p>
   <p>Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} · omnigraph callflow-html</p>
 </div>
 """)
 
-    # Close
     html.append("""</div><!-- .container -->
 
 <script>
@@ -1990,12 +1944,10 @@ def write_callflow_html(
 </body>
 </html>""")
 
-    # Write output
     output = "\n".join(html)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(output, encoding="utf-8")
 
-    # Summary
     mermaid_count = output.count('<div class="mermaid">')
     table_count = output.count('<table class="call-table">')
     section_count = output.count('<h2 id=')

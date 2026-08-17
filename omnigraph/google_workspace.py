@@ -122,12 +122,6 @@ def _run_gws_export(file_id: str, mime_type: str, output: Path, resource_key: st
 
 
 def _sidecar_path(path: Path, out_dir: Path, root: "Path | None" = None) -> Path:
-    # Hash the scan-root-relative, NFC-normalized path — not the absolute path.
-    # The absolute form salts the sidecar name with the checkout location, so the
-    # same shortcut in two clones/worktrees emits differently-named byte-identical
-    # sidecars, each ingested as a distinct source doc when omnigraph-out/ is
-    # committed (; mirrors convert_office_file). NFC guards macOS NFD drift
-    #. The relative path still disambiguates same-stem files.
     import unicodedata
     if root is None:
         root = out_dir.parent.parent

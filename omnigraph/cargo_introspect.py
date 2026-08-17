@@ -79,12 +79,9 @@ def introspect_cargo(root: str | Path) -> dict[str, Any]:
             continue
         source_file = manifest.relative_to(root_path).as_posix()
         for dep_key, spec in sorted(dependencies.items()):
-            # Cargo permite que uma entrada da tabela dep renomeie a caixa via `package = "..."`:
-            #   db = { path = "../storage", package = "internal-storage" }
             # A chave `db` é o nome usado em `use db::…;`; a caixa real
             # publicado em `[package].name = "internal-storage"` é o que
             # `crates` é digitado por. Sem honrar o `pacote`, todo renomeado
-            # workspace-internal dep diminui silenciosamente sua aresta.
             real_name = dep_key
             if isinstance(spec, dict):
                 pkg_override = spec.get("package")

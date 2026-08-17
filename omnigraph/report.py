@@ -2,7 +2,32 @@
 from __future__ import annotations
 import re
 from datetime import date
+from pathlib import Path
 import networkx as nx
+
+
+def _portable_root_label(root: str) -> str:
+    """Portable label for the report header — the project directory basename.
+
+    GRAPH_REPORT.md is a tracked artifact in practice, so its header must not
+    bake the generator host's absolute path into the file: the same graph would
+    otherwise produce different bytes on different machines and leak the build
+    machine's directory layout into git history (#2628, same class as #2598).
+
+    Taking the basename strips any leading absolute path without touching the
+    filesystem, and makes `omnigraph update .`, `omnigraph update ./proj`, and
+    `omnigraph update /abs/path/proj` all label the header `proj`. Only the
+    degenerate `.`/``/`..` cases need a cwd resolve to recover the real name;
+    if even that fails, fall back to the raw value.
+    """
+    raw = str(root).replace("\\", "/")
+    name = Path(raw).name
+    if name in ("", ".", ".."):
+        try:
+            name = Path(raw).resolve().name
+        except (OSError, RuntimeError):
+            name = ""
+    return name or raw
 
 
 def _safe_community_name(label: str) -> str:
@@ -101,7 +126,7 @@ def generate(
     inf_avg = round(sum(inf_scores) / len(inf_scores), 2) if inf_scores else None
 
     lines = [
-        f"# Graph Report - {root}  ({today})",
+        f"# Graph Report - {_portable_root_label(root)}  ({today})",
         "",
         "## Corpus Check",
     ]
@@ -145,7 +170,6 @@ def generate(
     # são criados apenas pela exportação `--obsidian` opcional, e o relatório é escrito
     # no momento da construção (antes de qualquer exportação ser executada), portanto, a emissão de wikilinks por padrão é deixada
     # todo link pendurado - poluindo a visão de grafo de um cofre Obsidian e renderizando como
-    # colchetes literais em todos os outros lugares. Emitir wikilinks somente quando o chamador
     # sinais de saída Obsidiana; caso contrário, uma lista simples, que não navega para lugar nenhum.
     if non_empty:
         lines += ["", "## Community Hubs (Navigation)"]
@@ -187,7 +211,6 @@ def generate(
     # As importações circulares surgiram do grafo de dependência em nível de arquivo. Apenas significativo
     # para código — um corpus somente de documentos não tem importações, então a seção é pura
     # ruído ali ("Nenhum detectado" em todas as corridas). Emita-o somente quando o grafo
-    # actually contains code.
     _has_code = any(
         d.get("file_type") == "code" for _, d in G.nodes(data=True)
     ) or any(
@@ -249,7 +272,6 @@ def generate(
                 f"  {d.get('source_file', '')} · relation: {d.get('relation', 'unknown')}",
             ]
 
-    # --- Gaps section ---
     from .analyze import _is_file_node, _is_concept_node
 
     isolated = [
@@ -277,7 +299,6 @@ def generate(
         if amb_pct > 20:
             lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
 
-    # --- Work-memory lessons (derived overlay) ---
     # As fontes preferidas vêm do arquivo secundário .omnigraph_learning.json; o
     # Os becos sem saída com escopo de consulta vêm do agregado de reflexão. Seção omitida
     # inteiramente quando nenhum deles está presente, então um grafo sem memória de trabalho é

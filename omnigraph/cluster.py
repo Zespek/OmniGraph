@@ -55,7 +55,6 @@ def _partition(G: nx.Graph, resolution: float = 1.0) -> dict[str, int]:
         if "resolution" in lsig:
             kwargs["resolution"] = resolution
         # Suprima a saída grampológica para evitar que códigos de escape ANSI
-        # corrupting PowerShell 5.1 scroll buffer (issue #19)
         old_stderr = sys.stderr
         try:
             sys.stderr = io.StringIO()
@@ -168,9 +167,7 @@ def cluster(
             threshold = degrees[idx]
             hub_nodes = {n for n, d in G.degree() if d > threshold}
 
-    # Leiden avisa e descarta isolados – trate-os separadamente
     # Exclua também os nós do hub do particionamento para que eles não extraiam
-    # subsistemas na mesma comunidade
     excluded = hub_nodes
     isolates = [n for n in G.nodes() if G.degree(n) == 0 and n not in excluded]
     connected_nodes = [n for n in G.nodes() if G.degree(n) > 0 and n not in excluded]
@@ -206,7 +203,6 @@ def cluster(
                 node_community[hub] = next_cid
                 next_cid += 1
 
-    # Split oversized communities
     max_size = max(_MIN_SPLIT_SIZE, int(G.number_of_nodes() * _MAX_COMMUNITY_FRACTION))
     final_communities: list[list[str]] = []
     for nodes in raw.values():
@@ -226,7 +222,6 @@ def cluster(
             second_pass.append(nodes)
     final_communities = second_pass
 
-    # Reindexar por tamanho decrescente. O desempate tuple(sorted(nodes)) torna isso um
     # Ordem TOTAL, portanto, um agrupamento idêntico sempre obtém IDs de comunidade idênticos.
     # Sem ela, as centenas de pequenas comunidades de tamanhos iguais são ordenadas pelo
     # ordem de enumeração do particionador (não estável em sementes), portanto, seus IDs inteiros
