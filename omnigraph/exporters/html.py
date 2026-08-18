@@ -1,14 +1,13 @@
 """html — moved verbatim from omnigraph/export.py."""
 from __future__ import annotations
 
-from omnigraph.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
+from omnigraph.exporters.base import COMMUNITY_COLORS
 from pathlib import Path
 import html as _html
 from omnigraph.analyze import _node_community_map
 import json
 import networkx as nx
 from omnigraph.security import sanitize_label
-
 
 MAX_NODES_FOR_VIZ = 5_000
 
@@ -69,15 +68,8 @@ def _html_styles() -> str:
 
 def _hyperedge_script(hyperedges_json: str) -> str:
     return f"""<script>
-// Render hyperedges as shaded regions
 const hyperedges = {hyperedges_json};
-// afterDrawing passes ctx already transformed to network coordinate space.
-// Draw node positions raw — no manual pan/zoom/DPR math needed.
 
-// Andrew's monotone chain. Returns the hull in counter-clockwise order, which
-// is what the perimeter must be traced in. Collinear and duplicate points
-// collapse to the extremes, so degenerate member sets render as a segment
-// rather than a zero-area crossed path.
 function convexHull(pts) {{
     const p = pts.slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
     if (p.length < 3) return p;
@@ -106,10 +98,6 @@ network.on('afterDrawing', function(ctx) {{
         ctx.strokeStyle = '#bd00ff';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        // Centroid and expanded hull in network coordinates.
-        // The perimeter must follow hull order, not h.nodes order: tracing the
-        // raw member order self-intersects whenever the layout does not happen
-        // to place members in angular order, filling as crossed wedges.
         const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
         const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
         const hull = convexHull(positions);
@@ -123,7 +111,6 @@ network.on('afterDrawing', function(ctx) {{
         ctx.fill();
         ctx.globalAlpha = 0.4;
         ctx.stroke();
-        // Label
         ctx.globalAlpha = 0.8;
         ctx.fillStyle = '#d94dff';
         ctx.font = 'bold 11px sans-serif';
@@ -140,12 +127,10 @@ const RAW_NODES = {nodes_json};
 const RAW_EDGES = {edges_json};
 const LEGEND = {legend_json};
 
-// HTML-escape helper — prevents XSS when injecting graph data into innerHTML
 function esc(s) {{
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }}
 
-// Build vis datasets
 const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
   id: n.id, label: n.label, color: n.color, size: n.size,
   font: n.font, title: n.title,
@@ -218,20 +203,11 @@ function focusNode(nodeId) {{
   showInfo(nodeId);
 }}
 
-// Neighbor links use a data attribute + one delegated listener rather than an
-// inline onclick. A node id/label sourced from a document or a scraped URL
-// (omnigraph add) can contain a double-quote; dropping the stringified id
-// unescaped into a quoted onclick both broke every link and allowed a hostile
-// source to inject an event handler into the local report (stored XSS, #1838).
-// esc() on data-nid keeps the value inside the attribute; the listener reads it
-// back verbatim. Bound to document so it survives the innerHTML rebuild that
-// recreates #neighbors-list on each showInfo().
 document.addEventListener('click', e => {{
   const el = e.target.closest('.neighbor-link');
   if (el && el.dataset.nid !== undefined) focusNode(el.dataset.nid);
 }});
 
-// Track hovered node — hover detection is more reliable than click params
 let hoveredNodeId = null;
 network.on('hoverNode', params => {{
   hoveredNodeId = params.node;
@@ -347,7 +323,6 @@ LEGEND.forEach(c => {{
 }});
 </script>"""
 
-
 def _html_document_title(output_path: str) -> str:
     """Return a portable label for the graph.html <title>.
 
@@ -428,7 +403,6 @@ def to_html(
                 return
             meta_communities = {cid: [str(cid)] for cid in communities}
             mc = {cid: len(members) for cid, members in communities.items()}
-            # Remapear hiperarestas de IDs de nós semânticos para IDs de comunidade
             raw_hyperedges = G.graph.get("hyperedges", [])
             if raw_hyperedges:
                 remapped = []
@@ -468,9 +442,6 @@ def to_html(
     max_deg = max(degree.values(), default=1) or 1
     max_mc = (max(member_counts.values(), default=1) or 1) if member_counts else 1
 
-    # Sobreposição de memória de trabalho (sidecar derivado). Quando não for passado explicitamente, carregue-o
-    # melhor esforço do irmão .omnigraph_learning.json próximo à saída
-    # campos, portanto, a renderização não anotada é idêntica em bytes ao pré-recurso.
     if learning_overlay is None:
         learning_overlay = {}
         try:
@@ -478,11 +449,8 @@ def to_html(
             learning_overlay = _llo(Path(output_path))
         except Exception:
             learning_overlay = {}
-    # Status -> cor do anel. preferido=verde, contestado=âmbar. Provisório não dá
-    # anel (ainda não é confiável o suficiente para ser destacado no mapa).
     _RING = {"preferred": "#22c55e", "contested": "#f59e0b"}
 
-    # Construir lista de nós para vis.js
     vis_nodes = []
     for node_id, data in G.nodes(data=True):
         cid = node_community.get(node_id, 0)
@@ -495,7 +463,6 @@ def to_html(
             font_size = 12
         else:
             size = 10 + 30 * (deg / max_deg)
-            # Mostrar rótulo apenas para nós de alto grau por padrão; outros aparecem ao passar o mouse
             font_size = 12 if deg >= max_deg * 0.15 else 0
         node = {
             "id": node_id,
@@ -510,8 +477,6 @@ def to_html(
             "file_type": data.get("file_type", ""),
             "degree": deg,
         }
-        # Campos de aprendizagem condicional — presentes apenas para nós anotados, portanto
-        # a saída não anotada mantém a forma exata do dicionário do nó pré-recurso.
         entry = learning_overlay.get(str(node_id)) if learning_overlay else None
         if entry:
             status = sanitize_label(str(entry.get("status", "")))
@@ -528,7 +493,6 @@ def to_html(
                     "background": color, "border": ring,
                     "highlight": {"background": "#ffffff", "border": ring},
                 }
-            # Linha da lição anexada ao título instantâneo.
             if status == "contested":
                 lesson = f"Lesson: contested (useful {entry.get('uses', 0)} / dead-end {entry.get('neg', 0)})"
             elif status == "preferred":
@@ -540,8 +504,6 @@ def to_html(
             node["title"] = _html.escape(label) + "\n" + _html.escape(sanitize_label(lesson))
         vis_nodes.append(node)
 
-    # Lista de arestas de construção. Restaurar a direção da aresta original de _src/_tgt
-    # (escondido por build.py exatamente por esse motivo): NetworkX não direcionado
     vis_edges = []
     for u, v, data in G.edges(data=True):
         confidence = data.get("confidence", "EXTRACTED")
@@ -566,7 +528,6 @@ def to_html(
         n = member_counts.get(cid, len(communities.get(cid, []))) if member_counts else len(communities.get(cid, []))
         legend_data.append({"cid": cid, "color": color, "label": lbl, "count": n})
 
-    # Escape de sequências </script> para que o JSON incorporado não possa sair da tag de script
     def _js_safe(obj) -> str:
         return json.dumps(obj).replace("</", "<\\/")
 
@@ -612,4 +573,4 @@ def to_html(
 </body>
 </html>"""
 
-    Path(output_path).write_text(html, encoding="utf-8")  # nosec
+    Path(output_path).write_text(html, encoding="utf-8")
