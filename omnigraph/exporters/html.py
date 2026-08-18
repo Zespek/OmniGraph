@@ -1,4 +1,4 @@
-"""html — moved verbatim from omnigraph/export.py."""
+"""Exportador HTML do grafo."""
 from __future__ import annotations
 
 from omnigraph.exporters.base import COMMUNITY_COLORS
@@ -26,11 +26,38 @@ def _viz_node_limit() -> int:
     except ValueError:
         return MAX_NODES_FOR_VIZ
 
+_INFO_AJUDA = (
+    '<div class="ajuda"><b>Clique num nó</b> para ver o que ele é, de que arquivo veio'
+    ' e com quem se conecta.</div>'
+    '<div class="ajuda">A caixa <b>Buscar</b> acha um nó <b>pelo nome</b>'
+    ' (um arquivo, uma função). Ela não responde perguntas. Para perguntar'
+    ' <i>como algo funciona</i>, use no terminal:'
+    '<br><code>omnigraph-perguntar "como funciona o login?"</code></div>'
+)
+
+_COMUNIDADES_AJUDA = (
+    '<div class="ajuda" id="legend-ajuda">Cada cor é uma área de arquivos que o OmniGraph'
+    ' viu trabalhando juntos, batizada pelo arquivo mais central da área. O número é'
+    ' quantos nós a área tem. Desmarque uma área para escondê-la e enxergar o resto.</div>'
+)
+
 def _html_styles() -> str:
     return """<style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0d0714; color: #ede4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
-  #graph { flex: 1; }
+  #graph { flex: 1;
+    background-color: #0d0714;
+    background-image:
+      radial-gradient(900px 520px at 78% -10%, rgba(189,0,255,.18), transparent 62%),
+      radial-gradient(760px 460px at 6% 108%, rgba(0,229,255,.07), transparent 60%),
+      radial-gradient(1.3px 1.3px at 34px 26px, rgba(255,255,255,.55), transparent),
+      radial-gradient(1px 1px at 168px 92px, rgba(217,77,255,.60), transparent),
+      radial-gradient(1.5px 1.5px at 96px 178px, rgba(255,255,255,.38), transparent),
+      radial-gradient(1px 1px at 246px 138px, rgba(0,229,255,.45), transparent),
+      radial-gradient(1px 1px at 210px 232px, rgba(255,255,255,.30), transparent);
+    background-repeat: no-repeat, no-repeat, repeat, repeat, repeat, repeat, repeat;
+    background-size: auto, auto, 300px 260px, 300px 260px, 300px 260px, 300px 260px, 300px 260px;
+  }
   #sidebar { width: 280px; background: #160b20; border-left: 1px solid #33184a; display: flex; flex-direction: column; overflow: hidden; }
   #search-wrap { padding: 12px; border-bottom: 1px solid #33184a; }
   #search { width: 100%; background: #0d0714; border: 1px solid #432060; color: #ede4f5; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
@@ -44,6 +71,13 @@ def _html_styles() -> str:
   #info-content .field { margin-bottom: 5px; }
   #info-content .field b { color: #ede4f5; }
   #info-content .empty { color: #8a6fa8; font-style: italic; }
+  .ajuda { color: #b79fce; font-size: 12px; line-height: 1.55; }
+  .ajuda b { color: #ede4f5; }
+  .ajuda + .ajuda { margin-top: 9px; padding-top: 9px; border-top: 1px solid #33184a; }
+  .ajuda code { display: block; margin-top: 5px; font-family: ui-monospace, Consolas, monospace;
+                font-size: 11.5px; color: #d94dff; background: #0d0714; border: 1px solid #33184a;
+                border-radius: 4px; padding: 4px 7px; overflow-wrap: anywhere; }
+  #legend-ajuda { margin-bottom: 12px; }
   .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #432060; }
   .neighbor-link:hover { background: #33184a; }
   #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
@@ -69,23 +103,6 @@ def _html_styles() -> str:
 def _hyperedge_script(hyperedges_json: str) -> str:
     return f"""<script>
 const hyperedges = {hyperedges_json};
-
-function convexHull(pts) {{
-    const p = pts.slice().sort((a, b) => (a.x - b.x) || (a.y - b.y));
-    if (p.length < 3) return p;
-    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-    const build = seq => {{
-        const out = [];
-        for (const q of seq) {{
-            while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], q) <= 0) out.pop();
-            out.push(q);
-        }}
-        out.pop();
-        return out;
-    }};
-    const hull = build(p).concat(build(p.slice().reverse()));
-    return hull.length >= 3 ? hull : p;
-}}
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
         const positions = h.nodes
@@ -100,8 +117,7 @@ network.on('afterDrawing', function(ctx) {{
         ctx.beginPath();
         const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
         const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
-        const hull = convexHull(positions);
-        const expanded = hull.map(p => ({{
+        const expanded = positions.map(p => ({{
             x: cx + (p.x - cx) * 1.15,
             y: cy + (p.y - cy) * 1.15
         }}));
@@ -121,11 +137,12 @@ network.on('afterDrawing', function(ctx) {{
 }});
 </script>"""
 
-def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
+def _html_script(nodes_json: str, edges_json: str, legend_json: str, info_ajuda_json: str) -> str:
     return f"""<script>
 const RAW_NODES = {nodes_json};
 const RAW_EDGES = {edges_json};
 const LEGEND = {legend_json};
+const INFO_AJUDA = {info_ajuda_json};
 
 function esc(s) {{
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -187,13 +204,14 @@ function showInfo(nodeId) {{
     const color = nb ? nb.color.background : '#8a6fa8';
     return `<span class="neighbor-link" style="border-left-color:${{esc(color)}}" data-nid="${{esc(nid)}}">${{esc(nb ? nb.label : nid)}}</span>`;
   }}).join('');
+  const tipos = {{code:'código', doc:'documento', paper:'artigo', image:'imagem', unknown:'não identificado'}};
   document.getElementById('info-content').innerHTML = `
     <div class="field"><b>${{esc(n.label)}}</b></div>
-    <div class="field">Type: ${{esc(n._file_type || 'unknown')}}</div>
-    <div class="field">Community: ${{esc(n._community_name)}}</div>
-    <div class="field">Source: ${{esc(n._source_file || '-')}}</div>
-    <div class="field">Degree: ${{n._degree}}</div>
-    ${{neighborIds.length ? `<div class="field" style="margin-top:8px;color:#b79fce;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>` : ''}}
+    <div class="field"><span style="color:#8a6fa8">Tipo:</span> ${{esc(tipos[n._file_type] || n._file_type || 'não identificado')}}</div>
+    <div class="field"><span style="color:#8a6fa8">Área:</span> ${{esc((n._community_name || '-').replace('Community', 'Área'))}}</div>
+    <div class="field"><span style="color:#8a6fa8">Arquivo:</span> ${{esc(n._source_file || '-')}}</div>
+    <div class="field"><span style="color:#8a6fa8">Conexões:</span> ${{n._degree}} <span style="color:#8a6fa8">(ligações com outras partes)</span></div>
+    ${{neighborIds.length ? `<div class="field" style="margin-top:8px;color:#b79fce;font-size:11px">Conectado a (${{neighborIds.length}}):</div><div id="neighbors-list">${{neighborItems}}</div>` : ''}}
   `;
 }}
 
@@ -227,7 +245,7 @@ network.on('click', params => {{
   if (params.nodes.length > 0) {{
     showInfo(params.nodes[0]);
   }} else if (hoveredNodeId === null) {{
-    document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
+    document.getElementById('info-content').innerHTML = INFO_AJUDA;
   }}
 }});
 
@@ -329,7 +347,7 @@ def _html_document_title(output_path: str) -> str:
     Tracked artifacts must not embed the generator host absolute path
     (regression of #433; reported again as #2598 on Windows). Keep from the
     configured output-dir bare name (``omnigraph-out`` / ``OMNIGRAPH_OUT``
-    basename) onward — portable in every case; otherwise fall back to a
+    basename) onward, portable in every case; otherwise fall back to a
     cwd-relative label, and finally the filename only.
     """
     from omnigraph.paths import OMNIGRAPH_OUT_NAME
@@ -500,7 +518,7 @@ def to_html(
             else:
                 lesson = f"Lesson: {status} ({entry.get('uses', 0)} useful)"
             if stale:
-                lesson += " [code changed — re-verify]"
+                lesson += " [code changed - re-verify]"
             node["title"] = _html.escape(label) + "\n" + _html.escape(sanitize_label(lesson))
         vis_nodes.append(node)
 
@@ -552,23 +570,24 @@ def to_html(
 <div id="graph"></div>
 <div id="sidebar">
   <div id="search-wrap">
-    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
+    <input id="search" type="text" placeholder="Buscar por nome (função, arquivo, tela)…" autocomplete="off">
     <div id="search-results"></div>
   </div>
   <div id="info-panel">
-    <h3>Node Info</h3>
-    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+    <h3>Informações do nó</h3>
+    <div id="info-content">{_INFO_AJUDA}</div>
   </div>
   <div id="legend-wrap">
-    <h3>Communities</h3>
+    <h3>Áreas do projeto</h3>
+    {_COMUNIDADES_AJUDA}
     <div id="legend-controls">
-      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Select All</label>
+      <label><input type="checkbox" id="select-all-cb" checked onchange="toggleAllCommunities(!this.checked)">Selecionar tudo</label>
     </div>
     <div id="legend"></div>
   </div>
   <div id="stats">{stats}</div>
 </div>
-{_html_script(nodes_json, edges_json, legend_json)}
+{_html_script(nodes_json, edges_json, legend_json, _js_safe(_INFO_AJUDA))}
 {_hyperedge_script(hyperedges_json)}
 </body>
 </html>"""
