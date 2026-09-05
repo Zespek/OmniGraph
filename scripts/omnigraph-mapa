@@ -151,6 +151,12 @@ fi
 rm -f "$LOG"
 
 rodar_cluster
+
+# ativa a atualização automática (git hooks de post-commit/checkout/merge) para
+# o mapa não ficar parado nesta primeira geração, silencioso e nunca falha o
+# resto do script (pasta sem git, por exemplo, é comum e não é um erro aqui).
+( cd "$alvo" && "$OG" hook install ) >/dev/null 2>&1 || true
+
 html="$alvo/omnigraph-out/graph.html"
 
 # grafo grande (>5000 nós): o cluster-only pula o graph.html. Gera então a

@@ -110,6 +110,13 @@ Remove-Item $script:LOG -ErrorAction SilentlyContinue
 
 RodarCluster
 Write-Progress -Activity "Gerando o mapa" -Completed
+
+# ativa a atualizacao automatica (git hooks de post-commit/checkout/merge) para
+# o mapa nao ficar parado nesta primeira geracao - silencioso e nunca falha o
+# resto do script (pasta sem git, por exemplo, e comum e nao e um erro aqui).
+Push-Location $alvo
+try { & $og hook install *> $null } catch {} finally { Pop-Location }
+
 $html = Join-Path $alvo "omnigraph-out\graph.html"
 
 # grafo grande (>5000 nos): o cluster-only pula o graph.html; gera a visao agregada
