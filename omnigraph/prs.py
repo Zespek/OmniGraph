@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 from omnigraph.paths import default_graph_json as _default_graph_json
 
 
+# ── ANSI colours ─────────────────────────────────────────────────────────────
 
 _NO_COLOR = not sys.stdout.isatty() or os.environ.get("NO_COLOR")
 
@@ -57,6 +58,7 @@ def _pad(s: str, width: int) -> str:
     return s + " " * max(0, width - visible_len)
 
 
+# ── Data model ────────────────────────────────────────────────────────────────
 
 @dataclass
 class PRInfo:
@@ -66,11 +68,12 @@ class PRInfo:
     base_branch: str
     author: str
     is_draft: bool
-    review_decision: str
-    ci_status: str
+    review_decision: str        # APPROVED | CHANGES_REQUESTED | ""
+    ci_status: str              # SUCCESS | FAILURE | PENDING | NONE
     updated_at: datetime
-    expected_base: str = "main"
+    expected_base: str = "main"  # definido por fetch_prs via _detect_default_branch
     worktree_path: str | None = None
+    # Impacto do grafo – preenchido quando graph.json existe
     communities_touched: list[int] = field(default_factory=list)
     nodes_affected: int = 0
     files_changed: list[str] = field(default_factory=list)
@@ -92,6 +95,7 @@ class PRInfo:
         return f"{n} node{'s' if n != 1 else ''} / {c} communit{'ies' if c != 1 else 'y'}"
 
 
+# ── Classification ────────────────────────────────────────────────────────────
 
 _STATUS_ORDER = ["WRONG-BASE", "CI-FAIL", "CHANGES-REQ", "DRAFT", "STALE", "PENDING", "APPROVED", "READY"]
 _STALE_DAYS = 14
@@ -132,11 +136,16 @@ def _ci_icon(status: str) -> str:
     return {"SUCCESS": green("✓"), "FAILURE": red("✗"), "PENDING": yellow("…"), "NONE": dim("–")}.get(status, "?")
 
 
+# ── GitHub data fetching ──────────────────────────────────────────────────────
 
 def _gh(*args: str) -> list | dict | None:
     try:
         result = subprocess.run(
             ["gh", *args],
+            stdin=subprocess.DEVNULL,
+            # Decode gh's output as UTF-8, not the Windows cp1252 locale codec: gh
+            # emits UTF-8 JSON with non-Latin1 titles/logins (emoji, فارسی), and the
+            # default text=True decode crashes on those (fixed the same in llm).
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
         )
         if result.returncode != 0:
@@ -149,23 +158,27 @@ def _gh(*args: str) -> list | dict | None:
 def _detect_default_branch(repo: str | None = None) -> str:
     """Auto-detect the repo's default branch via gh, then git, then fall back to 'main'."""
     # Tente gh primeiro - funciona para qualquer repositório, não apenas para o diretório atual
-    args = ["repo", "view", "--json", "defaultBranchRef"]
+    args = ["repo", "view"]
     if repo:
-        args += ["--repo", repo]
+        args.append(repo)
+    args += ["--json", "defaultBranchRef"]
     data = _gh(*args)
     if data and data.get("defaultBranchRef", {}).get("name"):
         return data["defaultBranchRef"]["name"]
-    # Volte para git simbólico-ref para o repositório atual
-    try:
-        result = subprocess.run(
-            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
-        )
-        if result.returncode == 0:
-            ref = result.stdout.strip()
-            return ref.split("/")[-1] if ref else "main"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    # Fall back to git symbolic-ref for the current repo (only when repo is not specified)
+    if not repo:
+        try:
+            result = subprocess.run(
+                ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5
+            )
+            if result.returncode == 0:
+                # refs/remotes/origin/main → main
+                ref = result.stdout.strip()
+                return ref.split("/")[-1] if ref else "main"
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
     return "main"
 
 
@@ -223,7 +236,11 @@ def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
     if repo:
         args += ["--repo", repo]
     try:
-        result = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+        result = subprocess.run(
+            ["gh", *args],
+            stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30
+        )
         if result.returncode != 0:
             return []
         return [l.strip() for l in result.stdout.splitlines() if l.strip()]
@@ -231,6 +248,7 @@ def fetch_pr_files(number: int, repo: str | None = None) -> list[str]:
         return []
 
 
+# ── Impacto nativo do grafo (usado pelas ferramentas MCP — funciona diretamente no nx.Graph) ─────
 
 def _path_match(graph_src: str, pr_file: str) -> bool:
     """True if graph_src and pr_file refer to the same file (path-boundary safe)."""
@@ -286,12 +304,14 @@ def format_prs_text(prs: list["PRInfo"], base: str) -> str:
     return "\n\n".join(lines)
 
 
+# ── Worktree mapping ──────────────────────────────────────────────────────────
 
 def fetch_worktrees() -> dict[str, str]:
     """Returns {branch: worktree_path}."""
     try:
         result = subprocess.run(
             ["git", "worktree", "list", "--porcelain"],
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
         )
         if result.returncode != 0:
@@ -303,7 +323,7 @@ def fetch_worktrees() -> dict[str, str]:
     current_path = None
     for line in result.stdout.splitlines():
         if not line:
-            current_path = None
+            current_path = None  # linha em branco = separador de registros; redefinir para evitar vazamento em HEADs desconectados
         elif line.startswith("worktree "):
             current_path = line[9:]
         elif line.startswith("branch refs/heads/") and current_path:
@@ -311,6 +331,7 @@ def fetch_worktrees() -> dict[str, str]:
     return mapping
 
 
+# ── Graph impact analysis ─────────────────────────────────────────────────────
 
 def _load_graph_json(graph_path: Path) -> dict | None:
     if not graph_path.exists():
@@ -344,6 +365,7 @@ def attach_graph_impact(
     if not data:
         return {}
 
+    # Build file → {community, node_count} index
     file_to_communities: dict[str, set[int]] = {}
     file_to_nodes: dict[str, int] = {}
     for node in data.get("nodes", []):
@@ -389,6 +411,7 @@ def attach_graph_impact(
     return build_community_labels(data)
 
 
+# ── Dashboard rendering ───────────────────────────────────────────────────────
 
 def _truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n - 1] + "…"
@@ -398,6 +421,7 @@ def render_dashboard(prs: list[PRInfo], base: str = "v8", show_wrong_base: bool 
     actionable = [p for p in prs if p.base_branch == base]
     wrong_base = [p for p in prs if p.base_branch != base]
 
+    # Classificar: primeiro PRONTO, depois por ordem de status e depois por tempo recente
     actionable.sort(key=lambda p: (_STATUS_ORDER.index(p.status) if p.status in _STATUS_ORDER else 99, p.days_old))
 
     print()
@@ -407,6 +431,7 @@ def render_dashboard(prs: list[PRInfo], base: str = "v8", show_wrong_base: bool 
     if not actionable:
         print(dim("  No open PRs targeting this base branch."))
     else:
+        # Header
         print(f"  {'#':>4}  {'CI':2}  {'STATUS':13}  {'UPDATED':8}  {'IMPACT':22}  TITLE")
         print(f"  {'─'*4}  {'─'*2}  {'─'*13}  {'─'*8}  {'─'*22}  {'─'*40}")
 
@@ -421,6 +446,7 @@ def render_dashboard(prs: list[PRInfo], base: str = "v8", show_wrong_base: bool 
             num = _pad(bold(f"#{pr.number}"), 6)
             print(f"  {num}{wt}  {ci_str}  {status_str}  {age:>6}   {impact}  {title}{draft}")
 
+    # Summary line
     by_status: dict[str, int] = {}
     for p in actionable:
         by_status[p.status] = by_status.get(p.status, 0) + 1
@@ -480,6 +506,7 @@ def render_conflicts(
         print(dim("\n  No graph impact data - run with a valid graph.json to detect conflicts.\n"))
         return
 
+    # Build community → [PRs] map
     comm_to_prs: dict[int, list[PRInfo]] = {}
     for pr in actionable:
         for c in pr.communities_touched:
@@ -530,6 +557,7 @@ def render_pr_detail(pr: PRInfo, repo: str | None = None) -> None:
     print()
 
 
+# ── Triage (multi-backend) ────────────────────────────────────────────────────
 
 # Melhor modelo por back-end para tarefas de raciocínio (diferente dos padrões de extração)
 _TRIAGE_MODEL_DEFAULTS: dict[str, str] = {
@@ -657,6 +685,7 @@ def triage_with_opus(prs: list[PRInfo], base: str) -> None:
         print(f"\n\n  {red(f'Triage failed: {e}')}", file=sys.stderr)
 
 
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def cmd_prs(argv: list[str]) -> None:
     base: str | None = None  # detectado automaticamente no repositório se não for fornecido

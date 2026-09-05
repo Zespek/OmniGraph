@@ -14,9 +14,12 @@ _NODES_RE = re.compile(r"(\d+)\s+nodes?\s+found")
 
 def _log_path() -> Path | None:
     # Somente adesão. O log registra cada pergunta de consulta/caminho/explicação e
+    # caminho do corpus (e respostas completas se OMNIGRAPH_QUERY_LOG_RESPONSES) em um
     # arquivo de texto simples em ~/.cache - fora de qualquer .gitignore/retention de qualquer repositório. UM
     # o registro padrão de consultas proprietárias contradiz o dispositivo do zspekfy,
     # postura sem telemetria, portanto está DESLIGADO, a menos que seja explicitamente ativado:
+    #   OMNIGRAPH_QUERY_LOG=<caminho> registre-se nesse caminho ou
+    #   OMNIGRAPH_QUERY_LOG_ENABLE=1 log em ~/.cache/omnigraph-queries.log.
     # OMNIGRAPH_QUERY_LOG_DISABLE=1 ainda força o desligamento (compatibilidade retroativa, vitórias).
     if os.environ.get("OMNIGRAPH_QUERY_LOG_DISABLE", "").lower() in ("1", "true", "yes"):
         return None

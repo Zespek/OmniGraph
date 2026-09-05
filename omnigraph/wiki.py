@@ -9,8 +9,24 @@ import networkx as nx
 from omnigraph.build import edge_data
 from omnigraph.paths import stem_filename_budget
 
+# Room _unique_slug needs for the collision suffix ("_2" … "_9999") it appends
+# after _safe_filename has already capped the slug. The suffix is technically
+# unbounded, but 5 chars ("_" + 4 digits) covers ~10k identical stems, far past
+# anything real; sizing it to 3 digits let a 1000th collision overrun MAX_PATH.
 _SLUG_SUFFIX_RESERVE = 5
 
+# Characters a slug may not contain, because the article's LINK and its ON-DISK
+# NAME have to be the same string. Anything left here must be legal,
+# unescaped, in a CommonMark link destination:
+#   < > : " / \ | ? *   Windows-reserved in filenames (pre-existing set)
+#   ( )                 parentheses delimit/nest a link destination
+#   #                   starts a fragment, so `a#b.md` resolves to the file `a`
+#   %                   reads as the start of a percent-escape
+#   control chars       forbidden in a link destination, hostile in a filename
+#
+# Non-ASCII is deliberately NOT stripped. It is legal raw in a link destination
+# and resolves fine on every filesystem omnigraph targets; stripping it would
+# reduce a CJK, Cyrillic or accented wiki to a wall of underscores.
 _UNSAFE_SLUG_CHARS = re.compile(r'[<>:"/\\|?*#%\x00-\x1f\x7f]')
 
 
@@ -99,6 +115,20 @@ def _community_article(
     top_nodes = sorted(nodes, key=lambda n: G.degree(n), reverse=True)[:25]
     cross = _cross_community_links(G, nodes, cid, labels, node_community or {})
 
+    # Edge confidence breakdown, over every edge INCIDENT to the community (the
+    # cross-community ones included — those are disproportionately the uncertain
+    # edges, and AMBIGUOUS is what ARCHITECTURE.md flags for human review).
+    #
+    # ``G.edges(nbunch)`` reports each incident edge exactly once. Walking
+    # ``nodes x G.neighbors`` instead visited an edge once per endpoint inside
+    # the community, so an intra-community edge was counted TWICE while a
+    # crossing one was counted once. Intra-community edges are overwhelmingly
+    # the high-confidence EXTRACTED ones — that is what makes a community — so
+    # the split was biased towards confidence and understated the review
+    # burden. On a MultiGraph this also counts parallel edges individually
+    # rather than collapsing them to the first (``edge_data``), which is the
+    # same understatement: an AMBIGUOUS edge parallel to an EXTRACTED one used
+    # to be invisible here.
     conf_counts: Counter = Counter(
         d.get("confidence", "EXTRACTED") for *_, d in G.edges(nodes, data=True)
     )
@@ -183,6 +213,15 @@ def _god_node_article(G: nx.Graph, nid: str, labels: dict[int, str], node_commun
         lines.append(f"### {rel}")
         for t in targets[:20]:
             lines.append(f"- {t}")
+        # The cap keeps god-node articles readable, but silently dropping the
+        # tail made the body disagree with the header's degree count with
+        # nothing telling the reader anything was cut. Entries are
+        # degree-sorted, so what is hidden is the low-degree tail.
+        if len(targets) > 20:
+            lines.append(
+                f"- *…and {len(targets) - 20} more `{rel}` "
+                f"connection(s) not listed (lowest-degree first to go)*"
+            )
         lines.append("")
 
     lines += ["---", "", f"*Part of the omnigraph knowledge wiki. See {_md_link('index', resolver)} to navigate.*"]
@@ -283,6 +322,7 @@ def to_wiki(
     # Limpe arquivos .md obsoletos de execuções anteriores para evitar o acúmulo de órfãos.
     # Os rótulos da comunidade são gerados por LLM (por habilidade.md Etapa 5) e não determinísticos
     # entre execuções - a mesma comunidade conceitual pode receber nomes diferentes a cada vez
+    # (por exemplo, "AutoAgent Skills" → "AutoAgent Methodology"), deixando o arquivo anterior
     # como órfão. Como to_wiki() possui wiki/ inteiramente (sempre escreve o conjunto completo),
     # ele pode limpar arquivos .md com segurança no início de cada chamada.
     for old_article in out.glob("*.md"):
@@ -299,11 +339,17 @@ def to_wiki(
     count = 0
     used_slugs: set[str] = set()
 
+    # Articles are capped against THIS wiki directory, not just NAME_MAX: on
+    # Windows a 200-char slug under an ordinary omnigraph-out/wiki/ overruns
+    # MAX_PATH and write_text raises FileNotFoundError partway through the
+    # export. No-op on POSIX.
     _slug_limit = stem_filename_budget(out, reserve=_SLUG_SUFFIX_RESERVE)
 
     def _unique_slug(base: str) -> str:
         # Dobrar caso na verificação de colisão: dois rótulos diferindo apenas por caso
         # (por exemplo, "Analisador" vs "analisador") resolve para um caminho sem distinção entre maiúsculas e minúsculas
+        # sistemas de arquivos (macOS/APFS, Windows/NTFS), portanto, eles devem ser desduplicados em cada um
+        # other enquanto ainda emite o nome do arquivo do caso original.
         slug = base
         n = 2
         while slug.lower() in used_slugs:
@@ -312,6 +358,7 @@ def to_wiki(
         used_slugs.add(slug.lower())
         return slug
 
+    # Primeira passagem: atribua a cada artigo seu slug antes de renderizar qualquer corpo, para que o
     # os corpos podem se ligar uns aos outros. O destino de um link é o nome do arquivo no disco (o
     # slug), que difere do rótulo — _safe_filename transforma espaços em
     # sublinhados e substitutos de caracteres reservados, e um slug pode pegar um número
@@ -329,7 +376,7 @@ def to_wiki(
         community_slugs[cid] = slug
         resolver.setdefault(label, slug)
 
-    god_articles: list[tuple[str, str]] = []
+    god_articles: list[tuple[str, str]] = []  # (node_id, slug)
     for node_data in god_nodes_data:
         nid = node_data.get("id")
         if nid and nid in G:
@@ -349,6 +396,7 @@ def to_wiki(
         (out / f"{slug}.md").write_text(article, encoding="utf-8")
         count += 1
 
+    # Index
     (out / "index.md").write_text(
         _index_md(communities, labels, god_nodes_data, G.number_of_nodes(), G.number_of_edges(), resolver),
         encoding="utf-8",

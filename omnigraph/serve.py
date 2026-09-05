@@ -22,6 +22,16 @@ except ImportError:
     _jieba = None
 
 
+class ToolError(Exception):
+    """Raised by a tool handler to signal an error result.
+
+    A normal string return is sent as an ordinary (successful) text result. A
+    ToolError is instead turned into a tool result with ``isError: true`` so a
+    client that only checks ``isError`` can tell a genuine failure — e.g. the
+    ``gh`` CLI missing or a PR that cannot be resolved — from success.
+    """
+
+
 def _load_graph(graph_path: str) -> nx.Graph:
     try:
         resolved = Path(graph_path).resolve()
@@ -34,6 +44,10 @@ def _load_graph(graph_path: str) -> nx.Graph:
         data = json.loads(safe.read_text(encoding="utf-8"))
         if "links" not in data and "edges" in data:
             data = dict(data, links=data["edges"])
+        # Stash the on-disk logical flag before the load-time override below:
+        # `directed: True` exists only so renderers can recover stored arc
+        # order; tools that care about logical direction must
+        # not mistake the override for graph truth.
         _logical_directed = bool(data.get("directed", False))
         data = {**data, "directed": True}
         try:
@@ -115,6 +129,8 @@ class _GraphContextCache:
             graph = _load_graph(resolved_path)
         except SystemExit as exc:
             raise RuntimeError(f"could not load graph.json at {resolved_path}") from exc
+        # Warm the index before exposing the graph so its first query does not
+        # pay the expensive build cost.
         _get_trigram_index(graph)
         communities = _communities_from_graph(graph)
         entry = {
@@ -200,16 +216,20 @@ def _is_searchable(term: str) -> bool:
 
 
 # Palavras de pergunta/preenchimento retiradas dos termos de consulta para que as palavras de conteúdo impulsionem o BFS
+# semeadura. Sem isso, "como funciona o cache de fronteira" se origina em "como"/
 # "o"/"trabalho" (cujo prefixo corresponde a rótulos de prosa como "Princípios de Trabalho" em 100x)
+# em vez de "fronteira"/"cache" e cai na parte errada do grafo. Aplicado
 # para consultar apenas termos - o texto do nó nunca é filtrado, portanto, um símbolo é literalmente nomeado
 # `work` permanece encontrável via explicação/caminho. `work`/`works`/`working` estão incluídos
 # porque "como funciona o X" / "como funciona o X" é a pergunta mais comum.
+#
 # Palavras interrogativas que não sejam do inglês são igualmente prejudiciais: em um idioma predominantemente inglês
 # corpus de código, "wie"/"funktioniert" alemão são raros, então eles têm ALTO peso IDF
 # e supera o substantivo de conteúdo real em ordens de magnitude. Então isso também
 # traz um conjunto alemão com curadoria, além de uma versão recortada em francês/espanhol/português/italiano
 # conjunto de palavras de pergunta/preenchimento. Os diacríticos são mantidos intactos (o tokenizer de consulta
 # não tira NFKD).
+#
 # Compensação de colisão: algumas palavras irrelevantes estrangeiras também são palavras de conteúdo em inglês.
 # Incluímos aqueles de alto valor alemão, como "die"/"hat" (a palavra substituta de todas as palavras irrelevantes
 # em _query_terms e o caminho find_node não filtrado mantém um "die"/"hat" em inglês
@@ -218,6 +238,7 @@ def _is_searchable(term: str) -> bool:
 # também omitimos "comentário" (FR como), "venha" (IT como), "filho"/"pecado"/"con" (ES),
 # e "pour"/"des" (FR) - muito comuns como termos em inglês/código.
 _QUERY_STOPWORDS = frozenset({
+    # English
     "how", "what", "why", "when", "where", "which", "who", "whom", "whose",
     "does", "did", "is", "are", "was", "were", "be", "been", "being",
     "can", "could", "should", "would", "will", "shall", "may", "might", "must",
@@ -225,6 +246,7 @@ _QUERY_STOPWORDS = frozenset({
     "without", "into", "onto", "off", "that", "this", "these", "those", "there",
     "here", "its", "their", "them", "they", "about", "any", "all", "some",
     "work", "works", "working",
+    # German (articles/conjunctions/question words/auxiliaries/prepositions)
     "der", "die", "das", "den", "dem", "ein", "eine", "und", "oder", "nicht",
     "wie", "wer", "wann", "wo", "warum", "wieso",
     "welche", "welcher", "welches",
@@ -233,11 +255,15 @@ _QUERY_STOPWORDS = frozenset({
     "bei", "mit", "von", "fuer", "für", "ueber", "über", "nach", "aus",
     "gibt", "es",
     "funktioniert", "geaendert", "geändert", "aendert", "ändert",
+    # French
     "pourquoi", "quand", "quel", "quelle", "quels", "quelles", "quoi",
     "qui", "que", "est", "sont", "fonctionne", "cette", "dans", "avec", "où",
+    # Spanish
     "cómo", "como", "qué", "cuál", "cuáles", "cuándo", "dónde", "donde",
     "porque", "por", "para", "funciona", "está", "están", "hay",
+    # Portuguese
     "qual", "quais", "quando", "onde", "são", "estão", "tem", "uma", "não",
+    # Italian
     "perché", "cosa", "quale", "quali", "dove", "funziona", "sono", "che",
     "della",
 })
@@ -269,6 +295,14 @@ _EXACT_MATCH_BONUS = 1000.0
 _PREFIX_MATCH_BONUS = 100.0
 _SUBSTRING_MATCH_BONUS = 1.0
 _SOURCE_MATCH_BONUS = 0.5
+# The extraction spec stores the WHY of a concept as a `rationale` attribute
+# on the node, not as a node of its own, so for a "why does X …" question that
+# prose is often the only place the question's words occur. Score it
+# as its own tier: below a label substring hit (the label still names the
+# thing), above a source-path hit, and — like the source tier — never counted
+# toward term coverage, so a long rationale adds recall without winning back
+# an exact-label tier it did not earn.
+_RATIONALE_MATCH_BONUS = 0.75
 
 
 def _compute_idf(G: nx.Graph, terms: list[str]) -> dict[str, float]:
@@ -303,9 +337,27 @@ def _trigrams(text: str) -> set[str]:
     return {text[i:i + 3] for i in range(len(text) - 2)}
 
 
+def _node_rationale_text(data: dict) -> str:
+    """The node's `rationale` attribute normalized like a label (diacritics
+    folded, lower-cased) for substring matching. Semantic cleanup writes it as
+    one string (several sources joined with blank lines); an extractor may hand
+    over a list — join it. Missing or empty -> "" so callers can `if rationale`.
+    """
+    raw = data.get("rationale")
+    if not raw:
+        return ""
+    if isinstance(raw, (list, tuple)):
+        raw = " ".join(str(part) for part in raw if part)
+    return _strip_diacritics(str(raw)).lower()
+
+
 def _node_search_text(data: dict, nid: str) -> str:
     """Concatenate every field _score_nodes / _find_node match a query against, so
     one trigram index over this text is a complete candidate generator for both.
+
+    - `rationale` (normalized via `_node_rationale_text`) feeds _score_nodes'
+      rationale tier (#2293); appended last, and only when present, so every
+      other field position is unchanged.
 
     - `norm_label` and `source_file` feed _score_nodes' per-term substring tiers.
     - `label_tokens` (the space-joined token form) feeds _find_node's
@@ -337,6 +389,9 @@ def _node_search_text(data: dict, nid: str) -> str:
         nid_folded = _strip_diacritics(str(nid)).lower()
         if nid_folded != nid_text:
             fields += (nid_folded,)
+    rationale = _node_rationale_text(data)
+    if rationale:
+        fields += (rationale,)
     return "\x00".join(fields)
 
 
@@ -385,7 +440,7 @@ def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 
     for s in needles:
         tgs = _trigrams(s)
         if not tgs or any(len(g) < 3 for g in tgs):
-            return None
+            return None  # muito curto para filtro trigrama
         present = [len(postings[g]) for g in tgs if g in postings]
         if not present:
             continue  # esta agulha não corresponde a nada - não contribui com nenhum candidato
@@ -406,7 +461,7 @@ def _trigram_candidates(G: nx.Graph, needles: list[str], *, guard_frac: float = 
             sets.append(cached)
         if not sets:
             continue
-        sets.sort(key=len)
+        sets.sort(key=len)  # intersect smallest-first
         hit = set(sets[0])
         for other in sets[1:]:
             hit &= other
@@ -493,8 +548,10 @@ def _score_query(
         G.nodes(data=True) if candidate_ids is None
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
     )
+    # Melhor rastreamento por token, somente quando o chamador (o caminho da consulta) deseja o
     # metadados de sementes. A tupla de chave é o desempate multichave completo
     # (`(-singleton_score, -degree, label_len, nid)`), então `min` sobre o
+    # a chave armazenada espelha o legado `max(tied, key=degree)` em um
     # (-score, label_len, nid) lista term_scored classificada. `Nenhum` é comparável
     # como "menor" que cada tupla, então o primeiro candidato diferente de zero semeia o
     # entrada sem uma ramificação `if t not in best_by_term` separada.
@@ -508,8 +565,10 @@ def _score_query(
         # consulta). norm_label ainda pode conter pontuação como ':' ou '-', que
         # consulta tokenizada nunca pode ser igual; comparando formulários unidos por token em ambos
         # lados faz com que "uoce: driver de desumidificador" corresponda à consulta "desumidificador uoce
+        # driver".
         label_tokens = " ".join(_search_tokens(data.get("label") or ""))
         source = (data.get("source_file") or "").lower()
+        rationale = _node_rationale_text(data)
         # `nid_lower` é necessário tanto para o nível de consulta completa (`if join`) quanto para
         # a camada singleton por token (verificação de correspondência exata de singleto unido). Quando
         # nem executa (`joined` vazio E não coleta sementes) pula a chamada;
@@ -521,6 +580,7 @@ def _score_query(
         # `query` resolve o mesmo nó `explain` (via _find_node). Sem
         # isso, nenhum token único é igual a um rótulo de várias palavras, o valor exato por token
         # camada nunca é acionada e cada nó que compartilha o conjunto de tokens é vinculado -> arbitrário
+        # node-id sort -> endpoint errado/desconectado -> false "Nenhum caminho encontrado".
         if joined:
             if joined in (norm_label, bare_label, label_tokens, nid_lower):
                 score += _EXACT_MATCH_BONUS * 10 * joined_w
@@ -551,6 +611,7 @@ def _score_query(
             # o rastreamento singleton abaixo pode reutilizá-los sem reavaliar
             # os mesmos predicados. Precedência de três níveis: exato > prefixo >
             # substring (pegue o nível mais forte por termo, então um único termo
+            # cannot double-count).
             tier_value = 0.0
             substr_value = 0.0
             source_value = 0.0
@@ -567,12 +628,20 @@ def _score_query(
             if t in source:
                 source_value = _SOURCE_MATCH_BONUS * w
                 score += source_value
+            # Rationale tier: recall for "why" questions whose words
+            # live only in the attribute. Adds to the score, not to `matched`.
+            rationale_value = 0.0
+            if rationale and t in rationale:
+                rationale_value = _RATIONALE_MATCH_BONUS * w
+                score += rationale_value
             tiered += tier_value
             if collect_per_term_seeds and best_by_term is not None:
                 # Pontuação Singleton para [t] neste nó, espelhando
+                # `_score_nodes(G, [t])` exatamente (n_terms == 1, sem cobertura
                 # escala). A camada singleto unida é mais ampla do que a camada per-
                 # camada de token: também verifica `label_tokens` e `nid_lower`,
                 # correspondendo à chamada `_score_nodes([t])` de token único herdado
+                # (onde `ingressou == t`).
                 if t in (norm_label, bare_label, label_tokens, nid_lower):
                     singleton = _EXACT_MATCH_BONUS * 10 * w
                 elif (
@@ -583,9 +652,12 @@ def _score_query(
                     singleton = _PREFIX_MATCH_BONUS * 10 * w
                 else:
                     singleton = 0.0
-                singleton += tier_value + substr_value + source_value
+                singleton += tier_value + substr_value + source_value + rationale_value
                 if singleton > 0:
+                    # A chave de desempate reflete o legado sort+max(degree):
                     # (-singleton, -degree, label_len, nid) — o mínimo
+                    # tuple wins, exactly matching max(tied, key=degree)
+                    # over (label_len asc, nid asc)-sorted ties.
                     key = (-singleton, -G.degree(nid), len(data.get("label") or nid), nid)
                     cur = best_by_term.get(t)
                     if cur is None or key < cur[0]:
@@ -669,6 +741,7 @@ def _pick_seeds(
         return []
 
     # Desduplicar sementes por rótulo (normalizado) para um símbolo genérico e homônimo -
+    # por exemplo dezenas de manipuladores de rotas, todos rotulados como `GET`/`POST` ou um `handler`
     # repetido em uma estrutura - contribui no máximo com uma semente em vez de
     # consumindo todos os slots e inundando o BFS com bairros quase idênticos
     #. A chave reflete a normalização de _score_nodes, então `GET`/`Get`/`get`
@@ -701,10 +774,12 @@ def _pick_seeds(
         # outros termos. Iterar tokens em uma ordem de classificação determinística
         # então as sementes adicionadas por este loop têm uma ordem estável independente do dict
         # iteração — preservando o comportamento legado `_pick_seeds(terms=...)`
+        # que iterou `classificado ({tok ...})`. Chegam os vencedores por token
         # pré-computado em `best_seed_by_term` do único `_score_query`
         # travessia, então `_pick_seeds` não recupera mais a pontuação do grafo por termo.
         # O limite de desduplicação por rótulo também impede essas adições, portanto a garantia
         # não pode reintroduzir uma segunda cópia de um rótulo genérico já semeado
+        #.
         for term in sorted(best_seed_by_term):
             best_nid = best_seed_by_term[term]
             # Honre o mesmo limite por rótulo para que a garantia por prazo não possa
@@ -716,6 +791,16 @@ def _pick_seeds(
     return seeds
 
 
+# Verb-shaped tokens that express the RELATION a query asks about ("who calls
+# X", "what uses Y") rather than a symbol to look up. `_query_terms` keeps them
+# on purpose (a corpus can legitimately define an identifier named `calls`, see
+#), but they must not be handed a guaranteed seed slot in `_pick_seeds`:
+# an incidental prefix match (e.g. "calls" prefixing `.callStoreWithAmount()`)
+# would otherwise seat an unrelated decoy as a BFS root. Demotion
+# happens at the `_query_graph_text` call site, so `_score_query`'s ranking —
+# where such a verb can still win a seat on merit via the gap window — is
+# untouched. Deliberately verbs only; relation NOUNS (module, field, return)
+# stay eligible for the guarantee.
 _RELATIONAL_INTENT_TERMS: frozenset[str] = frozenset({
     "call", "calls", "called", "caller", "callers",
     "invoke", "invokes", "invoked",
@@ -870,6 +955,8 @@ def _complete_induced_edges(G: nx.Graph, visited: set[str], edges_seen: list[tup
         return (u, v) if directed else frozenset((u, v))
 
     seen = {_key(u, v) for u, v in edges_seen}
+    # sorted() so the appended order can't shift run-to-run with CPython's
+    # per-process string-hash seed, the same reason the renderer sorts.
     for u, v in G.edges(sorted(visited)):
         if u == v or v not in visited:
             continue
@@ -951,6 +1038,12 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     overlay = getattr(G, "graph", {}).get("_learning_overlay", {}) or {}
     seed_set = set(seeds or [])
     seed_hits = [n for n in (seeds or []) if n in nodes]
+    # Rank non-seed nodes by hop distance from the seeds so the node that answers
+    # the query (a direct hit or its close neighbors) survives the budget cut
+    # instead of being pushed past it by incidental high-degree hubs (#BUG2). BFS
+    # discovery order was discarded upstream (_bfs returns a set), so recompute
+    # layers here over BOTH edge directions. Deterministic: neighbor iteration is
+    # insertion-ordered and the sort key ends in str(n) (no hash-order).
     def _adj(n):
         if G.is_directed():
             yield from G.successors(n)
@@ -974,9 +1067,11 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     )
     for nid in ordered:
         d = G.nodes[nid]
+        # Cada campo derivado do LLM passa por sanitize_label antes de ser
         # concatenado na saída da ferramenta MCP (F-010): um invasor que controla um
         # caso contrário, o documento corpus pode injetar escapes ANSI, falso omnigraph-out
         # linhas de log ou marcação de injeção imediata no contexto do modelo por meio de
+        # source_file / source_location / community.
         # O sufixo learning= é anexado DENTRO do colchete e ANTES do
         # verificação de orçamento abaixo, portanto conta na contabilidade char_budget.
         entry = overlay.get(str(nid))
@@ -997,12 +1092,25 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
         if u in nodes and v in nodes:
             raw = G[u][v]
             d = next(iter(raw.values()), {}) if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)) else raw
+            # (u, v) is BFS/DFS visit order, not necessarily the true edge
+            # direction: on an undirected graph G.neighbors() walks callers
+            # and callees alike, so a caller->callee edge renders backwards
+            # whenever the callee is visited first. _src/_tgt (stashed on the
+            # edge data by the `query` CLI loader) carry the real direction;
+            # fall back to (u, v) for graphs/edges that don't set them.
             src = d.get("_src", u)
             tgt = d.get("_tgt", v)
+            # Guard against a stray/dangling _src/_tgt (hand-edited or adversarial
+            # graph.json): only trust them when they name exactly this edge's
+            # endpoints, else fall back to (u, v). Without this, G.nodes[src]
+            # would KeyError on an unknown id (review).
             if {src, tgt} != {u, v}:
                 src, tgt = u, v
             context = d.get("context")
             context_suffix = f" context={sanitize_label(str(context))}" if context else ""
+            # The relation SITE (call/import/reference line in the source's
+            # file), not a def line — so "who calls X" cites a clickable call
+            # location, not the caller's def (#BUG1).
             _loc = str(d.get("source_location") or "")
             at_suffix = (
                 f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
@@ -1019,13 +1127,34 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
     if len(output) > char_budget:
         cut_at = output[:char_budget].rfind("\n")
         cut_at = cut_at if cut_at > 0 else char_budget
+        # Never cut the seed nodes: they render first, so if the budget lands
+        # inside the seed block, extend the cut to cover it. The symbol the
+        # question named must always be in the answer (#BUG2). Seeds are bounded
+        # (_pick_seeds max_k + one per term), so the overshoot is a few lines.
         if seed_hits:
             seed_block_end = sum(len(lines[i]) + 1 for i in range(len(seed_hits))) - 1
             cut_at = max(cut_at, min(seed_block_end, len(output)))
         total_nodes = sum(1 for l in lines if l.startswith("NODE "))
         shown_nodes = output[:cut_at].count("\nNODE ") + (1 if output.startswith("NODE ") else 0)
         cut_count = total_nodes - shown_nodes
+        # Nodes render before edges, so a char-budget overflow whose cut lands
+        # past the last NODE line drops only trailing edges — no whole node is
+        # lost. Announcing "showing N of N nodes … among the 0 cut nodes" then
+        # reads as a false truncation warning that teaches an agent to distrust a
+        # complete answer and burn follow-up narrowing calls for nodes that were
+        # never cut. When every node is shown the answer is complete, so
+        # edges are never dropped either (returning output[:cut_at] here would
+        # silently truncate them) — but that completeness guarantee is exactly
+        # why a query can quietly cost 4-6x its requested budget once the last
+        # node crosses the fit line: the check above only ever compared
+        # the FULL output (nodes+edges) against char_budget, so this branch was
+        # already known to be over budget, yet said nothing about it. Report the
+        # real size instead of silence — still the complete, non-truncated
+        # answer, just an honest one.
         if cut_count == 0:
+            # Reached only inside `len(output) > char_budget`, so every node
+            # fits but the full nodes+edges output does not: an honest
+            # over-budget notice, never a truncation.
             total_edges = sum(1 for l in lines if l.startswith("EDGE "))
             est_tokens = len(output) // 3
             return (
@@ -1037,6 +1166,10 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                 f"with context_filter=['call'] or use get_node for a specific "
                 f"symbol to reduce size instead.\n\n"
             ) + output
+        # Prominent notice at the TOP so a truncated answer can never be mistaken
+        # for a complete one — silence used to read as absence (#BUG2). The
+        # notice + end marker sit OUTSIDE char_budget by design (two bounded
+        # wrapper lines, like the existing end marker).
         output = (
             f"[!] TRUNCATED: showing {shown_nodes} of {total_nodes} nodes "
             f"(~{token_budget}-token budget). The answer may be among the "
@@ -1063,6 +1196,9 @@ def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) 
     kept = output[:cut_at]
     shown = kept.count("\n") + 1
     cut_count = len(lines) - shown
+    # Announce truncation at the TOP as well, matching _subgraph_to_text — a
+    # bottom-only marker reads as silence/absence (the BUG-2 fix rationale). The
+    # notice sits outside char_budget by design (one bounded wrapper line).
     return (
         f"[!] TRUNCATED: showing {shown} of {len(lines)} lines "
         f"(~{token_budget}-token budget). {narrow_hint}\n\n"
@@ -1073,6 +1209,27 @@ def _cut_lines_to_budget(lines: list[str], token_budget: int, narrow_hint: str) 
     )
 
 
+def _display_graph_path(graph_path: str) -> str:
+    """Render a graph path for the query header.
+
+    Relative to the CWD when it sits underneath it — `omnigraph-out/graph.json`,
+    which is the ordinary case and stays short. Absolute otherwise, because a
+    graph outside the directory you are standing in is precisely the situation
+    the header exists to make visible (#2789). Always POSIX separators so the
+    line reads the same on either platform. Falls back to the path as given if
+    it cannot be resolved; this is a display helper and must never be the reason
+    a query fails.
+    """
+    try:
+        p = Path(graph_path).resolve()
+        try:
+            return p.relative_to(Path.cwd().resolve()).as_posix()
+        except ValueError:
+            return p.as_posix()
+    except (OSError, RuntimeError, ValueError):
+        return str(graph_path)
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1081,13 +1238,23 @@ def _query_graph_text(
     depth: int = 3,
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
+    graph_path: str | None = None,
 ) -> str:
     terms = _query_terms(question)
     # Uma passagem de pontuação do grafo produz a classificação combinada (usada para direcionar
     # a seleção de sementes baseada em lacunas abaixo) e os vencedores singleton por token
+    # (usado pela garantia por prazo de _pick_seeds). Anteriormente, eram passes T+1
+    # — um combinado + um por token de consulta — percorrendo novamente o grafo inteiro cada
     # tempo; em um benchmark de três termos de 100 mil nós, aproximadamente 71% do tempo de pontuação foi
     # gastos nesses passes redundantes por período.
     qs = _score_query(G, terms, collect_per_term_seeds=True)
+    # Relational-intent verbs ("calls", "uses", ...) describe the relation the
+    # question asks about, not a symbol to seed from; drop them from the
+    # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
+    # BFS root. They keep their place in `qs.ranked`, so a genuine
+    # identifier named after a verb can still win a seat on merit via the gap
+    # window — and when the query consists ONLY of intent words (bare "calls"),
+    # the guarantee is left intact so such an identifier stays reachable.
     best_seed_by_term = qs.best_seed_by_term
     intent = {t for t in best_seed_by_term if t in _RELATIONAL_INTENT_TERMS}
     if intent and any(t not in _RELATIONAL_INTENT_TERMS for t in terms):
@@ -1104,10 +1271,24 @@ def _query_graph_text(
         f"Traversal: {mode.upper()} depth={depth}",
         f"Start: {[G.nodes[n].get('label', n) for n in start_nodes]}",
     ]
+    # Name the graph this answer came from. `omnigraph-out/` resolves against the
+    # CWD, so running a query from a parent project while thinking about a
+    # vendored subproject silently answers from the wrong corpus — the output is
+    # well-formed and confidently wrong, and nothing in it said which graph was
+    # opened. Shown relative when the graph is under the CWD (the normal
+    # case, and short), absolute when it is not — which is exactly the case worth
+    # noticing. The node count travels with it because "355 nodes" vs "3178
+    # nodes" is often the first thing that looks wrong.
+    if graph_path:
+        header_parts.insert(0, f"Graph: {_display_graph_path(graph_path)} "
+                               f"({G.number_of_nodes()} nodes)")
     if resolved_filters:
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
+    # Pass the seeds so the queried symbol renders first and survives truncation
+    # (#BUG2): a branch merge had silently dropped this argument, leaving the
+    # seed-first ordering as dead code.
     return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
 
 
@@ -1130,6 +1311,8 @@ def _find_node_tiers(
     # `term`/`label_tokens` funciona quando o rótulo do nó tokeniza da mesma maneira, mas é
     # frágil se `label` e `norm_label` divergem. `norm_query` corresponde a `norm_label`
     # simetricamente para que um rótulo pontuado exatamente digitado sempre seja resolvido.
+    # `nid_norm` below extends that symmetry to node ids, which keep their
+    # punctuation too and are compared raw against the tokenized `term`.
     norm_query = _strip_diacritics(str(label)).lower().strip()
     source_exact: list[str] = []
     exact: list[str] = []
@@ -1148,6 +1331,8 @@ def _find_node_tiers(
         label_tokens = " ".join(_search_tokens(d.get("label") or ""))
         source_tokens = " ".join(_search_tokens(d.get("source_file") or ""))
         nid_lower = nid.lower()
+        # `_strip_diacritics` is the identity on ASCII, so the NFKD fold is only
+        # paid for ids that actually carry non-ASCII text.
         nid_norm = nid_lower if nid.isascii() else _strip_diacritics(nid).lower()
         if term == source_tokens:
             source_exact.append(nid)
@@ -1174,6 +1359,8 @@ def _find_node_tiers(
         for nid in source_exact:
             if str(G.nodes[nid].get("source_location", "")) != "L1":
                 continue
+            # File-node label is the bare basename OR a directory-qualified form
+            # from the disambiguation pass (e.g. "process-order/index.ts").
             lbl = _strip_diacritics(str(G.nodes[nid].get("label") or "")).lower()
             if lbl == query_basename or lbl.endswith("/" + query_basename):
                 preferred.append(nid)
@@ -1221,6 +1408,31 @@ def find_node_ambiguity(G: nx.Graph, label: str) -> list[str]:
     return []
 
 
+def _resolve_single_node(G: nx.Graph, label: str) -> tuple[str | None, str | None]:
+    """Shared node resolution for the get_node / get_neighbors tools.
+
+    Returns ``(node_id, None)`` when *label* resolves to a single winner via the
+    tiered `_find_node` ranking, or ``(None, message)`` when there is no match or
+    the winning tier spans several source files. Routing both tools through this
+    keeps get_node from silently returning a `G.nodes()` iteration-order match for
+    a hub name while get_neighbors reports the same lookup as ambiguous (#ADR-0001).
+    """
+    matches = _find_node(G, label)
+    if not matches:
+        return None, f"No node matching '{label}' found."
+    rivals = find_node_ambiguity(G, label)
+    if rivals:
+        listing = "\n".join(
+            f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
+        )
+        return None, (
+            f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
+            f"{listing}\n"
+            "Retry with the repo-relative path or the full node id."
+        )
+    return matches[0], None
+
+
 def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     """Body of the `shortest_path` MCP tool (module-level so tests can call it
     without an mcp install).
@@ -1238,6 +1450,7 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     tgt_nid = _pick_scored_endpoint(G, tgt_scored, arguments["target"])
     # Proteção de ambigüidade: quando ambas as consultas são resolvidas para o mesmo nó, o
     # o caminho mais curto é trivialmente zero saltos, o que quase nunca é o que o
+    # caller wanted (see bug).
     if src_nid == tgt_nid:
         return (
             f"'{arguments['source']}' and '{arguments['target']}' both resolved to "
@@ -1260,12 +1473,20 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     max_hops = int(arguments.get("max_hops", 8))
     undirected = bool(arguments.get("undirected", False))
     try:
+        # Deterministic path: the hash-seeded undirected view picked an
+        # arbitrary route among equal-length paths. Build a sorted, materialized
+        # graph so the chosen path is canonical. Serve's shared G is left
+        # untouched (its degree feeds query-seed tie-breaks).
         if undirected:
             _und = nx.Graph()
             _und.add_nodes_from(sorted(G.nodes))
             _und.add_edges_from(sorted((min(u, v), max(u, v)) for u, v in G.edges()))
             path_nodes = nx.shortest_path(_und, src_nid, tgt_nid)
         else:
+            # Directed by default. True direction is NOT raw arc
+            # order: legacy canonicalized files persist a flipped arc with
+            # _src/_tgt markers, so build the digraph from _src/_tgt
+            # (falling back to the loaded arc) rather than to_directed().
             _dg = nx.DiGraph()
             _dg.add_nodes_from(sorted(G.nodes))
             _dg.add_edges_from(sorted(
@@ -1287,6 +1508,11 @@ def _shortest_path_text(G: nx.Graph, arguments: dict) -> str:
     segments = []
     for i in range(len(path_nodes) - 1):
         u, v = path_nodes[i], path_nodes[i + 1]
+        # Report the actual stored relation(s), never a fabricated `calls`;
+        # fall back to an honest "related" when the edge has no relation.
+        # Direction truth lives in the per-link _src/_tgt markers: a
+        # legacy canonicalized file can persist a flipped arc, so classify each
+        # hop by _src (falling back to the arc tail) instead of raw arc order.
         fwd, bwd = [], []
         for a, b in ((u, v), (v, u)):
             if G.has_edge(a, b):
@@ -1341,6 +1567,7 @@ def _community_header(cid: int, community_name) -> str:
     # Ignore o nome quando for apenas o espaço reservado "Community N" (escrito para
     # comunidades sem nome) para que o cabeçalho nunca leia "Comunidade 12 — Comunidade 12";
     # também recorre ao id simples quando não há nome. O nome está higienizado
+    # (F-010) como qualquer outro campo derivado do LLM.
     base = f"Community {cid}"
     if community_name:
         clean = sanitize_label(str(community_name))
@@ -1365,10 +1592,15 @@ def _build_server(graph_path: str):
     try:
         from mcp.types import AnyUrl
     except ImportError:
+        # mcp >= 2.0 dropped the AnyUrl re-export; it was always pydantic's
+        # AnyUrl (pydantic is an mcp dependency, so this import cannot miss).
         from pydantic import AnyUrl
 
     from omnigraph import paths as _paths
 
+    # Graph contexts comprise one pinned configured default plus a bounded LRU
+    # of project_path graphs. This preserves the configured graph's warm index
+    # while preventing a shared server from retaining every project it serves.
     _default_graph_path = str(Path(graph_path).resolve())
     _ctx_cache = _GraphContextCache(_max_server_contexts())
 
@@ -1395,6 +1627,7 @@ def _build_server(graph_path: str):
     # manipuladores abaixo. Não é necessário bloqueio no caminho ativo: _select_graph e o
     # manipulador executado em um trecho síncrono de cada corrotina call_tool (sem
     # aguardam entre eles), então uma chamada simultânea nunca observa um meio aplicado
+    # swap.
     active_graph_path = _default_graph_path
     try:
         G, communities = _load_ctx(_default_graph_path)
@@ -1410,6 +1643,10 @@ def _build_server(graph_path: str):
         G, communities = _load_ctx(path)
         active_graph_path = str(Path(path).resolve())
 
+    # NOTE: no decorators here — the handlers below are plain coroutines,
+    # bound to the Server at the END of this function in a version-aware way:
+    # mcp 1.x exposes the @server.list_tools()/... decorator API, mcp 2.x
+    # replaced it with on_list_tools=/... constructor callbacks.
     async def list_tools() -> list[types.Tool]:
         _tools = [
             types.Tool(
@@ -1469,7 +1706,11 @@ def _build_server(graph_path: str):
             types.Tool(
                 name="god_nodes",
                 description="Return the most connected nodes - the core abstractions of the knowledge graph.",
-                inputSchema={"type": "object", "properties": {"top_n": {"type": "integer", "default": 10}}},
+                inputSchema={"type": "object", "properties": {
+                    "top_n": {"type": "integer", "default": 10},
+                    "exclude_hubs_percentile": {"type": "number",
+                                                "description": "Suppress nodes whose degree exceeds this percentile (0-100) of the degree distribution, matching cluster()'s hub exclusion"},
+                }},
             ),
             types.Tool(
                 name="graph_stats",
@@ -1542,9 +1783,12 @@ def _build_server(graph_path: str):
             ),
         ]
         # Suporte a vários projetos: cada ferramenta aceita um project_path opcional.
+        # Injetado aqui (em vez de repetido em 11 esquemas literais) para que o conjunto
         # permanece em sincronia à medida que as ferramentas são adicionadas. Omiti-lo mantém o histórico
         # comportamento de grafo único, portanto, isso é puramente aditivo para chamadores existentes.
         for _t in _tools:
+            # The constructor accepts the camelCase alias in both majors, but
+            # attribute access is inputSchema on mcp 1.x and input_schema on 2.x.
             _schema = getattr(_t, "inputSchema", None)
             if _schema is None:
                 _schema = _t.input_schema
@@ -1574,6 +1818,7 @@ def _build_server(graph_path: str):
             depth=depth,
             token_budget=budget,
             context_filters=context_filter,
+            graph_path=str(active_graph_path),
         )
         querylog.log_query(
             kind="mcp_query",
@@ -1589,16 +1834,21 @@ def _build_server(graph_path: str):
 
     def _tool_get_node(arguments: dict) -> str:
         label = arguments["label"].lower()
-        matches = [(nid, d) for nid, d in G.nodes(data=True)
-                   if label in (d.get("label") or "").lower() or label == nid.lower()]
-        if not matches:
-            return f"No node matching '{label}' found."
-        nid, d = matches[0]
+        nid, err = _resolve_single_node(G, label)
+        if err:
+            return err
+        d = G.nodes[nid]
         # Limpe todos os campos derivados do LLM antes da concatenação (F-010).
         return "\n".join([
             f"Node: {sanitize_label(d.get('label', nid))}",
             f"  ID: {sanitize_label(nid)}",
             f"  Source: {sanitize_label(str(d.get('source_file', '')))} {sanitize_label(str(d.get('source_location', '')))}",
+            # A C/C++/ObjC symbol declared in a header and defined in the sibling
+            # impl file is ONE node keyed to the header, so Source alone points at
+            # the declaration. Name where it is implemented too, when known.
+            *([f"  Defined in: {sanitize_label(str(d.get('definition_file', '')))} "
+               f"{sanitize_label(str(d.get('definition_location', '')))}"]
+              if d.get("definition_file") else []),
             f"  Type: {sanitize_label(str(d.get('file_type', '')))}",
             f"  Community: {sanitize_label(str(d.get('community_name') or d.get('community', '')))}",
             f"  Degree: {G.degree(nid)}",
@@ -1607,22 +1857,13 @@ def _build_server(graph_path: str):
     def _tool_get_neighbors(arguments: dict) -> str:
         label = arguments["label"].lower()
         rel_filter = arguments.get("relation_filter", "").lower()
-        matches = _find_node(G, label)
-        if not matches:
-            return f"No node matching '{label}' found."
-        rivals = find_node_ambiguity(G, label)
-        if rivals:
-            listing = "\n".join(
-                f"  {G.nodes[r].get('source_file') or r}\n    id: {r}" for r in rivals
-            )
-            return (
-                f"Ambiguous: '{label}' matches {len(rivals)} nodes in different files.\n"
-                f"{listing}\n"
-                "Retry with the repo-relative path or the full node id."
-            )
-        nid = matches[0]
+        nid, err = _resolve_single_node(G, label)
+        if err:
+            return err
         lines = [f"Neighbors of {sanitize_label(G.nodes[nid].get('label', nid))}:"]
         def _edge_at(d: dict) -> str:
+            # Edge location = the relation SITE (call/import line) in the source
+            # node's file, not a def line (#BUG1).
             loc = str(d.get("source_location") or "")
             return (
                 f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(loc)}"
@@ -1672,7 +1913,11 @@ def _build_server(graph_path: str):
 
     def _tool_god_nodes(arguments: dict) -> str:
         from omnigraph.analyze import god_nodes as _god_nodes
-        nodes = _god_nodes(G, top_n=int(arguments.get("top_n", 10)))
+        _pct = arguments.get("exclude_hubs_percentile")
+        nodes = _god_nodes(
+            G, top_n=int(arguments.get("top_n", 10)),
+            exclude_hubs_percentile=float(_pct) if _pct is not None else None,
+        )
         lines = ["God nodes (most connected):"]
         lines += [f"  {i}. {n['label']} - {n['degree']} edges" for i, n in enumerate(nodes, 1)]
         return "\n".join(lines)
@@ -1699,7 +1944,7 @@ def _build_server(graph_path: str):
         try:
             prs = fetch_prs(repo=repo, base=base)
         except RuntimeError as e:
-            return f"Error: {e}"
+            raise ToolError(f"Error: {e}") from e
         worktrees = fetch_worktrees()
         for pr in prs:
             pr.worktree_path = worktrees.get(pr.branch)
@@ -1716,7 +1961,7 @@ def _build_server(graph_path: str):
             view_args += ["--repo", repo]
         pr_data = _gh(*view_args)
         if pr_data is None:
-            return f"PR #{number} not found or gh not authenticated."
+            raise ToolError(f"PR #{number} not found or gh not authenticated.")
         files = fetch_pr_files(number, repo)
         if not files:
             return f"PR #{number}: no changed files found (may require gh auth)."
@@ -1743,7 +1988,7 @@ def _build_server(graph_path: str):
         try:
             prs = fetch_prs(repo=repo, base=base)
         except RuntimeError as e:
-            return f"Error: {e}"
+            raise ToolError(f"Error: {e}") from e
         worktrees = fetch_worktrees()
         for pr in prs:
             pr.worktree_path = worktrees.get(pr.branch)
@@ -1800,6 +2045,8 @@ def _build_server(graph_path: str):
         return {cid: f"Community {cid}" for cid in communities}
 
     async def list_resources() -> list[types.Resource]:
+        # Plain-string URIs on purpose: mcp 1.x types the field as AnyUrl and
+        # coerces strings, mcp 2.x types it as str and REJECTS AnyUrl objects.
         return [
             types.Resource(uri="omnigraph://report", name="Graph Report", description="Full GRAPH_REPORT.md", mimeType="text/markdown"),
             types.Resource(uri="omnigraph://stats", name="Graph Stats", description="Node/edge/community counts and confidence breakdown", mimeType="text/plain"),
@@ -1867,23 +2114,39 @@ def _build_server(graph_path: str):
         if not handler:
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
-            _select_graph(project_path)
+            _select_graph(project_path)  # vincular G/comunidades ao grafo de destino
             return [types.TextContent(type="text", text=handler(arguments))]
+        except ToolError:
+            # A handler-signalled error: propagate so the result is marked
+            # isError:true (the mcp 1.x decorator wraps a raised exception into
+            # an error result; the 2.x path catches it in _on_call_tool).
+            raise
         except Exception as exc:
             return [types.TextContent(type="text", text=f"Error executing {name}: {exc}")]
 
     if hasattr(Server, "list_tools"):
+        # mcp 1.x: decorator-based registration. The SDK wraps the raw returns
+        # (list[Tool] -> ListToolsResult, str -> resource contents) itself.
         server = Server("omnigraph")
         server.list_tools()(list_tools)
         server.call_tool()(call_tool)
         server.list_resources()(list_resources)
         server.read_resource()(read_resource)
     else:
+        # mcp 2.x: handlers ride the Server constructor as on_* callbacks with
+        # the (ctx, params) -> Result contract, so wrap the same impls and
+        # build the result models the 1.x decorators used to build for us.
         async def _on_list_tools(ctx, params) -> types.ListToolsResult:
             return types.ListToolsResult(tools=await list_tools())
 
         async def _on_call_tool(ctx, params) -> types.CallToolResult:
-            content = await call_tool(params.name, dict(params.arguments or {}))
+            try:
+                content = await call_tool(params.name, dict(params.arguments or {}))
+            except ToolError as exc:
+                return types.CallToolResult(
+                    content=[types.TextContent(type="text", text=str(exc))],
+                    isError=True,
+                )
             return types.CallToolResult(content=content)
 
         async def _on_list_resources(ctx, params) -> types.ListResourcesResult:
@@ -2034,6 +2297,7 @@ def _build_http_app(
     # Proteção de religação de DNS. Quando o operador vincula um endereço curinga, ele
     # estão expondo intencionalmente o servidor, então aceite qualquer cabeçalho Host; por um
     # loopback/ligação específica, restrinja o Host a esse endereço (com e sem
+    # a porta) mais os aliases do host local.
     if host in ("0.0.0.0", "::", ""):  # nosec B104
         security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     else:

@@ -23,6 +23,7 @@ def validate_extraction(data: dict) -> list[str]:
     # o validador na construção do conjunto.
     node_ids: set = set()
 
+    # Nodes
     if "nodes" not in data:
         errors.append("Missing required key 'nodes'")
     elif not isinstance(data["nodes"], list):
@@ -50,6 +51,7 @@ def validate_extraction(data: dict) -> list[str]:
                     f"'{node['file_type']}' - must be one of {sorted(VALID_FILE_TYPES)}"
                 )
 
+    # Arestas - aceite "links" (NetworkX <= 3.1) como substituto para "arestas"
     edge_list = data.get("edges") if "edges" in data else data.get("links")
     if edge_list is None:
         errors.append("Missing required key 'edges'")

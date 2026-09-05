@@ -1,3 +1,4 @@
+# escrever grafo em HTML, JSON, SVG, GraphML, Obsidian vault e Neo4j Cypher
 from __future__ import annotations
 import hashlib
 import html as _html
@@ -15,7 +16,7 @@ from networkx.readwrite import json_graph
 from omnigraph.security import sanitize_label
 from omnigraph.analyze import _node_community_map
 from omnigraph.build import edge_data
-from omnigraph.paths import stem_filename_budget
+from omnigraph.paths import stem_filename_budget, write_json_atomic, write_text_atomic
 
 from omnigraph.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -97,12 +98,21 @@ def backup_if_protected(out_dir: Path) -> "Path | None":
         return None
 
 def _obsidian_tag(name: str) -> str:
-    """Sanitize a community name for use as an Obsidian tag.
+    r"""Sanitize a community name for use as an Obsidian tag.
 
-    Obsidian tags only allow alphanumerics, hyphens, underscores, and slashes.
-    Spaces become underscores; everything else is stripped.
+    Obsidian tags accept letters from any language plus digits, hyphens,
+    underscores and slashes; spaces and most punctuation are not allowed, and a
+    tag cannot be digits-only. ``\w`` is Unicode-aware in Python 3, so Hangul,
+    CJK, Cyrillic and accented Latin survive instead of being stripped (#2862):
+    an ASCII-only filter collapsed every non-Latin community label to
+    underscores, so every note in that community carried the same tag.
     """
-    return re.sub(r"[^a-zA-Z0-9_\-/]", "", name.replace(" ", "_"))
+    tag = re.sub(r"[^\w\-/]", "", name.replace(" ", "_"))
+    if not tag.strip("_-/"):
+        return "unnamed"          # label was punctuation only
+    if tag.isdigit():
+        return f"c{tag}"          # Obsidian ignores digits-only tags
+    return tag
 
 
 def _strip_diacritics(text: str | None) -> str:
@@ -156,12 +166,26 @@ from omnigraph.exporters.base import COMMUNITY_COLORS  # noqa: E402,F401
 from omnigraph.exporters.html import to_html  # noqa: E402,F401
 
 
-_CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.5, "AMBIGUOUS": 0.2}
+# Fallback scores for an edge that carries a confidence tier but no
+# confidence_score. The INFERRED default was 0.5, which references/extraction-spec.md
+# rules out in as many words — "never omit it, never use 0.5 as a default" — and
+# which is not in the discrete INFERRED set {0.55, 0.65, 0.75, 0.85, 0.95} either.
+# It is now the bottom of that set: a missing score is an absence of evidence
+# about strength, so the honest fallback is the weakest value the rubric allows,
+# not a midpoint that reads as a coin flip. Every AST emission site now
+# supplies its own score, so this is a backstop rather than a routine path.
+_CONFIDENCE_SCORE_DEFAULTS = {"EXTRACTED": 1.0, "INFERRED": 0.55, "AMBIGUOUS": 0.2}
 
 
 def attach_hyperedges(G: nx.Graph, hyperedges: list) -> None:
     """Store hyperedges in the graph's metadata dict."""
     existing = G.graph.get("hyperedges", [])
+    # Skip id-less persisted entries when seeding the dedup set: the
+    # semantic extractor emits hyperedges with no `id` and build.py persists them
+    # verbatim, so a prior graph.json can contain id-less hyperedges. A hard
+    # `h["id"]` here raised `KeyError: 'id'` on every incremental re-extract,
+    # symmetric with the `.get("id")` guard the loop below already applies to the
+    # incoming set.
     seen_ids = {h["id"] for h in existing if h.get("id")}
     for h in hyperedges:
         if h.get("id") and h["id"] not in seen_ids:
@@ -190,6 +214,10 @@ def _git_head(cwd: "str | Path | None" = None) -> str | None:
         return None
 
 
+# Sentinel: an existing graph.json is present and non-empty but cannot be parsed
+# into a node count (corrupt, mid-write, or structurally wrong). The caller must
+# fail CLOSED on this — the same way to_json's guard refuses to overwrite
+# such a file — because we cannot prove the new graph isn't a silent shrink.
 MALFORMED_GRAPH = object()
 
 
@@ -215,10 +243,12 @@ def existing_graph_node_count(path: "str | Path"):
     try:
         check_graph_file_size_cap(p)
     except Exception:
+        # Oversized: reading it to compare would be the DoS the cap guards against.
         return None
     try:
         raw = p.read_text(encoding="utf-8")
     except Exception:
+        # Present but unreadable: fail closed if it has bytes, else nothing to lose.
         try:
             return MALFORMED_GRAPH if p.stat().st_size > 0 else None
         except Exception:
@@ -243,6 +273,7 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         except Exception:
             # O graph.json existente ultrapassa o limite de tamanho; lê-lo para comparar seria
             # seja o mesmo DoS contra o qual o limite se protege. Não é possível verificar. Deixe o novo
+            # grafo substitua o arquivo superdimensionado.
             oversized = True
         else:
             oversized = False
@@ -262,6 +293,7 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
                 except Exception as exc:
                     # Grafo existente não vazio, mas não analisável (corrompido ou um
                     # mid-write): não podemos verificar se o novo grafo não é silencioso
+                    # encolher. Fail SAFE – recuse em vez de substituir. UM
                     # fail-OPEN aqui (o comportamento anterior) é a perda silenciosa de dados
                     # o caminho existe para evitar: um texto transitoriamente ilegível
                     # graph.json permitiria que uma reconstrução parcial fosse boa.
@@ -308,6 +340,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if "confidence_score" not in link:
             conf = link.get("confidence", "EXTRACTED")
             link["confidence_score"] = _CONFIDENCE_SCORE_DEFAULTS.get(conf, 1.0)
+        # Restore original edge direction. Undirected NetworkX storage may
+        # canonicalizar a ordem dos endpoints, invertendo `chamadas` e outros direcionais
         # arestas em graph.json. O caminho de construção armazena os endpoints verdadeiros em
         # _src/_tgt exatamente para esse propósito.
         true_src = link.pop("_src", None)
@@ -315,9 +349,34 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
         if true_src is not None and true_tgt is not None:
             link["source"] = true_src
             link["target"] = true_tgt
+    # Canonicalize the key order WITHIN each node/link dict. node_link_data always
+    # appends the node key (`id`) at the end, so a node whose `id` was an inline
+    # attribute on a cold build (position varies) lands last after a read-rebuild
+    # (build_from_json consumes `id` as the pure node key). The values are
+    # identical either way, but the field order churns, so a byte-diff of two
+    # equivalent graph.json files is noisy and any position-sensitive consumer
+    # sees a spurious change on every round-trip. Emit a stable order — the
+    # identity keys first, then the remaining keys sorted — so the serialized
+    # form is invariant regardless of how the attribute was stored in memory.
+    def _canonical(item: dict, lead: tuple[str, ...]) -> dict:
+        leading = [k for k in lead if k in item]
+        rest = sorted(k for k in item if k not in leading)
+        return {k: item[k] for k in (*leading, *rest)}
+
+    data["nodes"] = [_canonical(n, ("id", "label")) for n in data["nodes"]]
+    data["links"] = [_canonical(link, ("source", "target", "relation")) for link in data["links"]]
     data["nodes"].sort(key=_json_sort_key)
     data["links"].sort(key=_json_sort_key)
     if "hyperedges" not in getattr(G, "graph", {}):
+        # Hardening: a graph with NO hyperedges key at all was built by
+        # a path that never engaged hyperedge metadata — distinct from an
+        # intentional empty set ([], which build_from_json now stores
+        # explicitly after a full-wipeout revalidation). If the file on disk
+        # already holds a non-empty set, emptying it without a trace is silent
+        # data loss; warn loudly so the wipeout is attributable. We still write
+        # the graph's truth rather than preserving the stale set — resurrecting
+        # hyperedges whose members may no longer exist would reintroduce the
+        # dangling-member shape removed.
         _prev_hyperedges = None
         try:
             if existing_path.exists():
@@ -340,10 +399,14 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     if isinstance(data.get("graph"), dict) and "hyperedges" in data["graph"]:
         data["graph"]["hyperedges"] = hyperedges
     data["hyperedges"] = hyperedges
+    # Fallback provenance comes from the repo the graph is being written INTO
+    # (output_path lives in <target>/omnigraph-out/), never the shell's cwd —
+    # the same cwd-anchoring mistake fixed for `update`.
     commit = built_at_commit if built_at_commit is not None else _git_head(Path(output_path).resolve().parent)
     if commit:
         data["built_at_commit"] = commit
     from omnigraph.paths import write_json_atomic
+    # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
     write_json_atomic(output_path, data, indent=2)
     return True
 
@@ -439,6 +502,31 @@ def to_cypher(G: nx.Graph, output_path: str) -> None:
 generate_html = to_html
 
 
+# Characters XML 1.0 cannot carry: the C0 controls except tab, LF and CR.
+_XML_ILLEGAL_RE = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _strip_xml_illegal(s: str) -> str:
+    """Drop characters XML 1.0 cannot represent, leaving tab/LF/CR intact.
+
+    ``nx.write_graphml`` raises ``ValueError("All strings must be XML
+    compatible: Unicode or ASCII, no NULL bytes or control characters")`` on any
+    of them and aborts the whole export over a single label. Labels arrive
+    unfiltered from the corpus, so this is ordinary content rather than hostile
+    input: an ANSI escape in a markdown heading pasted from a terminal capture,
+    or the form feed some Python/Emacs sources use as a section separator
+    (#2897).
+    """
+    return _XML_ILLEGAL_RE.sub("", s)
+
+
+# C0 controls and DEL, folded to a space when building a filename stem. Windows
+# rejects them in a path outright with OSError EINVAL, so one of them in a label
+# aborted a whole Obsidian vault export; POSIX would accept the name but leave a
+# note nothing can comfortably open.
+_CONTROL_TO_SPACE_RE = re.compile("[\x00-\x1f\x7f]")
+
+
 def _cap_filename(s: str, limit: int = 200) -> str:
     """Cap a filename stem to ``limit`` UTF-8 bytes so it stays under the 255-byte
     filesystem limit even after the ``.md`` extension and dedup suffix are added
@@ -451,9 +539,76 @@ def _cap_filename(s: str, limit: int = 200) -> str:
     if len(b) <= limit:
         return s
     digest = hashlib.sha1(s.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]  # nosec - não é segurança
-    keep = limit - 9
+    keep = limit - 9  # "_" + 8 hex chars
     truncated = b[:keep].decode("utf-8", "ignore")  # "ignorar" descarta um caractere dividido à direita
     return f"{truncated}_{digest}"
+
+
+# A frontmatter tag entry in omnigraph's own namespace, e.g. "  - omnigraph/document".
+_OMNIGRAPH_TAG_RE = re.compile(r"^\s*-\s+omnigraph/\S")
+
+# Frontmatter sits at the very top of a note; reading this much is enough to see
+# the whole block without pulling a large note into memory.
+_NOTE_FRONTMATTER_PROBE_BYTES = 4096
+
+# Community notes carry no frontmatter; omnigraph identifies its own by the
+# Dataview query it writes into every one of them.
+_COMMUNITY_QUERY_MARKER = "FROM #community/"
+
+
+def _is_omnigraph_note(path: Path) -> bool:
+    """Whether a vault note carries omnigraph's own frontmatter signature.
+
+    Every note omnigraph writes opens with a YAML frontmatter block tagging it in
+    the ``omnigraph/`` namespace::
+
+        ---
+        source_file: "d0.md"
+        tags:
+          - omnigraph/document
+          - omnigraph/EXTRACTED
+        ---
+
+    Only that block is inspected, and only a tag entry inside it counts — a
+    user's note that merely mentions omnigraph in its prose is not adopted.
+
+    Community overview notes are recognised separately: they carry no
+    frontmatter at all, so they are identified by omnigraph's own filename prefix
+    together with the Dataview query it writes into the body. Requiring both
+    keeps a user's own ``_COMMUNITY_*.md`` from being adopted on the name alone.
+    """
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            head = fh.read(_NOTE_FRONTMATTER_PROBE_BYTES)
+    except OSError:
+        return False
+    if path.name.startswith(_COMMUNITY_PREFIX) and _COMMUNITY_QUERY_MARKER in head:
+        return True
+    if not head.startswith("---"):
+        return False
+    for line in head.splitlines()[1:]:
+        if line.strip() == "---":
+            return False  # frontmatter closed without a omnigraph tag
+        if _OMNIGRAPH_TAG_RE.match(line):
+            return True
+    return False
+
+
+def _adopt_pre_manifest_notes(out: Path) -> set[str]:
+    """Names of notes in *out* that omnigraph itself wrote before manifests existed.
+
+    Deliberately limited to top-level ``*.md``: those are the only files omnigraph
+    can identify as its own from their content. ``.obsidian/graph.json`` is NOT
+    adopted — omnigraph writes one, but so does Obsidian, and with no manifest
+    there is no way to tell whose it is. Leaving it unowned keeps the
+    conservative behaviour for the one file where guessing wrong would cost the
+    user their own vault configuration.
+    """
+    try:
+        candidates = sorted(out.glob("*.md"))
+    except OSError:
+        return set()
+    return {p.name for p in candidates if _is_omnigraph_note(p)}
 
 
 def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
@@ -468,20 +623,36 @@ def _obsidian_safe_stem(label: str, limit: int = 200) -> str:
     cleaned = re.sub(
         r'[\\/*?:"<>|#^[\]]',
         "",
-        label.replace("\r\n", " ").replace("\r", " ").replace("\n", " "),
+        # CR/LF were already folded to spaces here; every other C0 control now
+        # goes the same way. They are not merely awkward in a filename — Windows
+        # rejects them outright, so a single one aborted the whole vault export
+        # rather than spoiling one note.
+        _CONTROL_TO_SPACE_RE.sub(" ", label),
     ).strip()
     cleaned = re.sub(r"\.(md|mdx|qmd|markdown)$", "", cleaned, flags=re.IGNORECASE)
+    # Obsidian treats a leading-dot filename as a hidden file. Only
+    # prefix when something nameable remains after the dots: an all-dots label
+    # like "..." would otherwise become the meaningless stem "dot-" instead of
+    # falling through to the "unnamed" guard below.
     if cleaned.startswith(".") and re.search(r"\w", cleaned.lstrip("."), flags=re.UNICODE):
         cleaned = "dot-" + cleaned.lstrip(".")
     # Um radical apenas de pontuação (por exemplo, "@", "*", "#") sobrevive ao caractere inseguro
+    # faixa acima, mas fica vazia quando uma ferramenta downstream reinstala caracteres de palavras
+    # (por exemplo, handelize() do qmd reduz "@" -> "" e aumenta, abortando todo o
     # `atualização qmd`). Exigir pelo menos um caractere de palavra; senão recuamos para nunca mais
+    # emita um nome de arquivo no estilo "@.md".
     if not re.search(r"\w", cleaned, flags=re.UNICODE):
         return "unnamed"
     return _cap_filename(cleaned, limit)
 
 
+# Room _dedup_node_filenames / the community loop need for a collision suffix
+# ("_1" … "_9999") appended AFTER the stem was capped. The suffix is technically
+# unbounded, but 5 chars ("_" + 4 digits) covers ~10k identical stems, far past
+# anything real; sizing it to 3 digits let a 1000th collision overrun MAX_PATH.
 _DEDUP_SUFFIX_RESERVE = 5
 
+# Prefix the community overview notes carry ("_COMMUNITY_Backend.md").
 _COMMUNITY_PREFIX = "_COMMUNITY_"
 
 
@@ -532,8 +703,18 @@ def to_obsidian(
     _manifest_path = out / ".omnigraph_obsidian_manifest.json"
     try:
         _owned: set[str] = set(json.loads(_manifest_path.read_text(encoding="utf-8")).get("files", []))
+        _manifest_existed = True
     except (OSError, ValueError):
         _owned = set()
+        _manifest_existed = False
+    if not _manifest_existed:
+        # A vault written before the manifest existed has no record of what
+        # omnigraph owns, so every note it wrote last time reads as the user's and
+        # is skipped. The re-export then writes fresh notes BESIDE the stale ones
+        # and the vault carries two generations, with a warning claiming omnigraph
+        # "did not create" files it did. Adopt the notes that carry
+        # omnigraph's own frontmatter, once, so the manifest starts out honest.
+        _owned |= _adopt_pre_manifest_notes(out)
     _written: list[str] = []
     _skipped: list[str] = []
 
@@ -545,12 +726,15 @@ def to_obsidian(
             _skipped.append(rel_name)
             return False
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")  # nosec
+        write_text_atomic(target, content)
         _written.append(rel_name)
         return True
 
     node_community = _node_community_map(communities)
 
+    # Cap stems against THIS vault's path, not just NAME_MAX: on Windows the
+    # 200-byte default plus an ordinary vault directory overruns MAX_PATH and
+    # every note write raises FileNotFoundError. No-op on POSIX.
     _stem_limit = stem_filename_budget(out, reserve=_DEDUP_SUFFIX_RESERVE)
 
     # Mapeie node_id → nome de arquivo seguro para que os wikilinks permaneçam consistentes.
@@ -568,6 +752,7 @@ def to_obsidian(
             return "EXTRACTED"
         return Counter(confs).most_common(1)[0][0]
 
+    # Map file_type → omnigraph tag
     _FTYPE_TAG = {
         "code": "omnigraph/code",
         "document": "omnigraph/document",
@@ -575,6 +760,7 @@ def to_obsidian(
         "image": "omnigraph/image",
     }
 
+    # Write one .md file per node
     node_notes_written = 0
     for node_id, data in G.nodes(data=True):
         label = data.get("label", node_id)
@@ -596,6 +782,7 @@ def to_obsidian(
         lines: list[str] = []
 
         # Frontmatter YAML - legível no painel de propriedades do Obsidian.
+        # Todos os escalares passam por _yaml_str, portanto, um source_file hostil ou
         # o rótulo da comunidade não pode ser quebrado e injetado chaves irmãs (F-009).
         lines += [
             "---",
@@ -605,6 +792,7 @@ def to_obsidian(
         ]
         if data.get("source_location"):
             lines.append(f'location: "{_yaml_str(str(data["source_location"]))}"')
+        # Adicionar lista de tags ao frontmatter
         lines.append("tags:")
         for tag in node_tags:
             lines.append(f"  - {tag}")
@@ -622,6 +810,7 @@ def to_obsidian(
                 lines.append(f"- [[{neighbor_label}]] - `{relation}` [{confidence}]")
             lines.append("")
 
+        # Tags embutidas na parte inferior do corpo da nota (para painel de tags Obsidian)
         inline_tags = " ".join(f"#{t}" for t in node_tags)
         lines.append(inline_tags)
 
@@ -629,6 +818,7 @@ def to_obsidian(
         if _owned_write(fname, "\n".join(lines)):
             node_notes_written += 1
 
+    # Escreva uma nota geral _COMMUNITY_name.md por comunidade
     # Crie contagens de vantagem intercomunitárias para "Conexões com outras comunidades"
     inter_community_edges: dict[int, dict[int, int]] = {}
     for cid in communities:
@@ -658,12 +848,15 @@ def to_obsidian(
             else f"Community {cid}"
         )
 
+    # Um nome de arquivo desduplicado e dobrado por caixa por comunidade, calculado uma vez para que a nota que
     # write e cada referência cruzada [[_COMMUNITY_...]] é resolvida para o mesmo arquivo.
     # Dois rótulos de comunidade diferindo apenas por caso (por exemplo, rótulos LLM "API" vs "Api")
     # caso contrário, sobrescreveriam uns aos outros em sistemas de arquivos que não diferenciam maiúsculas de minúsculas - e
     # esse caminho não teve nenhuma desduplicação, portanto, até rótulos duplicados no mesmo caso colidiram.
     community_filename: dict = {}
     used_community: set[str] = set()
+    # The community stem carries the "_COMMUNITY_" prefix on top of the dedup
+    # suffix, so it gets that much less of the MAX_PATH window.
     _community_stem_limit = stem_filename_budget(
         out, reserve=_DEDUP_SUFFIX_RESERVE + len(_COMMUNITY_PREFIX)
     )
@@ -682,13 +875,16 @@ def to_obsidian(
         community_name = _community_name(cid)
         # A lista de membros de uma comunidade pode conter ids sem nó de apoio em G
         # (por exemplo, nós removidos, atribuições de comunidade obsoletas de uma execução anterior ou
+        # ids de artefato sintetizados/mesclados). Desreferenciando aqueles via G.nodes[n] ou
         # node_filename[n] gera KeyError e aborta toda a exportação do vault, então
+        # pule membros pendentes em vez de travar (problema).
         members = [m for m in all_members if m in G and m in node_filename]
         n_members = len(members)
         coh_value = cohesion.get(cid) if cohesion else None
 
         lines: list[str] = []
 
+        # YAML frontmatter
         lines.append("---")
         lines.append("type: community")
         if coh_value is not None:
@@ -699,6 +895,7 @@ def to_obsidian(
         lines.append(f"# {community_name}")
         lines.append("")
 
+        # Cohesion + member count summary
         if coh_value is not None:
             cohesion_desc = (
                 "tightly connected" if coh_value >= 0.7
@@ -709,6 +906,7 @@ def to_obsidian(
         lines.append(f"**Members:** {n_members} nodes")
         lines.append("")
 
+        # Members section
         lines.append("## Members")
         for node_id in sorted(members, key=lambda n: G.nodes[n].get("label", n)):
             data = G.nodes[node_id]
@@ -723,6 +921,7 @@ def to_obsidian(
             lines.append(entry)
         lines.append("")
 
+        # Dataview live query (improvement 2)
         comm_tag_name = _obsidian_tag(community_name)
         lines.append("## Live Query (requires Dataview plugin)")
         lines.append("")
@@ -772,7 +971,10 @@ def to_obsidian(
     graph_config = {
         "colorGroups": [
             {
-                "query": f"tag:#community/{label.replace(' ', '_')}",
+                # Same sanitizer as the note tags: built from the raw
+                # label, the canvas colour group queried a tag that no note
+                # carries whenever the label held non-ASCII or punctuation.
+                "query": f"tag:#community/{_obsidian_tag(label)}",
                 "color": {"a": 1, "rgb": int(COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)].lstrip('#'), 16)}
             }
             for cid, label in sorted((community_labels or {}).items())
@@ -783,6 +985,8 @@ def to_obsidian(
     # notas de remoção para nós que saíram do grafo. Somente arquiva o
     # o manifesto diz que os proprietários do omnigraph são candidatos e qualquer coisa escrita ou ignorada
     # esta execução é excluída - portanto, a nota do próprio usuário nunca é tocada (arquivos estrangeiros
+    # terreno em _skipped, nunca _owned). Proteja cada caminho para permanecer dentro do cofre em
+    # caso um manifesto corrompido/hostil contenha entradas `../`.
     stale = _owned - set(_written) - set(_skipped)
     pruned = 0
     for rel_name in sorted(stale):
@@ -834,8 +1038,13 @@ def to_canvas(
     Opens in Obsidian as an infinite canvas with community groupings visible.
     """
     # Códigos de cores da tela Obsidian (percorrer para comunidades)
-    CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]
+    CANVAS_COLORS = ["1", "2", "3", "4", "5", "6"]  # red, orange, yellow, green, cyan, purple
 
+    # Build node_filenames if not provided (same dedup logic as to_obsidian).
+    # The CLI calls to_canvas without passing the map, so it must derive the
+    # SAME stem budget to keep card links pointing at the notes to_obsidian
+    # wrote — hence budgeting against the canvas's own directory, which is the
+    # vault directory.
     _stem_limit = stem_filename_budget(
         Path(output_path).parent, reserve=_DEDUP_SUFFIX_RESERVE
     )
@@ -844,6 +1053,7 @@ def to_canvas(
             G, lambda label: _obsidian_safe_stem(label, _stem_limit)
         )
 
+    # Fallback: sem dados da comunidade (por exemplo, --no-cluster builds ou faltando
     # sidecar de análise) a grade abaixo não produz nada e a tela é escrita
     # como um shell vazio de 32 bytes em um grafo preenchido de outra forma. Emitir cada nó
     # em uma comunidade sintética para que a tela sempre reflita o grafo.
@@ -857,6 +1067,7 @@ def to_canvas(
     canvas_nodes: list[dict] = []
     canvas_edges: list[dict] = []
 
+    # Disponha as comunidades em uma grade
     gap = 80
     group_x_offsets: list[int] = []
     group_y_offsets: list[int] = []
@@ -864,12 +1075,14 @@ def to_canvas(
     # Pré-calcule os tamanhos dos grupos para que possamos calcular as compensações.
     # inner_cols é a largura da grade por comunidade; as dimensões da caixa E o nó
     # o loop de posicionamento abaixo de ambos deriva dele, então os cartões sempre preenchem a caixa
+    # em vez de embrulhar em uma tira estreita dentro de uma caixa grande.
     sorted_cids = sorted(communities.keys())
     group_sizes: dict[int, tuple[int, int]] = {}
     group_cols: dict[int, int] = {}
     for cid in sorted_cids:
         # Ignore os membros pendentes da comunidade sem nó/nome de arquivo de apoio, então caixa
         # o dimensionamento corresponde aos cartões realmente dispostos e `G.nodes[m]` nunca
+        # KeyErrors abaixo — espelha o guarda to_obsidian.
         members = [m for m in communities[cid] if m in G and m in node_filenames]
         n = len(members)
         inner_cols = max(1, math.ceil(math.sqrt(n)))
@@ -878,6 +1091,7 @@ def to_canvas(
         group_sizes[cid] = (w, h)
         group_cols[cid] = inner_cols
 
+    # Calcule alturas cumulativas de linhas e larguras de colunas para posicionamento da grade
     # Cada célula da grade usa a largura/altura máxima em sua coluna/linha
     col_widths: list[int] = []
     row_heights: list[int] = []
@@ -901,6 +1115,7 @@ def to_canvas(
                 max_h = max(max_h, h)
         row_heights.append(max_h)
 
+    # Mapa de cid → (group_x, group_y, group_w, group_h)
     group_layout: dict[int, tuple[int, int, int, int]] = {}
     for idx, cid in enumerate(sorted_cids):
         col_idx = idx % cols
@@ -926,6 +1141,7 @@ def to_canvas(
         gx, gy, gw, gh = group_layout[cid]
         canvas_color = CANVAS_COLORS[idx % len(CANVAS_COLORS)]
 
+        # Group node
         canvas_nodes.append({
             "id": f"g{cid}",
             "type": "group",
@@ -983,7 +1199,7 @@ def to_canvas(
         })
 
     canvas_data = {"nodes": canvas_nodes, "edges": canvas_edges}
-    Path(output_path).write_text(json.dumps(canvas_data, indent=2), encoding="utf-8")  # nosec
+    write_json_atomic(output_path, canvas_data, indent=2)
 
 
 def to_graphml(
@@ -1009,18 +1225,34 @@ def to_graphml(
     for _, _, attrs in H.edges(data=True):
         for k in [k for k in attrs if k.startswith("_")]:
             del attrs[k]
+    # nx.write_graphml aceita apenas valores de atributos escalares: Nenhum aumenta e um
     # valor de dict/lista (por exemplo, um dict `metadados` por nó ou o nível de grafo
+    # lista `hyperedges` definida por attach_hyperedges()) aumenta
     # "GraphML não suporta o tipo <class 'dict'/'list'> como valores de dados".
     # Coerce None -> "" e não escalares -> uma string JSON, em todos os três escopos.
     def _graphml_safe(val):
         if val is None:
             return ""
-        if isinstance(val, bool) or isinstance(val, (int, float, str)):
-            return val
+        if isinstance(val, bool) or isinstance(val, (int, float)):
+            return val  # GraphML-native scalars pass through unchanged
+        if isinstance(val, str):
+            # Scalar, but still has to be XML-representable — see
+            # _strip_xml_illegal. This is the line that turns "one label carried
+            # an ANSI escape" from a lost export into a lost escape character.
+            return _strip_xml_illegal(val)
         try:
-            return json.dumps(val, default=str, sort_keys=True)
+            return _strip_xml_illegal(json.dumps(val, default=str, sort_keys=True))
         except (TypeError, ValueError):
-            return str(val)
+            return _strip_xml_illegal(str(val))
+
+    # Node IDs become the `id` attribute of every <node> and edge endpoint, so
+    # they must be XML-representable too. Normalised ids never carry a control
+    # character, but a caller can hand us a hand-built graph, and a crash here
+    # loses the export just as completely as one in the values.
+    _id_remap = {n: _strip_xml_illegal(n) for n in H.nodes if isinstance(n, str)}
+    _id_remap = {k: v for k, v in _id_remap.items() if k != v}
+    if _id_remap:
+        H = nx.relabel_nodes(H, _id_remap, copy=True)
 
     for key, val in list(H.graph.items()):
         H.graph[key] = _graphml_safe(val)
@@ -1099,6 +1331,7 @@ def to_svg(
                             labels={n: G.nodes[n].get("label", n) for n in G.nodes()},
                             font_size=7, font_color="white")
 
+    # Legend
     if community_labels:
         patches = [
             mpatches.Patch(

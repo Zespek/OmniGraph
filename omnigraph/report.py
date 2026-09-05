@@ -139,13 +139,25 @@ def generate(
         ]
 
     from .analyze import _is_file_node as _ifn
+
+    def _real_count(nodes) -> int:
+        return sum(1 for n in nodes if not _ifn(G, n))
+
     non_empty = {cid: nodes for cid, nodes in communities.items()
                  if any(not _ifn(G, n) for n in nodes)}
+    # One predicate for every figure the report prints about itself:
+    # "thin" is 0 < real < min_community_size, and "shown" is what the render
+    # loop below actually renders (real >= min_community_size) - previously
+    # shown was total-thin, which also counted communities with ZERO real
+    # nodes that the loop skips, overstating the count ('s residual).
     thin_count_summary = sum(
         1 for nodes in communities.values()
-        if 0 < sum(1 for n in nodes if not _ifn(G, n)) < min_community_size
+        if 0 < _real_count(nodes) < min_community_size
     )
-    shown_count = len(communities) - thin_count_summary
+    shown_count = sum(
+        1 for nodes in communities.values()
+        if _real_count(nodes) >= min_community_size
+    )
 
     lines += [
         "",
@@ -170,6 +182,7 @@ def generate(
     # são criados apenas pela exportação `--obsidian` opcional, e o relatório é escrito
     # no momento da construção (antes de qualquer exportação ser executada), portanto, a emissão de wikilinks por padrão é deixada
     # todo link pendurado - poluindo a visão de grafo de um cofre Obsidian e renderizando como
+    # colchetes literais em todos os outros lugares. Emitir wikilinks somente quando o chamador
     # sinais de saída Obsidiana; caso contrário, uma lista simples, que não navega para lugar nenhum.
     if non_empty:
         lines += ["", "## Community Hubs (Navigation)"]
@@ -211,6 +224,7 @@ def generate(
     # As importações circulares surgiram do grafo de dependência em nível de arquivo. Apenas significativo
     # para código — um corpus somente de documentos não tem importações, então a seção é pura
     # ruído ali ("Nenhum detectado" em todas as corridas). Emita-o somente quando o grafo
+    # actually contains code.
     _has_code = any(
         d.get("file_type") == "code" for _, d in G.nodes(data=True)
     ) or any(
@@ -272,6 +286,7 @@ def generate(
                 f"  {d.get('source_file', '')} · relation: {d.get('relation', 'unknown')}",
             ]
 
+    # --- Gaps section ---
     from .analyze import _is_file_node, _is_concept_node
 
     isolated = [
@@ -281,9 +296,13 @@ def generate(
         and not _is_concept_node(G, n)
         and G.nodes[n].get("file_type") != "rationale"
     ]
+    # Same threshold the Summary and Communities headers used: this
+    # was a hardcoded 3, so with --min-community-size anything else the count
+    # here disagreed with the label text beside it, which already printed
+    # min_community_size.
     thin_communities = {
         cid: nodes for cid, nodes in communities.items()
-        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < 3
+        if 0 < sum(1 for n in nodes if not _is_file_node(G, n)) < min_community_size
     }
     gap_count = len(isolated) + len(thin_communities)
 
@@ -292,13 +311,19 @@ def generate(
         if isolated:
             isolated_labels = [G.nodes[n].get("label", n) for n in isolated[:5]]
             suffix = f" (+{len(isolated)-5} more)" if len(isolated) > 5 else ""
+            raw_isolated = sum(1 for n in G.nodes() if G.degree(n) <= 1)
             lines.append(f"- **{len(isolated)} isolated node(s):** {', '.join(f'`{l}`' for l in isolated_labels)}{suffix}")
-            lines.append("  These have ≤1 connection - possible missing edges or undocumented components.")
+            lines.append(
+                "  These have ≤1 connection - possible missing edges or undocumented components. "
+                f"(Counts symbols only; {raw_isolated} node(s) total have ≤1 connection when "
+                "file, concept and rationale nodes are included.)"
+            )
         if thin_communities:
             lines.append(f"- **{len(thin_communities)} thin communities (<{min_community_size} nodes) omitted from report** — run `omnigraph query` to explore isolated nodes.")
         if amb_pct > 20:
             lines.append(f"- **High ambiguity: {amb_pct}% of edges are AMBIGUOUS.** Review the Ambiguous Edges section above.")
 
+    # --- Work-memory lessons (derived overlay) ---
     # As fontes preferidas vêm do arquivo secundário .omnigraph_learning.json; o
     # Os becos sem saída com escopo de consulta vêm do agregado de reflexão. Seção omitida
     # inteiramente quando nenhum deles está presente, então um grafo sem memória de trabalho é
