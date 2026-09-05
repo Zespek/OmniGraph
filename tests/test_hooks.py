@@ -5,7 +5,7 @@ import subprocess
 from types import SimpleNamespace
 from pathlib import Path
 import pytest
-from omnigraph.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER
+from omnigraph.hooks import install, uninstall, status, _hooks_dir, _HOOK_MARKER, _CHECKOUT_MARKER, _MERGE_MARKER
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -121,6 +121,87 @@ def test_status_shows_both_hooks(tmp_path):
     assert result.count("installed") >= 2
 
 
+def test_install_creates_post_merge_hook(tmp_path):
+    """`git pull` triggers post-merge, not post-checkout/post-commit. Without this
+    hook, a teammate who just pulls someone else's commits never gets a graph
+    rebuild, only the original committer does."""
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert hook.exists()
+    assert _MERGE_MARKER in hook.read_text()
+
+
+def test_install_post_merge_is_executable(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    if os.name == "nt":
+        assert hook.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+    else:
+        assert hook.stat().st_mode & 0o111
+
+
+def test_uninstall_removes_post_merge_hook(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    uninstall(repo)
+    hook = repo / ".git" / "hooks" / "post-merge"
+    assert not hook.exists()
+
+
+def test_status_shows_all_three_hooks(tmp_path):
+    repo = _make_git_repo(tmp_path)
+    install(repo)
+    result = status(repo)
+    assert "post-commit" in result
+    assert "post-checkout" in result
+    assert "post-merge" in result
+    assert result.count("installed") >= 3
+
+
+def test_post_merge_hook_fires_on_fast_forward_pull(tmp_path):
+    """End-to-end: a real fast-forward `git pull` must invoke post-merge (proves
+    the hypothesis behind this hook: post-checkout only fires on branch
+    switches, so without post-merge a plain pull never rebuilds anything)."""
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not available")
+
+    def _git(*args, cwd):
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True, capture_output=True)
+
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    subprocess.run(["git", "clone", "-q", str(remote), str(a)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", str(remote), str(b)], check=True, capture_output=True)
+    for repo in (a, b):
+        _git("config", "user.email", "t@t.co", cwd=repo)
+        _git("config", "user.name", "t", cwd=repo)
+
+    (a / "f.txt").write_text("x", encoding="utf-8")
+    _git("add", "-A", cwd=a)
+    _git("commit", "-qm", "init", cwd=a)
+    _git("push", "-q", "origin", "HEAD:main", cwd=a)
+    _git("fetch", "-q", cwd=b)
+    _git("checkout", "-q", "main", cwd=b)
+
+    # Install a sentinel post-merge hook in b (not the real omnigraph one, to
+    # keep this test fast) just to prove git invokes it on a plain pull.
+    hook = b / ".git" / "hooks" / "post-merge"
+    hook.write_text("#!/bin/sh\necho FIRED > sentinel.txt\n", encoding="utf-8")
+    hook.chmod(0o755)
+
+    (a / "f.txt").write_text("x\ny\n", encoding="utf-8")
+    _git("commit", "-qam", "second", cwd=a)
+    _git("push", "-q", cwd=a)
+    _git("pull", "-q", cwd=b)
+
+    assert (b / "sentinel.txt").exists(), "post-merge did not fire on a fast-forward pull"
+
+
 
 def test_hooks_dir_resolves_relative_git_hooks_path(tmp_path, monkeypatch):
     repo = _make_git_repo(tmp_path)
@@ -178,14 +259,17 @@ def test_install_embeds_pinned_interpreter(tmp_path):
     install(repo)
     commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
     checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
+    merge_hook = (repo / ".git" / "hooks" / "post-merge").read_text()
     # Compute the sanitized value the same way install() does.
     expected = sys.executable if not re.search(r"[^a-zA-Z0-9/_.@:\\-]", sys.executable) else ""
     if expected:
         assert expected in commit_hook, "sanitized sys.executable missing from post-commit"
         assert expected in checkout_hook, "sanitized sys.executable missing from post-checkout"
+        assert expected in merge_hook, "sanitized sys.executable missing from post-merge"
     # The placeholder must be fully substituted -- no __PINNED_PYTHON__ left.
     assert "__PINNED_PYTHON__" not in commit_hook, "placeholder not substituted in post-commit"
     assert "__PINNED_PYTHON__" not in checkout_hook, "placeholder not substituted in post-checkout"
+    assert "__PINNED_PYTHON__" not in merge_hook, "placeholder not substituted in post-merge"
 
 
 def test_install_fallback_is_loud_not_silent(tmp_path):
@@ -227,12 +311,17 @@ import re  # noqa: E402
 from omnigraph.hooks import (  # noqa: E402
     _HOOK_SCRIPT,
     _CHECKOUT_SCRIPT,
+    _MERGE_SCRIPT,
     _REBUILD_BODY_COMMIT,
     _REBUILD_BODY_CHECKOUT,
     _detached_launch,
 )
 
-_HOOK_SCRIPTS = [("post-commit", _HOOK_SCRIPT), ("post-checkout", _CHECKOUT_SCRIPT)]
+_HOOK_SCRIPTS = [
+    ("post-commit", _HOOK_SCRIPT),
+    ("post-checkout", _CHECKOUT_SCRIPT),
+    ("post-merge", _MERGE_SCRIPT),
+]
 
 
 @pytest.mark.parametrize("name,script", _HOOK_SCRIPTS)
@@ -367,7 +456,7 @@ def test_installed_hooks_contain_no_nohup(tmp_path):
     """End-to-end: the files written to .git/hooks must be nohup-free (#1161)."""
     repo = _make_git_repo(tmp_path)
     install(repo)
-    for name in ("post-commit", "post-checkout"):
+    for name in ("post-commit", "post-checkout", "post-merge"):
         text = (repo / ".git" / "hooks" / name).read_text(encoding="utf-8")
         assert "nohup" not in text, f"installed {name} still references nohup"
         assert "start_new_session=True" in text
@@ -861,7 +950,7 @@ def test_install_pins_interpreter_path_with_spaces(tmp_path, monkeypatch):
     monkeypatch.setattr(_sys, "executable", exe)
     install(repo)
 
-    for name in ("post-commit", "post-checkout"):
+    for name in ("post-commit", "post-checkout", "post-merge"):
         script = (repo / ".git" / "hooks" / name).read_text()
         assert f"_PINNED='{exe}'" in script, f"{name} did not pin the spaced interpreter"
         assert "_PINNED=''" not in script, f"{name} pinned an empty interpreter (#2166)"
@@ -887,21 +976,25 @@ def test_no_config_preserves_existing_hook(tmp_path):
     install(repo)
     commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
     checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
+    merge_hook = (repo / ".git" / "hooks" / "post-merge").read_text()
     assert "OMNIGRAPH_VIZ_NODE_LIMIT" not in commit_hook
     assert "OMNIGRAPH_VIZ_NODE_LIMIT" not in checkout_hook
+    assert "OMNIGRAPH_VIZ_NODE_LIMIT" not in merge_hook
 
 
 def test_config_baked_into_generated_hook(tmp_path):
-    """Test 3: viz_node_limit from .omnigraphrc is baked into both hooks."""
+    """Test 3: viz_node_limit from .omnigraphrc is baked into all three hooks."""
     repo = _make_git_repo(tmp_path)
     (repo / ".omnigraphrc").write_text("viz_node_limit=0\n", encoding="utf-8")
     install(repo)
 
     commit_hook = (repo / ".git" / "hooks" / "post-commit").read_text()
     checkout_hook = (repo / ".git" / "hooks" / "post-checkout").read_text()
+    merge_hook = (repo / ".git" / "hooks" / "post-merge").read_text()
 
     assert 'export OMNIGRAPH_VIZ_NODE_LIMIT="${OMNIGRAPH_VIZ_NODE_LIMIT:-0}"' in commit_hook
     assert 'export OMNIGRAPH_VIZ_NODE_LIMIT="${OMNIGRAPH_VIZ_NODE_LIMIT:-0}"' in checkout_hook
+    assert 'export OMNIGRAPH_VIZ_NODE_LIMIT="${OMNIGRAPH_VIZ_NODE_LIMIT:-0}"' in merge_hook
 
 
 def test_baked_viz_limit_yields_to_an_explicit_per_run_override(tmp_path):
@@ -994,11 +1087,11 @@ def test_status_reports_configuration(tmp_path):
 
 
 def test_both_hooks_configured(tmp_path):
-    """Test 7: Verify both post-commit and post-checkout hooks receive the setting."""
+    """Test 7: Verify all three hooks receive the setting."""
     repo = _make_git_repo(tmp_path)
     (repo / ".omnigraphrc").write_text("viz_node_limit=42\n", encoding="utf-8")
     install(repo)
 
-    for name in ("post-commit", "post-checkout"):
+    for name in ("post-commit", "post-checkout", "post-merge"):
         hook_text = (repo / ".git" / "hooks" / name).read_text()
         assert 'export OMNIGRAPH_VIZ_NODE_LIMIT="${OMNIGRAPH_VIZ_NODE_LIMIT:-42}"' in hook_text

@@ -9,6 +9,8 @@ _HOOK_MARKER = "# omnigraph-hook-start"
 _HOOK_MARKER_END = "# omnigraph-hook-end"
 _CHECKOUT_MARKER = "# omnigraph-checkout-hook-start"
 _CHECKOUT_MARKER_END = "# omnigraph-checkout-hook-end"
+_MERGE_MARKER = "# omnigraph-merge-hook-start"
+_MERGE_MARKER_END = "# omnigraph-merge-hook-end"
 
 # __PINNED_PYTHON__ é substituído no momento da instalação pelo caminho absoluto do
 # Intérprete Python que executou `omnigraph hook install`.  Para ferramenta UV e pipx
@@ -380,6 +382,64 @@ echo "[omnigraph] Branch switched - launching background rebuild (log: $_OMNIGRA
 """
 
 
+_MERGE_SCRIPT = """\
+# omnigraph-merge-hook-start
+# Auto-rebuilds the knowledge graph after `git pull`/`git merge` brings in
+# commits made elsewhere (code files only, no LLM needed). Without this, only
+# the machine that made a commit gets a fresh graph from post-commit; every
+# teammate who just pulls those commits keeps a stale one until they rebuild
+# by hand.
+# Installed by: omnigraph hook install
+
+# Deterministic clustering: networkx louvain iterates string-keyed sets whose
+# order is randomized per-process by PYTHONHASHSEED, so community assignments
+# churn run-to-run. Pinning it makes omnigraph-out reproducible.
+export PYTHONHASHSEED=0
+__VIZ_LIMIT_EXPORT__
+# Git for Windows/MSYS hooks can inherit fragile pipe handles from GUI clients
+# and agent shells. Keep hook-triggered rebuilds sequential by default there;
+# explicit OMNIGRAPH_MAX_WORKERS still wins for users who want parallelism.
+if [ -n "${WINDIR:-}" ] || [ -n "${MSYSTEM:-}" ]; then
+    export OMNIGRAPH_MAX_WORKERS="${OMNIGRAPH_MAX_WORKERS:-1}"
+fi
+
+# Skip during rebase/merge/cherry-pick to avoid blocking --continue with unstaged changes
+# git exports GIT_DIR to hooks; the rev-parse fallback only runs when invoked by
+# hand (each git exec costs 1s+ on AV-scanned Windows machines).
+GIT_DIR=${GIT_DIR:-$(git rev-parse --git-dir 2>/dev/null)}
+[ -d "$GIT_DIR/rebase-merge" ] && exit 0
+[ -d "$GIT_DIR/rebase-apply" ] && exit 0
+[ -f "$GIT_DIR/MERGE_HEAD" ] && exit 0
+[ -f "$GIT_DIR/CHERRY_PICK_HEAD" ] && exit 0
+
+[ "${OMNIGRAPH_SKIP_HOOK:-0}" = "1" ] && exit 0
+
+""" + _WORKTREE_GUARD + """
+# ORIG_HEAD is the pre-merge tip; git sets it for every merge including a
+# fast-forward pull, so this range covers every commit the pull brought in,
+# not just the last one (a pull is rarely a single commit).
+CHANGED=$(git diff --name-only ORIG_HEAD HEAD 2>/dev/null || git diff --name-only HEAD 2>/dev/null)
+if [ -z "$CHANGED" ]; then
+    exit 0
+fi
+
+# Skip when only omnigraph-out/ artifacts changed (avoids rebuild loop when graph outputs are tracked in git)
+_NON_GRAPH=$(echo "$CHANGED" | grep -v '^omnigraph-out/' || true)
+if [ -z "$_NON_GRAPH" ]; then
+    exit 0
+fi
+
+""" + _PYTHON_DETECT + """
+export OMNIGRAPH_CHANGED="$CHANGED"
+
+_OMNIGRAPH_LOG="${HOME}/.cache/omnigraph-rebuild.log"
+mkdir -p "$(dirname "$_OMNIGRAPH_LOG")"
+export OMNIGRAPH_REBUILD_LOG="$_OMNIGRAPH_LOG"
+echo "[omnigraph hook] pull brought in changes - launching background rebuild (log: $_OMNIGRAPH_LOG)"
+""" + _detached_launch(_REBUILD_BODY_COMMIT) + """# omnigraph-merge-hook-end
+"""
+
+
 def _load_omnigraphrc(root: Path) -> dict[str, str | int]:
     """Load key/value options from <root>/.omnigraphrc if present.
 
@@ -716,16 +776,21 @@ def install(path: Path = Path(".")) -> str:
     pinned = _pinned_python()
     hook = _HOOK_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
     checkout = _CHECKOUT_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
+    merge = _MERGE_SCRIPT.replace("__PINNED_PYTHON__", pinned).replace("__VIZ_LIMIT_EXPORT__", viz_export)
 
     commit_msg = _install_hook(hooks_dir, "post-commit", hook, _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _install_hook(hooks_dir, "post-checkout", checkout, _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    merge_hook_msg = _install_hook(hooks_dir, "post-merge", merge, _MERGE_MARKER, _MERGE_MARKER_END)
     merge_msg = _register_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
+    return (
+        f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\n"
+        f"post-merge: {merge_hook_msg}\nmerge driver: {merge_msg}"
+    )
 
 
 def uninstall(path: Path = Path(".")) -> str:
-    """Remove omnigraph post-commit and post-checkout hooks."""
+    """Remove omnigraph post-commit, post-checkout and post-merge hooks."""
     root = _git_root(path)
     if root is None:
         raise RuntimeError(f"No git repository found at or above {path.resolve()}")
@@ -733,9 +798,13 @@ def uninstall(path: Path = Path(".")) -> str:
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
     commit_msg = _uninstall_hook(hooks_dir, "post-commit", _HOOK_MARKER, _HOOK_MARKER_END)
     checkout_msg = _uninstall_hook(hooks_dir, "post-checkout", _CHECKOUT_MARKER, _CHECKOUT_MARKER_END)
+    merge_hook_msg = _uninstall_hook(hooks_dir, "post-merge", _MERGE_MARKER, _MERGE_MARKER_END)
     merge_msg = _unregister_merge_driver(root)
 
-    return f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\nmerge driver: {merge_msg}"
+    return (
+        f"post-commit: {commit_msg}\npost-checkout: {checkout_msg}\n"
+        f"post-merge: {merge_hook_msg}\nmerge driver: {merge_msg}"
+    )
 
 
 def status(path: Path = Path(".")) -> str:
@@ -774,9 +843,13 @@ def status(path: Path = Path(".")) -> str:
 
     commit = _check("post-commit", _HOOK_MARKER)
     checkout = _check("post-checkout", _CHECKOUT_MARKER)
-    merge = _merge_driver_status(root)
+    merge_hook = _check("post-merge", _MERGE_MARKER)
+    merge_driver = _merge_driver_status(root)
 
-    res = f"post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
+    res = (
+        f"post-commit: {commit}\npost-checkout: {checkout}\n"
+        f"post-merge: {merge_hook}\nmerge driver: {merge_driver}"
+    )
     if cfg_limit is not None:
         res += f"\nviz node limit: {cfg_limit}"
     return res
