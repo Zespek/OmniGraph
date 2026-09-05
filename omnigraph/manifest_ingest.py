@@ -24,6 +24,7 @@ from omnigraph.ids import make_id
 
 __all__ = ["is_package_manifest_path", "extract_package_manifest", "PACKAGE_MANIFEST_NAMES"]
 
+# manifest filename (lowercased) -> ecosystem tag
 PACKAGE_MANIFEST_NAMES: dict[str, str] = {
     "apm.yml": "apm",
     "apm.yaml": "apm",
@@ -34,6 +35,34 @@ PACKAGE_MANIFEST_NAMES: dict[str, str] = {
 }
 
 _MAX_MANIFEST_BYTES = 2_000_000  # Limite de 2 MB — os manifestos são pequenos; isso rejeita lixo
+
+_TOMLI_REQUIRED = (
+    "Package-manifest ingestion on Python < 3.11 needs tomli. "
+    "Install with: pip install 'tomli' "
+    "(or reinstall omnigraph, which declares tomli for python_version < '3.11')."
+)
+
+
+def _load_toml_module():
+    """Return a tomllib-compatible module, or raise ImportError (#3283).
+
+    Returning ``None`` used to look identical to a virtual workspace root with
+    nothing to emit, so missing ``tomli`` on Python 3.10 silently dropped every
+    ``Cargo.toml`` / ``pyproject.toml``. Raise instead: the caller
+    (``extract_package_manifest``) surfaces this as a visible per-manifest error
+    rather than dropping the file silently. In practice the runtime ``tomli``
+    dependency (python_version < '3.11') keeps this path unreachable for a
+    standard install.
+    """
+    try:
+        import tomllib as _toml  # type: ignore[import-not-found]
+        return _toml
+    except ImportError:
+        try:
+            import tomli as _toml  # type: ignore[import-not-found,no-redef]
+            return _toml
+        except ImportError as exc:
+            raise ImportError(_TOMLI_REQUIRED) from exc
 
 
 def is_package_manifest_path(path: Path) -> bool:
@@ -71,7 +100,7 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
     node: dict[str, Any] = {
         "id": pkg_nid,
         "label": name,
-        "file_type": "code",
+        "file_type": "code",   # valid schema type; `type` distinguishes packages
         "type": "package",
         "ecosystem": eco,
         "source_file": str_path,
@@ -109,6 +138,7 @@ def extract_package_manifest(path: Path) -> dict[str, Any]:
     return {"nodes": nodes, "edges": edges}
 
 
+# ── per-ecosystem parsers: text -> {"name", "version"?, "deps": [str]} | None ──
 
 def _coerce_deps(value: Any) -> list[str]:
     """A dependency block may be a list of names or a name->spec map."""
@@ -154,6 +184,9 @@ def _parse_apm_fallback(text: str) -> dict | None:
             if m:
                 name = m.group(1)
                 continue
+            # `version` is part of the manifest contract the YAML path already
+            # returns; dropping it here made a package node lose its version
+            # on every machine without PyYAML installed.
             m = re.match(r'^version:\s*["\']?([^"\'\s#]+)', line)
             if m:
                 version = m.group(1)
@@ -177,13 +210,7 @@ def _pep508_name(spec: str) -> str:
 
 
 def _parse_pyproject(text: str) -> dict | None:
-    try:
-        import tomllib as _toml
-    except ImportError:
-        try:
-            import tomli as _toml  # type: ignore
-        except ImportError:
-            return None
+    _toml = _load_toml_module()
     data = _toml.loads(text)
     proj = data.get("project", {}) if isinstance(data.get("project"), dict) else {}
     poetry = (data.get("tool", {}) or {}).get("poetry", {}) if isinstance(data.get("tool"), dict) else {}
@@ -202,22 +229,25 @@ def _parse_cargo(text: str) -> dict | None:
     """Cargo.toml: name/version from ``[package]``, runtime deps from
     ``[dependencies]`` plus every ``[target.<cfg>.dependencies]`` table (mirrors
     ``_parse_pyproject``'s runtime-only scope; dev-/build-dependencies excluded)."""
-    try:
-        import tomllib as _toml
-    except ImportError:  # pragma: no cover — Python < 3.11 without tomli only
-        try:
-            import tomli as _toml  # type: ignore
-        except ImportError:
-            return None
+    _toml = _load_toml_module()
     data = _toml.loads(text)
     pkg = data.get("package", {}) if isinstance(data.get("package"), dict) else {}
     name = pkg.get("name")
+    # A virtual workspace root (``[workspace]``, no ``[package]``) declares no
+    # package of its own — emit nothing rather than a fabricated node. ``name`` is
+    # never workspace-inheritable in Cargo, but guard on the type anyway.
     if not isinstance(name, str) or not name:
         return None
+    # ``version`` may be workspace-inherited (``version.workspace = true``), which
+    # parses to a table; keep only a concrete string version.
     version = pkg.get("version")
     if not isinstance(version, str):
         version = None
+    # A dependency value is a bare version string or an inline table; either way
+    # _coerce_deps keys it by the dependency NAME (the table/map key).
     deps = _coerce_deps(data.get("dependencies"))
+    # Platform-conditional deps live under ``[target.<cfg>.dependencies]``; fold
+    # them in so a crate whose deps are entirely cfg-gated still emits its edges.
     targets = data.get("target")
     if isinstance(targets, dict):
         for cfg in targets.values():

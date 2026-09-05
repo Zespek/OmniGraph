@@ -1,6 +1,8 @@
+# monitore uma pasta e acione automaticamente --update quando os arquivos forem alterados
 from __future__ import annotations
 import contextlib
 import json
+import logging
 import os
 import posixpath
 import re
@@ -11,6 +13,8 @@ from typing import Callable
 
 # Fonte única de verdade em zspekfy.paths; reexportado como _OMNIGRAPH_OUT.
 from omnigraph.paths import OMNIGRAPH_OUT as _OMNIGRAPH_OUT, is_absolute_any_platform
+
+logger = logging.getLogger(__name__)
 _PENDING_FILENAME = ".pending_changes"
 _PENDING_DRAIN_MAX_PASSES = 20
 
@@ -51,8 +55,11 @@ def _drain_pending(out_dir: Path) -> list[Path]:
         raw = pending.read_text(encoding="utf-8")
     except OSError:
         return []
+    # Desvincule ANTES de retornar para que uma falha entre a leitura e o processo retenha o
     # dados na visualização do próximo chamador através das linhas que estamos prestes a retornar -
     # ou seja, perder o arquivo após a leitura é bom, perdê-lo antes seria um
+    # erro. Use missing_ok para tolerar um dreno de corrida em plataformas onde
+    # rename/unlink may interleave.
     with contextlib.suppress(FileNotFoundError):
         pending.unlink()
     seen: set[str] = set()
@@ -174,7 +181,9 @@ def _rebuild_lock(out_dir: Path, *, blocking: bool = False):
 
     out_dir.mkdir(parents=True, exist_ok=True)
     lock_path = out_dir / ".rebuild.lock"
+    # "a+" cria o arquivo se estiver faltando, sem truncar o titular existente
     # Carga útil do PID – importante porque outro processo pode já ter sido escrito
+    # seu PID antes de tentarmos o rebanho.
     fh = open(lock_path, "a+", encoding="utf-8")
     acquired = False
     try:
@@ -309,22 +318,30 @@ def _changed_path_candidates(raw: Path, *, change_root: Path, watch_root: Path) 
     return candidates
 
 
+# Every stored path that names a file in the scanned tree. ``definition_file``
+# is the implementation site recorded when a C/C++/ObjC declaration and its
+# definition merge into one node; it must stay repo-relative like its sibling
+# ``source_file`` so a graph built on one machine reads on another.
+_PORTABLE_PATH_KEYS = ("source_file", "definition_file")
+
+
 def _relativize_source_files(payload: dict, root: Path, *, scope: Path | None = None) -> None:
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
-            source = item.get("source_file")
-            if not source:
-                continue
-            source_path = Path(source)
-            if not source_path.is_absolute():
-                continue
-            try:
-                resolved = source_path.resolve()
-                if scope is not None and not _is_relative_to(resolved, scope):
+            for key in _PORTABLE_PATH_KEYS:
+                source = item.get(key)
+                if not source:
                     continue
-                item["source_file"] = resolved.relative_to(root).as_posix()
-            except ValueError:
-                continue
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    continue
+                try:
+                    resolved = source_path.resolve()
+                    if scope is not None and not _is_relative_to(resolved, scope):
+                        continue
+                    item[key] = resolved.relative_to(root).as_posix()
+                except ValueError:
+                    continue
 
 
 def _rebase_relative_source_files(payload: dict, source_root: Path, target_root: Path) -> None:
@@ -333,13 +350,14 @@ def _rebase_relative_source_files(payload: dict, source_root: Path, target_root:
         return
     for bucket in ("nodes", "edges", "hyperedges"):
         for item in payload.get(bucket, []):
-            source = item.get("source_file")
-            if not source or Path(source).is_absolute():
-                continue
-            try:
-                item["source_file"] = (source_root / source).relative_to(target_root).as_posix()
-            except ValueError:
-                continue
+            for key in _PORTABLE_PATH_KEYS:
+                source = item.get(key)
+                if not source or Path(source).is_absolute():
+                    continue
+                try:
+                    item[key] = (source_root / source).relative_to(target_root).as_posix()
+                except ValueError:
+                    continue
 
 
 class _StoredSourcePaths:
@@ -363,12 +381,28 @@ class _StoredSourcePaths:
         root_marker = out / ".omnigraph_root"
         if root_marker.exists():
             try:
-                saved_root = Path(root_marker.read_text(encoding="utf-8").strip())
+                saved_root = Path(root_marker.read_text(encoding="utf-8-sig").strip())
                 if saved_root.is_absolute():
+                    # the marker holds the SCAN root, but stored
+                    # source_file values are relative to the BUILD's cwd
+                    # (the skill builds from the repo root scoped to a
+                    # subfolder). Trusting the marker blindly re-anchors
+                    # "src/mod.py" under src/, doubling the path; every
+                    # unchanged source is then judged deleted and evicted,
+                    # collapsing the graph. Only adopt an anchor the stored
+                    # paths actually resolve under; when none does, keep the
+                    # marker (previous behavior) so a fully-deleted corpus
+                    # still evicts.
                     resolved = saved_root.resolve()
                     if self._anchors_stored_sources(existing, resolved):
                         self.existing_source_root = resolved
                     else:
+                        # In the hook path watch_path is the absolute
+                        # marker, so project_root == watch_root == the bad
+                        # marker and the first candidate also fails to anchor;
+                        # Path.cwd() (the repo root a post-commit hook runs from)
+                        # is the load-bearing rescue candidate here. Keep both so
+                        # a relative-watch_path invocation is also covered.
                         for candidate in (self.project_root, Path.cwd().resolve()):
                             if self._anchors_stored_sources(existing, candidate):
                                 self.existing_source_root = candidate
@@ -469,11 +503,224 @@ class _StoredSourcePaths:
             item["source_file"] = identity
 
 
+# A source_file that is a URL/virtual scheme (gdoc://, s3://, http://, ...) rather
+# than a filesystem path: its on-disk existence is meaningless, so it must never be
+# evicted by the disk-absence sweep. Matched with a regex, NOT a literal "://",
+# because path normalization on the write side (Path.as_posix) collapses the double
+# slash to one — a stored "gdoc://x" reads back as "gdoc:/x" on the next update, and
+# a literal "://" check would then miss it and wrongly evict the node (follow-up).
+# The scheme is required to be 2+ chars so a Windows drive letter (C:/...) is not
+# misread as a remote source.
 _REMOTE_SOURCE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]+://?")
 
 
 def _is_remote_source(source_file: str) -> bool:
     return bool(_REMOTE_SOURCE_RE.match(source_file))
+
+
+def _reconcile_markdown_links(
+    result: dict,
+    preserved_edges: list[dict],
+    preserved_nodes: list[dict],
+    code_files: list[Path],
+    extract_targets: list[Path],
+    full_rebuild: bool,
+    project_root: Path,
+    source_paths,
+) -> list[dict]:
+    """Reconcile Markdown links without losing semantic-backed targets.
+
+    Semantic-backed documents are deliberately skipped by the AST quick scan
+    (#1915/#1954), so their canonical file node can be absent. Re-point an
+    authored link only when both files have unique representatives. If either
+    side is ambiguous, retain the existing AST edge instead of guessing or
+    deleting it. A link removed from its owning Markdown source is pruned.
+    """
+    from omnigraph.build import _is_ast_tier
+    from omnigraph.extract import _file_node_id, _safe_extract_with_xaml_root
+    from omnigraph.extractors.base import _make_id
+    from omnigraph.extractors.markdown import extract_markdown
+
+    all_nodes = result.get("nodes", []) + preserved_nodes
+    nodes_by_source: dict[str, list[dict]] = {}
+    for node in all_nodes:
+        if source_file := node.get("source_file"):
+            normalized = source_paths.normalize(source_file)
+            nodes_by_source.setdefault(normalized, []).append(node)
+
+    representatives: dict[str, str | None] = {}
+    for source_file, nodes in nodes_by_source.items():
+        canonical_id = _file_node_id(Path(source_file))
+        canonical = [node for node in nodes if node["id"] == canonical_id]
+        pages = [node for node in nodes if node.get("node_kind") == "page"]
+        semantic_documents = [
+            node
+            for node in nodes
+            if node.get("file_type") == "document" and node.get("_origin") != "ast"
+        ]
+        if len(canonical) == 1:
+            representatives[source_file] = canonical[0]["id"]
+        elif len(pages) == 1:
+            representatives[source_file] = pages[0]["id"]
+        elif len(semantic_documents) == 1:
+            representatives[source_file] = semantic_documents[0]["id"]
+        else:
+            representatives[source_file] = None
+
+    markdown_files = code_files if full_rebuild else extract_targets
+    markdown_files = [path for path in markdown_files if path.suffix.lower() == ".md"]
+    parsed_sources: set[str] = set()
+    authored_links: set[tuple[str, str]] = set()
+    authored_raw_pairs: set[frozenset[str]] = set()
+    unresolved_authored_sites: dict[tuple[str, str], set[str]] = {}
+    resolved_raw_pairs: dict[frozenset[str], frozenset[str]] = {}
+    desired_edges: list[tuple[str, str, dict, str, str]] = []
+    node_sources = {
+        node["id"]: source_paths.normalize(node["source_file"])
+        for node in all_nodes
+        if node.get("source_file")
+    }
+
+    for markdown_file in markdown_files:
+        try:
+            relative_source = markdown_file.relative_to(project_root)
+        except ValueError:
+            relative_source = markdown_file
+        source_file = source_paths.normalize(str(relative_source))
+        parsed_sources.add(source_file)
+        source_rep = representatives.get(source_file)
+
+        extraction = _safe_extract_with_xaml_root(
+            extract_markdown, markdown_file, project_root
+        )
+        for edge in extraction.get("edges", []):
+            if edge.get("relation") != "references":
+                continue
+            if not edge.get("target_file"):
+                source_location = str(edge.get("source_location") or "")
+                if source_location:
+                    unresolved_authored_sites.setdefault(
+                        (source_file, source_location), set()
+                    ).add(str(edge.get("target") or ""))
+                continue
+            target_path = Path(edge["target_file"])
+            try:
+                target_path = target_path.relative_to(project_root)
+            except ValueError:
+                pass
+            target_file = source_paths.normalize(str(target_path))
+            authored_links.add((source_file, target_file))
+            raw_pair = frozenset(
+                (_file_node_id(Path(source_file)), _file_node_id(Path(target_file)))
+            )
+            authored_raw_pairs.add(raw_pair)
+
+            target_rep = representatives.get(target_file)
+            if not source_rep or not target_rep:
+                logger.debug(
+                    "Preserving ambiguous Markdown link %s -> %s",
+                    source_file,
+                    target_file,
+                )
+                continue
+            if source_rep != target_rep:
+                resolved_raw_pairs[raw_pair] = frozenset((source_rep, target_rep))
+                desired_edges.append(
+                    (source_rep, target_rep, edge, source_file, target_file)
+                )
+
+    desired_file_pairs = {
+        frozenset((source_file, target_file))
+        for _, _, _, source_file, target_file in desired_edges
+    }
+    desired_reps_by_file_pair = {
+        frozenset((source_file, target_file)): frozenset((source_rep, target_rep))
+        for source_rep, target_rep, _, source_file, target_file in desired_edges
+    }
+
+    def _matches_unresolved_target(
+        raw_target: str, owner: str, target_source: str
+    ) -> bool:
+        candidate = project_root / Path(owner).parent / Path(target_source).name
+        return raw_target == _make_id(str(candidate))
+
+    def _keep_edge(edge: dict) -> bool:
+        if not (_is_ast_tier(edge) and edge.get("relation") == "references"):
+            return True
+        owner = source_paths.normalize(edge.get("source_file"))
+        if owner not in parsed_sources:
+            return True
+
+        unresolved_targets = unresolved_authored_sites.get(
+            (owner, str(edge.get("source_location") or "")), set()
+        )
+        if unresolved_targets:
+            target_sources = {
+                source
+                for endpoint in (edge.get("source"), edge.get("target"))
+                if (source := node_sources.get(endpoint)) and source != owner
+            }
+            if any(
+                _matches_unresolved_target(raw_target, owner, target_source)
+                for raw_target in unresolved_targets
+                for target_source in target_sources
+            ):
+                return True
+
+        raw_pair = frozenset((edge.get("source"), edge.get("target")))
+        if raw_pair in authored_raw_pairs:
+            desired_pair = resolved_raw_pairs.get(raw_pair)
+            return desired_pair is None or raw_pair == desired_pair
+
+        endpoint_files = {
+            node_sources.get(edge.get("source")),
+            node_sources.get(edge.get("target")),
+        }
+        endpoint_files.discard(None)
+        targets = endpoint_files - {owner}
+        if len(targets) == 1:
+            target_file = targets.pop()
+        elif edge.get("target_file"):
+            target_path = Path(edge["target_file"])
+            try:
+                target_path = target_path.relative_to(project_root)
+            except ValueError:
+                pass
+            target_file = source_paths.normalize(str(target_path))
+        else:
+            return True
+
+        file_pair = frozenset((owner, target_file))
+        if (owner, target_file) not in authored_links:
+            return False
+        if file_pair not in desired_file_pairs:
+            return True
+        return raw_pair == desired_reps_by_file_pair[file_pair]
+
+    result["edges"] = [edge for edge in result.get("edges", []) if _keep_edge(edge)]
+    preserved_edges = [edge for edge in preserved_edges if _keep_edge(edge)]
+    existing_pairs = {
+        frozenset((edge.get("source"), edge.get("target")))
+        for edge in result["edges"] + preserved_edges
+    }
+    for source_rep, target_rep, edge, source_file, _ in desired_edges:
+        pair = frozenset((source_rep, target_rep))
+        # omnigraph uses a simple graph. Never overwrite another relation that
+        # already occupies the representative pair.
+        if pair in existing_pairs:
+            continue
+        reconciled = edge.copy()
+        reconciled.pop("target_file", None)
+        reconciled.update(
+            source=source_rep,
+            target=target_rep,
+            source_file=source_file,
+            _origin="ast",
+        )
+        result["edges"].append(reconciled)
+        existing_pairs.add(pair)
+
+    return preserved_edges
 
 
 def _reconcile_existing_graph(
@@ -506,12 +753,28 @@ def _reconcile_existing_graph(
     if not existing_graph.exists():
         return result, existing_graph_data
 
+    # Fail-closed load: reuse build._load_existing_graph, which raises
+    # ValueError when the file exceeds the size cap and RuntimeError when it
+    # exists but cannot be parsed. Those failures must PROPAGATE to the caller
+    # — swallowing them here left existing_graph_data == {}, which _check_shrink
+    # reads as "no baseline, write allowed", so the hook overwrote a graph it
+    # merely failed to READ. A missing file (None) keeps first-build behavior:
+    # reconcile proceeds with an empty baseline and the write is allowed.
     from omnigraph.build import _load_existing_graph
     if _load_existing_graph(existing_graph) is None:
         return result, existing_graph_data
+    # Cap + parse validated above. Reload as the full dict — reconcile needs
+    # top-level keys (hyperedges, per-node community for _node_community_map,
+    # topology compare) the (nodes, edges, hyperedges) tuple does not carry.
+    # A failure here (e.g. a race rewriting the file) still propagates,
+    # staying fail-closed.
     existing = json.loads(existing_graph.read_text(encoding="utf-8"))
     existing_graph_data = existing
 
+    # Backfill tier provenance on legacy items, mirroring
+    # build._load_existing_graph (this reconcile path loads the raw dict
+    # separately, so the backfill there does not reach it). Stamping preserved
+    # items means the graph self-heals on this write.
     from omnigraph.build import _is_ast_tier
     for _bucket in ("nodes", "links", "edges"):
         for _item in existing.get(_bucket, []):
@@ -538,6 +801,7 @@ def _reconcile_existing_graph(
         node_evicted_source_identities = set(deleted_source_identities)
         hyperedge_evicted_source_identities = set(deleted_source_identities)
         # A exclusão despeja arestas independentemente do nível; a reextração possui apenas um
+        # source's AST-tier edges (checked per-edge below).
         edge_evicted_source_identities = set(deleted_source_identities)
         if not full_rebuild:
             node_evicted_source_identities.update(rebuilt_source_identities)
@@ -546,8 +810,15 @@ def _reconcile_existing_graph(
         # listas podem conter apenas um destino de renomeação, portanto, apenas caminhos explícitos
         # não é possível identificar a fonte obsoleta. Mantenha a comparação com escopo para o
         # assistiu root para que as atualizações de subpastas preservem os registros fora dessa subárvore.
+        #
         # Despejo com falha: uma identidade de origem ausente no corpus é apenas
         # Evidência DELETION quando o arquivo realmente saiu do disco. Um arquivo que
+        # still exists but stopped being collected was *excluded*, and treating
+        # that as deletion silently mass-evicts good nodes. Evicting an alive
+        # source therefore needs POSITIVE evidence — a live ignore rule matching
+        # the path — not mere corpus absence: a filter regression, an
+        # extractor loss, or the sensitive-file heuristic still preserves, with
+        # a loud message.
         excluded_alive_files: set[str] = set()
         excluded_alive_nodes = 0
         newly_ignored_files: set[str] = set()
@@ -577,11 +848,20 @@ def _reconcile_existing_graph(
         for node in existing.get("nodes", []):
             source_file = node.get("source_file")
             if not source_file or _is_remote_source(source_file):
-                continue
+                continue  # sourceless stub or remote/virtual source: never evict
             identity = source_paths.identity(source_file)
             if not source_paths.in_watch_root(source_file):
                 continue
             if _get_extractor(Path(source_file)) is None:
+                # Non-AST source (semantic doc/paper/image — .txt/.pdf/.png/...):
+                # never present in current_sources (built from AST-extractable
+                # code_files), so corpus absence is meaningless. Deletion
+                # evidence here is disk absence — otherwise its semantic nodes
+                # are preserved forever and returned as authoritative even after
+                # the file is deleted — or a live ignore rule matching
+                # the alive file, the same positive evidence the AST
+                # branch below requires. A present-but-unexcluded-but-
+                # unextractable file stays preserved (alive -> skip).
                 if identity:
                     alive = _alive_cache.get(identity)
                     if alive is None:
@@ -607,6 +887,9 @@ def _reconcile_existing_graph(
                         _alive_cache[identity] = alive
                     if alive:
                         if _ignored_now(identity):
+                            # Intentionally excluded by a live ignore rule:
+                            # deliberate graph-level intent, so treat it exactly
+                            # like a deletion — fall through to evict.
                             newly_ignored_files.add(identity)
                             newly_ignored_nodes += 1
                         else:
@@ -634,6 +917,14 @@ def _reconcile_existing_graph(
                 "changed?). Add them to .omnigraphignore if the exclusion is intentional."
             )
 
+        # A full re-extraction owns the AST nodes of every source it actually
+        # re-extracted (extract_targets, via rebuilt_source_identities) — NOT
+        # every AST node under watch_root: a semantic-backed doc is excluded
+        # from extract_targets, so its existing AST layer is not
+        # regenerated this run and dropping it would be data loss (,
+        # COEXIST — the AST and semantic layers of a file coexist).
+        # Incremental extraction owns only nodes from rebuilt or deleted
+        # sources. Semantic-tier nodes (per _is_ast_tier) remain preserved.
         preserved_nodes = [
             node
             for node in existing.get("nodes", [])
@@ -660,6 +951,7 @@ def _reconcile_existing_graph(
         # arestas semânticas/LLM - que a passagem AST não pode regenerar - sobrevivem
         # até que uma reextração semântica os substitua. Mesma regra de proveniência
         # a reconciliação de nós acima se aplica via _origin. Eliminação
+        # eviction stays provenance-blind.
         preserved_edges = [
             edge
             for edge in existing.get("links", existing.get("edges", []))
@@ -671,6 +963,17 @@ def _reconcile_existing_graph(
                 and source_paths.is_evicted(edge, rebuilt_source_identities)
             )
         ]
+
+        preserved_edges = _reconcile_markdown_links(
+            result,
+            preserved_edges,
+            preserved_nodes,
+            code_files,
+            extract_targets,
+            full_rebuild,
+            project_root,
+            source_paths,
+        )
 
         new_hyperedge_ids = {
             edge.get("id") for edge in result.get("hyperedges", []) if edge.get("id")
@@ -697,6 +1000,9 @@ def _reconcile_existing_graph(
             "output_tokens": 0,
         }, existing_graph_data
     except Exception as exc:
+        # Post-load reconciliation failure: fall back to the fresh extraction
+        # while keeping the loaded baseline, so _check_shrink still guards the
+        # write against a collapse. Say so — this used to be silent.
         print(
             "[omnigraph watch] reconcile of existing graph failed "
             f"({exc.__class__.__name__}: {exc}); proceeding with fresh "
@@ -728,6 +1034,12 @@ def _node_community_map(graph_data: dict) -> dict[str, int]:
 def _canonical_graph_for_compare(graph_data: dict) -> dict:
     canonical = dict(graph_data)
     canonical.pop("built_at_commit", None)
+    # A missing "directed" key means the same thing as "directed": false
+    # everywhere else in the codebase ('s --no-cluster path only started
+    # writing the key once it began inheriting it from the existing graph).
+    # Normalise so an old graph.json without the key doesn't register as
+    # "changed" against a freshly-written candidate that now carries
+    # "directed": false explicitly.
     canonical["directed"] = bool(canonical.get("directed", False))
     for key in ("nodes", "links", "edges", "hyperedges"):
         if key in canonical and isinstance(canonical[key], list):
@@ -770,6 +1082,7 @@ def _canonical_topology_for_compare(graph_data: dict) -> dict:
             # to_json escreve _src/_tgt como os endpoints direcionados canônicos e
             # substitui a origem/destino por eles antes da serialização, então o
             # o grafo no disco não tem _src/_tgt. A topologia candidata (fresca de
+            # node_link_data) ainda os possui. Estalar e reatribuir aqui faz
             # ambos os lados comparáveis: existente recebe pops autônomos (Nenhum), candidato
             # obtém origem/destino sobrescrito de _src/_tgt - mesmo resultado.
             true_src = e.pop("_src", None)
@@ -838,6 +1151,14 @@ def _check_shrink(
     if force or not existing_data:
         return True
     if had_explicit_deletions and rebuilt_sources is None:
+        # Legacy callers declare deletions but pass no rebuilt_sources, so the
+        # per-source accounting below can't run — keep the wholesale bypass for
+        # them. When rebuilt_sources IS given, deleted paths are folded into it
+        # (see call site), so genuine deletions still pass the _accounted check
+        # while an unexplained loss (a present-but-unextractable file wrongly
+        # routed to _add_deleted_source, or a dropped semantic node) is still
+        # caught rather than being waved through by the mere presence of any
+        # deletion in the change set.
         return True
     existing_nodes = existing_data.get("nodes", [])
     new_nodes = new_data.get("nodes", [])
@@ -908,6 +1229,88 @@ def _stabilize_rebuild_cwd(watch_path: Path) -> bool:
         return False
 
 
+def _reconcile_graph_html(out: Path, graph_data: dict) -> str | None:
+    """Reconcile missing, stale, or explicitly disabled HTML visualization.
+
+    The unchanged-topology update path deliberately avoids clustering and
+    rewriting core artifacts. HTML is independently derivable, so rebuild it
+    from the communities and names already stored in graph.json when absent or
+    marked stale by a prior failed render.
+
+    Returns ``"rendered"`` or ``"removed"`` when it changed the HTML state,
+    otherwise ``None``.
+    """
+    html_target = out / "graph.html"
+    from omnigraph.exporters.html import _HTML_STALE_MARKER, _viz_node_limit
+    stale_marker = out / _HTML_STALE_MARKER
+
+    def clear_stale_marker() -> None:
+        try:
+            stale_marker.unlink(missing_ok=True)
+        except OSError as exc:
+            print(
+                "[omnigraph watch] graph.html stale marker could not be cleared; "
+                f"regeneration may be retried: {exc}"
+            )
+
+    limit = _viz_node_limit()
+    if limit <= 0:
+        changed = html_target.exists() or stale_marker.exists()
+        html_target.unlink(missing_ok=True)
+        clear_stale_marker()
+        return "removed" if changed else None
+    if html_target.exists() and not stale_marker.exists():
+        return None
+
+    had_html = html_target.exists()
+
+    node_communities = _node_community_map(graph_data)
+    communities: dict[int, list[str]] = {}
+    for node_id, cid in node_communities.items():
+        communities.setdefault(cid, []).append(node_id)
+
+    labels: dict[int, str] = {}
+    for node in graph_data.get("nodes", []):
+        cid = node_communities.get(str(node.get("id")))
+        name = node.get("community_name")
+        if cid is not None and isinstance(name, str) and name:
+            labels.setdefault(cid, name)
+
+    try:
+        from omnigraph.export import to_html
+        from omnigraph.paths import load_node_link_graph
+
+        persisted_graph = load_node_link_graph(graph_data)
+        written = to_html(
+            persisted_graph,
+            communities,
+            str(html_target),
+            community_labels=labels or None,
+            node_limit=limit,
+        )
+    except Exception as exc:
+        if had_html:
+            print(
+                "[omnigraph watch] Stale graph.html left unchanged; "
+                f"regeneration will be retried: {exc}"
+            )
+        else:
+            print(f"[omnigraph watch] Missing graph.html could not be regenerated: {exc}")
+        return None
+
+    if not written or not html_target.exists():
+        if had_html:
+            print(
+                "[omnigraph watch] Stale graph.html left unchanged; "
+                "no useful community view was generated."
+            )
+        else:
+            print("[omnigraph watch] Missing graph.html has no useful community view; skipped.")
+        return None
+    clear_stale_marker()
+    return "rendered"
+
+
 def _rebuild_code(
     watch_path: Path,
     *,
@@ -948,6 +1351,8 @@ def _rebuild_code(
     if acquire_lock:
         # ganchos incrementais (changed_paths não são None) não devem ser eliminados
         # seu conjunto de alterações quando outra reconstrução já estiver em execução. Fila
+        # antes de tentar o bloqueio para que uma falha sem bloqueio ainda registre
+        # o trabalho; o detentor do bloqueio drena a fila e a mescla.
         # as reconstruções do corpus ignoram totalmente a fila - elas já cobrem todos
         # arquivo, então não há nada para mesclar.
         if changed_paths is not None and not block_on_lock:
@@ -957,7 +1362,10 @@ def _rebuild_code(
                 print("[omnigraph watch] Rebuild already in progress for "
                       f"{watch_path.resolve()} - changes queued.")
                 return False
+            # Bloqueio adquirido. Drene tudo o que estiver na fila de concorrentes anteriores
+            # (incluindo, principalmente, os caminhos que acabamos de colocar na fila)
             # e mesclar com nosso próprio conjunto de alterações para que uma única reconstrução cubra
+            # everything outstanding.
             if changed_paths is not None:
                 merged = _merge_changed_paths(changed_paths, _drain_pending(out))
             else:
@@ -972,7 +1380,9 @@ def _rebuild_code(
                 no_cluster=no_cluster,
                 acquire_lock=False,
             )
+            # Dreno de chegada tardia: outro gancho pode ter colocado trabalho na fila enquanto
             # estavam reconstruindo. Faça um loop até _PENDING_DRAIN_MAX_PASSES vezes para que um
+            # tempestade de commits eventualmente cessa sem livelocking. Um completo
             # reconstruir já viu tudo, então pule isso, pois changed_paths é None.
             if merged is not None:
                 for _ in range(_PENDING_DRAIN_MAX_PASSES):
@@ -990,6 +1400,10 @@ def _rebuild_code(
             return ok
 
     watch_root = watch_path.resolve()
+    # project_root stays CWD-anchored for a relative invocation on purpose: the
+    # persisted graph rehomes source_file across invocation styles against it
+    # (tests/test_watch.py:1389, :1428). The manifest is a different artifact
+    # with a different anchor — see the save_manifest calls below.
     project_root = Path.cwd().resolve() if not watch_path.is_absolute() else watch_root
     report_root = _report_root_label(watch_path)
     try:
@@ -999,11 +1413,12 @@ def _rebuild_code(
         from omnigraph.cluster import cluster, remap_communities_to_previous, score_all
         from omnigraph.analyze import god_nodes, surprising_connections, suggest_questions
         from omnigraph.report import generate
-        from omnigraph.export import to_json, to_html
+        from omnigraph.export import to_json
         from omnigraph.security import check_graph_file_size_cap
 
         # Aplique novamente as exclusões da extração inicial registrada, portanto, uma atualização/observação/
         # a reconstrução do gancho não reinclui silenciosamente caminhos deliberadamente excluídos
+        #.
         _persisted_excludes = _read_build_excludes(out)
         _gitignore_enabled = _read_build_gitignore(out)
         detected = detect(
@@ -1013,6 +1428,14 @@ def _rebuild_code(
         )
         code_files = [Path(f) for f in detected['files']['code']]
 
+        # hand reconcile the same ignore decisions the detect() call
+        # above made, so a newly-ignored file that still exists on disk is
+        # purged from the graph instead of preserved forever by the fail-closed
+        # keep. Two tiers: .omnigraphignore + persisted --exclude patterns are
+        # unambiguous graph-level intent (evict on every rebuild), while
+        # .gitignore-driven exclusion is honored only on a full rebuild — the
+        # incremental/hook path keeps preserving a deliberately-graphed
+        #.gitignore'd tree.
         from omnigraph.detect import ignored_predicate
         _ignored_always = ignored_predicate(
             watch_root, extra_excludes=_persisted_excludes or None, gitignore=False,
@@ -1021,6 +1444,7 @@ def _rebuild_code(
             watch_root, extra_excludes=_persisted_excludes or None, gitignore=True,
         ) if _gitignore_enabled else _ignored_always
 
+        # Inclui arquivos de documentos que possuem extratores AST (por exemplo, .md, .mdx, .qmd)
         ast_doc_files: list[Path] = []
         for doc_file in detected['files'].get('document', []):
             p = Path(doc_file)
@@ -1037,7 +1461,14 @@ def _rebuild_code(
         # grafo existente TAMBÉM não deve ser verificado rapidamente pelo AST - caso contrário, cada
         # reconstruir os nós de cabeçalho do mints sobre os nós semânticos preservados
         # e o documento é representado duas vezes (~4x inchaço do grafo versus a atualização da CLI
+        # path, which AST-extracts only code). A semantic-backed doc is never
+        # re-quick-scanned, and any AST layer it already carries coexists and
+        # is preserved rather than regenerated (, COEXIST); the
+        # quick-scan stays as a fallback for docs with no semantic layer (the
+        # no-LLM doc-structure feature, #09b33b7) and for brand-new docs the
+        # graph has never seen. These docs stay in ``code_files`` so
         # associação ao corpus (evidência de exclusão com falha no fechamento # 1795) e o
+        # reduzir a contabilidade abaixo ainda os cobre - um anteriormente inchado
         # grafo deve ter permissão para se auto-curar em uma reconstrução completa sem o
         # encolher guarda recusando a gravação menor.
         semantic_doc_files: set[Path] = set()
@@ -1052,8 +1483,26 @@ def _rebuild_code(
                     watch_root=watch_root,
                     normalize_source=_nsf,
                 )
+                # Semantic doc nodes lack the AST origin marker. Gate on the
+                # doc-shaped subset of the six-value file_type enum
+                # (document/concept/rationale/paper AND code) rather than
+                # "document" alone: per the extraction spec, a doc full of named
+                # concepts may be represented with ONLY concept/rationale
+                # nodes and no separate "document" node — that's still
+                # evidence of a semantic layer, not a marker-less AST node
+                #. "code" is included too: the semantic pass
+                # legitimately mints code-typed nodes for symbols surfaced from
+                # WITHIN a doc (llm.py `_bind_node_evidence`), and it cannot be
+                # confused with a pre- marker-less AST code node — those are
+                # sourced from code files, which never intersect ast_doc_files
+                # below, whereas the AST quick-scan of a doc only ever mints
+                # "document" nodes (extractors/markdown.py). "image" stays out.
                 semantic_doc_identities: set[str] = set()
                 for node in prior.get("nodes", []):
+                    # _is_ast_tier, not a raw _origin check: a legacy
+                    # unstamped AST heading node (source_location "L<n>") must
+                    # not fake a semantic layer, or the doc would be excluded
+                    # from the AST quick-scan forever.
                     if _is_ast_tier(node):
                         continue
                     if node.get("file_type") not in (
@@ -1112,6 +1561,17 @@ def _rebuild_code(
                     None,
                 )
                 if existing_in_root is not None:
+                    # O caminho existe na raiz monitorada, mas detecta o filtro
+                    # it out of code_set (no AST extractor, excluded, or
+                    # sensitive). Existence is NOT deletion evidence: the
+                    # file may carry semantic (LLM) nodes an AST rebuild cannot
+                    # regenerate, and mis-routing it to _add_deleted_source both
+                    # evicts those nodes AND sets had_explicit_deletions, which
+                    # disables the shrink guard that would otherwise catch the
+                    # loss. Preserve it — a genuine deletion still evicts via the
+                    # branch below, the corpus sweep evicts a truly-gone non-AST
+                    # source, and a deliberate exclusion is purged by the
+                    # corpus sweep's ignore-rule check.
                     continue
 
                 deleted_in_root = next(
@@ -1128,8 +1588,31 @@ def _rebuild_code(
             extract_targets = wanted
         else:
             # Reconstrução completa: ignore a verificação rápida do AST para documentos com suporte semântico
+            #. They remain in code_files for corpus membership and
+            # shrink accounting, but because they are not extract targets the
+            # full-rebuild AST ownership rule (scoped to
+            # rebuilt_source_identities COEXIST) leaves their existing
+            # AST heading layer intact alongside the semantic layer.
             extract_targets = [p for p in code_files if p not in semantic_doc_files]
 
+        # an incremental rebuild parses only the changed files, so the
+        # cross-file resolvers could not see a callee living in an unchanged
+        # file and every changed->unchanged `calls` edge disappeared (reconcile
+        # evicts the old one as AST-tier output of a re-extracted source, and
+        # nothing regenerates it). Hand extract() read-only resolution context:
+        # the persisted AST nodes of files this run is NOT re-extracting —
+        # including their `_callable`/`_callable_class` markers, so the
+        # indirect_call guard keeps working — plus their contains/method
+        # edges, which the member-call resolvers walk.
+        #
+        # Scoping rules, in order of importance:
+        #   * AST-tier only — semantic/LLM nodes are not symbol definitions.
+        #   * never a file in extract_targets (its fresh nodes are authoritative)
+        #     nor a deleted one (its persisted symbols are gone).
+        #   * only sources still in the scanned corpus, so a renamed/removed file
+        #     cannot stay a resolver target.
+        # extract() uses these purely to widen the resolvers' indexes; nothing
+        # is parsed, mutated, or emitted from them (see extract()'s docstring).
         resolution_context_nodes: list[dict] = []
         resolution_context_edges: list[dict] = []
         if changed_paths is not None and existing_graph.exists():
@@ -1164,10 +1647,17 @@ def _rebuild_code(
                         "file_type": node.get("file_type"),
                         "type": node.get("type"),
                     }
+                    # the persisted callability markers are the only
+                    # thing that lets an unchanged target pass the
+                    # indirect_call guard — never re-derived from the label.
                     for marker in ("_callable", "_callable_class"):
                         if node.get(marker):
                             ctx_node[marker] = node[marker]
                     resolution_context_nodes.append(ctx_node)
+                # the member-call resolvers map receiver type -> owning
+                # class -> method through contains/method edges; hand over the
+                # unchanged corpus's, scoped exactly like the nodes above so a
+                # deleted/re-extracted file's edges can never resurrect.
                 for edge in ctx_graph.get("links", ctx_graph.get("edges", [])):
                     if edge.get("relation") not in ("contains", "method"):
                         continue
@@ -1183,6 +1673,8 @@ def _rebuild_code(
                         "source_file": source_file,
                     })
             except Exception:
+                # Unreadable/oversized graph: resolve with the changed batch only
+                # (pre- behavior). Reconcile below still fails closed on it.
                 resolution_context_nodes = []
                 resolution_context_edges = []
 
@@ -1198,6 +1690,11 @@ def _rebuild_code(
         }
         _rebase_relative_source_files(result, watch_root, project_root)
 
+        # AST sources that failed this run (error result, or extractor
+        # present but zero nodes) must not be stamped kind="ast" below, and any
+        # prior stamp must be blanked (clear_ast) — otherwise the incremental
+        # gate reports them unchanged forever and only deleting omnigraph-out/
+        # recovers. Mirrors the extract CLI's _stamped_manifest_files handling.
         _failed_ast_sources = set(result.get("failed_sources") or [])
 
         def _ast_manifest_files() -> dict[str, list[str]]:
@@ -1232,6 +1729,7 @@ def _rebuild_code(
         # A reconstrução somente AST substitui nós por arquivos alterados; todo o resto é mantido.
         # Filtrar por associação de ID de nó na nova saída AST, não por file_type —
         # Nós INFERIDOS/AMBÍGUOS extraídos de arquivos de código também carregam file_type="code"
+        # e seria eliminado incorretamente por um filtro baseado em file_type.
         # Quando o chamador forneceu changed_paths, também remova os nós preservados cujos
         # source_file corresponde a um caminho que foi alterado (reextraído) ou excluído —
         # caso contrário, os nós antigos desses arquivos sobreviveriam para sempre.
@@ -1251,6 +1749,13 @@ def _rebuild_code(
                 is_ignored_full=_ignored_full,
             )
         except (RuntimeError, ValueError) as exc:
+            # Existing graph present but unreadable — over the size cap
+            # (ValueError) or unparseable JSON (RuntimeError, both via
+            # build._load_existing_graph). Refuse to overwrite a graph we
+            # merely failed to READ, mirroring the CLI's fail-closed
+            # contract. --force deliberately does NOT bypass this:
+            # force means "accept a shrink", not "clobber an unreadable
+            # graph".
             print(f"error: {exc}", file=sys.stderr)
             return False
 
@@ -1274,11 +1779,24 @@ def _rebuild_code(
         out.mkdir(exist_ok=True)
 
         if no_cluster:
-            from omnigraph.build import dedupe_edges as _dedupe_edges, dedupe_nodes as _dedupe_nodes
+            # Normalize para a chave "links" para que o esquema seja consistente com o caminho completo do cluster.
+            # Desduplicar arestas paralelas (o DiGraph do caminho clusterizado as recolhe implicitamente);
+            # sem ele, --no-cluster + `update` repetido acumula duplicatas e aresta
+            # counts diverge across build modes.
+            from omnigraph.build import (
+                dedupe_edges as _dedupe_edges,
+                dedupe_nodes as _dedupe_nodes,
+                disambiguate_file_labels_in_nodes as _disamb_labels,
+            )
+            raw_nodes = _dedupe_nodes(result.get("nodes", []))
+            _disamb_labels(raw_nodes)
             candidate_graph_data = {
                 **{k: v for k, v in result.items() if k not in ("edges", "nodes")},
-                "nodes": _dedupe_nodes(result.get("nodes", [])),
+                "nodes": raw_nodes,
                 "links": _dedupe_edges(result.get("edges", [])),
+                # Inherit the existing graph's directed flag so
+                # `omnigraph update --no-cluster` can't silently drop it -
+                # `result` (the raw merged extraction) never carries one.
                 "directed": bool((existing_graph_data or {}).get("directed", False)),
             }
             candidate_graph_text = _json_text(candidate_graph_data)
@@ -1288,6 +1806,10 @@ def _rebuild_code(
                     check_graph_file_size_cap(existing_graph)
                     existing_payload = json.loads(existing_graph.read_text(encoding="utf-8"))
                 except Exception as exc:
+                    # A load failure is NOT "graph changed": refuse to
+                    # overwrite a graph we merely failed to read. Normally
+                    # unreachable — the reconcile load above already failed
+                    # closed — but a race rewriting the file can land here.
                     print(
                         f"error: Cannot read {existing_graph}: {exc}. "
                         "Refusing to overwrite; delete the file and run a "
@@ -1312,6 +1834,8 @@ def _rebuild_code(
                     return False
                 from omnigraph.export import backup_if_protected as _backup
                 _backup(out)
+                # Atomic replace via tmp file, matching the clustered path: a
+                # crash mid-write must not leave a truncated graph.json.
                 graph_tmp = out / ".graph.tmp.json"
                 graph_tmp.write_text(candidate_graph_text, encoding="utf-8")
                 graph_tmp.replace(existing_graph)
@@ -1326,6 +1850,8 @@ def _rebuild_code(
                 # passe-o também como corpus de verificação: linhas para arquivos que saíram do
                 # digitalizam, mas ainda existem no disco (recém-excluídos) são removidos
                 # em vez de sobreviver como entradas fantasmas "excluídas".
+                # Failed AST sources are dropped from the stamped set and
+                # their prior hashes blanked.
                 save_manifest(
                     _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                     kind="ast", root=watch_root,
@@ -1334,10 +1860,6 @@ def _rebuild_code(
                 )
             except Exception:
                 pass
-
-            flag = out / "needs_update"
-            if flag.exists():
-                flag.unlink()
 
             if same_graph:
                 print("[omnigraph watch] No code-graph changes detected (--no-cluster); outputs left untouched.")
@@ -1356,6 +1878,9 @@ def _rebuild_code(
             "total_words": detected.get("total_words", 0),
         }
 
+        # Inherit the existing graph's directed flag so `omnigraph
+        # update` can't silently downgrade a directed graph to undirected -
+        # build_from_json defaults to directed=False otherwise.
         G = build_from_json(result, directed=bool((existing_graph_data or {}).get("directed", False)))
         candidate_topology = _topology_from_graph(G)
         if existing_graph_data:
@@ -1369,6 +1894,8 @@ def _rebuild_code(
             if same_topology:
                 try:
                     from omnigraph.detect import save_manifest
+                    # Full-scan save: prune excluded-but-alive rows;
+                    # leave failed AST sources unstamped.
                     save_manifest(
                         _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                         kind="ast", root=watch_root,
@@ -1377,10 +1904,19 @@ def _rebuild_code(
                     )
                 except Exception:
                     pass
-                flag = out / "needs_update"
-                if flag.exists():
-                    flag.unlink()
-                print("[omnigraph watch] No code-graph topology changes detected; outputs left untouched.")
+                html_action = _reconcile_graph_html(out, existing_graph_data)
+                if html_action == "rendered":
+                    print(
+                        "[omnigraph watch] No code-graph topology changes detected; "
+                        "regenerated missing or stale graph.html."
+                    )
+                elif html_action == "removed":
+                    print(
+                        "[omnigraph watch] No code-graph topology changes detected; "
+                        "removed graph.html because HTML visualization is disabled."
+                    )
+                else:
+                    print("[omnigraph watch] No code-graph topology changes detected; outputs left untouched.")
                 return True
 
         communities = cluster(G)
@@ -1394,6 +1930,8 @@ def _rebuild_code(
         sig_file = out / (".omnigraph_labels.json" + ".sig")
         try:
             raw = json.loads(labels_file.read_text(encoding="utf-8")) if labels_file.exists() else {}
+            # Skip persisted "Community N" placeholders so the hub-fill below
+            # replaces them instead of perpetuating them on every rebuild.
             labels = {
                 int(k): v for k, v in raw.items()
                 if int(k) in communities and v != f"Community {int(k)}"
@@ -1401,6 +1939,14 @@ def _rebuild_code(
         except Exception:
             raw = {}
             labels = {}
+        # A saved label belongs to a cid, but re-clustering reassigns cids: after a
+        # rebuild that adds nodes, cid 30 can cover a completely different community
+        # and its old name is then simply wrong. Validate every reused label against
+        # the membership signature saved beside the labels — the same guard the
+        # cluster-only path applies — and drop any whose community changed so the
+        # hub-fill below renames it, deterministically and correct-by-construction.
+        # Without this, an incremental `omnigraph update` launders stale names into
+        # labels.json as though they were current (#label-stale).
         from omnigraph.cluster import community_member_sigs
         cur_sigs = community_member_sigs(communities)
         saved_sigs: dict[int, str] = {}
@@ -1414,8 +1960,12 @@ def _rebuild_code(
             except Exception:
                 saved_sigs = {}
         if saved_sigs:
+            # Precise: the signature tells us exactly which communities changed.
             stale = {cid for cid in labels if saved_sigs.get(cid) != cur_sigs.get(cid)}
         else:
+            # No sidecar (labels predate it). A differing community COUNT means the
+            # labels describe a different clustering, so no cid's label is trustworthy;
+            # an equal count is the best available "unchanged" signal.
             stale = set(labels) if len(raw) != len(communities) else set()
         for cid in stale:
             del labels[cid]
@@ -1452,6 +2002,10 @@ def _rebuild_code(
                 check_graph_file_size_cap(existing_graph)
                 existing_payload = json.loads(existing_graph.read_text(encoding="utf-8"))
             except Exception as exc:
+                # A load failure is NOT "graph changed": refuse to
+                # overwrite a graph we merely failed to read. Normally
+                # unreachable — the reconcile load above already failed
+                # closed — but a race rewriting the file can land here.
                 graph_tmp.unlink(missing_ok=True)
                 print(
                     f"error: Cannot read {existing_graph}: {exc}. "
@@ -1483,11 +2037,19 @@ def _rebuild_code(
                 failed_sources=failed_sources,
             ):
                 return False
+            from omnigraph.exporters.html import _HTML_STALE_MARKER
+            # Mark before graph.json advances so an interruption cannot leave a
+            # previous visualization looking current to the fast path.
+            (out / _HTML_STALE_MARKER).touch()
             from omnigraph.export import backup_if_protected as _backup
             _backup(out)
             graph_tmp.replace(existing_graph)
             report_path.write_text(report, encoding="utf-8")
             labels_file.write_text(labels_json, encoding="utf-8")
+            # Keep the membership signatures in step with the labels we just wrote.
+            # Skipping this was the other half of the stale-label bug: labels.json
+            # advanced every rebuild while the sidecar kept describing an older
+            # clustering, so the guard above had nothing accurate to check against.
             sig_file.write_text(
                 json.dumps({str(k): v for k, v in cur_sigs.items()}), encoding="utf-8")
 
@@ -1495,6 +2057,8 @@ def _rebuild_code(
 
         try:
             from omnigraph.detect import save_manifest
+            # Full-scan save: prune excluded-but-alive rows;
+            # leave failed AST sources unstamped.
             save_manifest(
                 _ast_manifest_files(), manifest_path=str(out / "manifest.json"),
                 kind="ast", root=watch_root,
@@ -1504,28 +2068,13 @@ def _rebuild_code(
         except Exception:
             pass
 
-        # Enrole para que as saídas principais (graph.json + GRAPH_REPORT.md) sempre cheguem.
+        # Reconcile from the persisted graph. The stale marker was written
+        # before graph.json advanced, so a failed or interrupted atomic render
+        # remains retryable from the unchanged-topology fast path.
         html_written = False
         if not no_change:
-            html_target = out / "graph.html"
-            try:
-                to_html(G, communities, str(html_target), community_labels=labels or None)
-                html_written = True
-            except ValueError as viz_err:
-                from omnigraph.exporters.html import _viz_node_limit
-                if html_target.exists():
-                    html_target.unlink()
-                limit = _viz_node_limit()
-                if limit <= 0:
-                    print(f"[omnigraph watch] Skipped graph.html: {viz_err}")
-                else:
-                    try:
-                        to_html(G, communities, str(html_target),
-                                community_labels=labels or None, node_limit=limit)
-                        html_written = html_target.exists()
-                    except Exception as fallback_err:
-                        print(f"[omnigraph watch] Skipped graph.html: {viz_err} "
-                              f"(aggregated view also failed: {fallback_err})")
+            html_action = _reconcile_graph_html(out, candidate_graph_data)
+            html_written = html_action == "rendered"
 
         # Gere novamente o HTML do fluxo de chamada se o usuário gerou um anteriormente -
         # opte por existência para que os usuários que nunca executaram callflow-html não sejam afetados.
@@ -1543,10 +2092,6 @@ def _rebuild_code(
                     )
             except Exception as cf_err:
                 print(f"[omnigraph watch] callflow HTML update skipped: {cf_err}")
-
-        flag = out / "needs_update"
-        if flag.exists():
-            flag.unlink()
 
         if not no_change:
             print(f"[omnigraph watch] Rebuilt: {G.number_of_nodes()} nodes, "
@@ -1606,6 +2151,24 @@ def _batch_triggers_rebuild(batch: list[Path]) -> bool:
     return has_code or has_deletion
 
 
+_READ_ONLY_EVENT_TYPES = frozenset({"opened", "closed_no_write"})
+
+
+def _is_read_only_event(event) -> bool:
+    """True for watchdog events that mean a file was merely READ, not changed.
+
+    On Linux, inotify (watchdog >= 2.3) reports ``opened`` and, since watchdog 4,
+    ``closed_no_write`` for every file open/close — including the watcher's own
+    AST rebuild reading the tree, hook guards stat-ing sources, and editors or
+    agents reading files. Counting those as changes makes the watcher re-trigger
+    itself forever ("N file(s) changed" while nothing was modified), burn CPU and
+    keep re-writing the ``needs_update`` flag. Only creation, modification, move,
+    deletion and close-after-write are changes; macOS (PollingObserver) never
+    emits these, so the filter is a no-op there.
+    """
+    return getattr(event, "event_type", None) in _READ_ONLY_EVENT_TYPES
+
+
 def _batch_needs_llm_flag(batch: list[Path]) -> bool:
     """True when the batch contains a non-code file that still exists on disk.
 
@@ -1641,6 +2204,7 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     # Carregue os padrões .omnigraphignore UMA VEZ na inicialização para que o manipulador não
     # analise novamente o arquivo em cada evento do sistema de arquivos. O manipulador do Watchdog é executado
     # o thread do observador e é invocado para cada evento que o sistema operacional entrega
+    # (Time Machine writes, Docker/Colima VM I/O, Spotlight indexing, …) —
     # sem este curto-circuito, um volume ocupado pode saturar um núcleo da CPU
     # descartando eventos, uma extensão por vez. (gh-928)
     watch_root_for_ignore = watch_path.resolve()
@@ -1652,11 +2216,13 @@ def watch(watch_path: Path, debounce: float = 3.0) -> None:
     class Handler(FileSystemEventHandler):
         def on_any_event(self, event):
             nonlocal last_trigger, pending
-            if event.is_directory:
+            if event.is_directory or _is_read_only_event(event):
                 return
             path = Path(os.fsdecode(event.src_path))
             # Verifique .omnigraphignore ANTES dos filtros de extensão/dotfile/out para
             # o curto-circuito mais barato para usuários com padrões amplos de ignorância
+            # (node_modules/, .venv/, build/, …) fires first. _is_ignored
+            # tolera caminhos absolutos fora de watch_root por meio de seu interno
             # relative_to guarda, então um evento perdido com link simbólico não será gerado.
             if ignore_patterns and _is_ignored(path, watch_root_for_ignore, ignore_patterns):
                 return

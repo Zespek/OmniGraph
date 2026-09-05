@@ -15,6 +15,7 @@ from omnigraph._minhash import MinHash, MinHashLSH
 from rapidfuzz.distance import DamerauLevenshtein, Jaro, JaroWinkler
 
 
+# ── helpers ───────────────────────────────────────────────────────────────────
 
 def _norm(label: str | None) -> str:
     """Lowercase + collapse non-alphanumeric runs to space (Unicode-aware)."""
@@ -113,6 +114,9 @@ def _numeric_tokens_differ(a: str, b: str) -> bool:
         sorted(t.lstrip("0") or "0" for t in _DIGIT_RUN.findall(b))
 
 
+# Function words. A restatement of one entity is what inserts or swaps these
+# ("export a read-only ..." vs "export the read-only ..."); a content word
+# carries the entity's identity and swapping one names something else.
 _STOPWORDS = frozenset({
     "a", "an", "the", "and", "or", "of", "for", "to", "in", "on", "at", "by",
     "with", "from", "as", "is", "are", "be", "this", "that", "its",
@@ -136,9 +140,9 @@ def _same_word_variant(x: str, y: str) -> bool:
     variant kept separate beats a fabricated merge.
     """
     if len(x) == len(y) and DamerauLevenshtein.distance(x, y) <= 1:
-        return True
+        return True   # same-length 1-sub/transposition = typo, even at position 0
     if min(len(x), len(y)) < 6:
-        return False
+        return False  # short tokens: JW can't separate pane/plane (94.0) from a typo
     return JaroWinkler.normalized_similarity(x, y) * 100 >= _MERGE_THRESHOLD
 
 
@@ -178,15 +182,16 @@ def _content_token_swap(a: str, b: str) -> bool:
         if x == y:
             continue
         if x in _STOPWORDS or y in _STOPWORDS:
-            continue
+            continue  # restatement: a function word swapped in or out
         if _same_word_variant(x, y):
-            continue
+            continue  # one word misspelt/inflected, not a different word
         return True
     return False
 
 
 # valores file_type cuja identidade está ancorada em seu local de origem, não
 # o texto do rótulo. Assim como o código, eles não devem ser mesclados com rótulos
+# files: rationale = module/class docstrings, document = headings/positional
 # contente. `conceito` é intencionalmente excluído - é o tipo destinado a unificar
 # entre arquivos (protegidos contra mesclagem excessiva pelos guardas numéricos/Jaro).
 _FILE_ANCHORED_NONCODE = frozenset({"rationale", "document"})
@@ -207,6 +212,7 @@ def _crossfile_fileanchored_blocked(node: dict, neighbor: dict) -> bool:
     return (node.get("source_file") or "") != (neighbor.get("source_file") or "")
 
 
+# ── union-find ────────────────────────────────────────────────────────────────
 
 class _UF:
     def __init__(self) -> None:
@@ -233,10 +239,11 @@ class _UF:
         return dict(groups)
 
 
+# ── constants ─────────────────────────────────────────────────────────────────
 
 _ENTROPY_THRESHOLD = 2.5
 _LSH_THRESHOLD = 0.7
-_MERGE_THRESHOLD = 92.0
+_MERGE_THRESHOLD = 92.0     # rapidfuzz normalized_similarity * 100
 _COMMUNITY_BOOST = 5.0      # bônus de pontuação quando ambos os nós compartilham comunidade
 _NUM_PERM = 128
 _CHUNK_SUFFIX = re.compile(r"_c\d+$")
@@ -256,6 +263,7 @@ def _is_code(node: dict) -> bool:
     return node.get("file_type") == "code"
 
 
+# ── ID collisions ─────────────────────────────────────────────────────────────
 
 _ID_SEGMENT = re.compile(r"[^a-z0-9]+")
 _EXTENSION = re.compile(r"\.[^./]+$")
@@ -288,10 +296,64 @@ def _defines_id(node: dict) -> bool:
         return False
     # `nid == prefix` cobre um nó de nível de arquivo simples cujo id é exatamente o
     # caminho slugificado sem sufixo `_entity` (um nó semântico para o arquivo
+    # em si); `startswith(prefix + "_")` cobre o id usual `<path>_<entity>`.
     return any(nid == prefix or nid.startswith(f"{prefix}_")
                for prefix in _id_prefixes(source_file))
 
 
+# `node_kind` values marking a node that is STRUCTURE of its source file rather
+# than an entity mentioned inside it: `page` is the file's own node, `heading`
+# one of its sections. The markdown extractor stamps these precisely because
+# `file_type` cannot carry the distinction, and both are file-anchored in the
+# sense — two files' `## Decisions` sections are two sections.
+#
+# PRODUCER CONTRACT: an extractor that mints a node standing for a *part* of its
+# source file (a section, a sheet, a slide) must stamp one of these. The gate
+# below reads an unstamped node as an entity, so an unstamped structural node is
+# eligible to merge with its namesake in another file.
+_FILE_STRUCTURE_NODE_KINDS = frozenset({"page", "heading"})
+
+
+def _reads_as_file_entity(node: dict) -> bool:
+    """True when the node reads as an entity found inside its file, rather than
+    as the file itself or a stamped structural part of it (#296).
+
+    Be precise about what is proven and what is assumed, because the two halves
+    differ in strength:
+
+    * PROVEN — it is not its file's OWN node. ``_id_prefixes`` enumerates the ID
+      a node standing for ``source_file`` itself would carry, in every spelling
+      a stored path may take (absolute, repo-relative, or the pre-#1504 bare
+      stem). A file's own node IS one of those; an entity extracted from that
+      file carries an ``_<entity>`` suffix, so it never equals one. This is a
+      reconstruction, not a heuristic.
+    * ASSUMED — it is not a section of the file. That rests on ``node_kind``,
+      which only a producer that stamps it can attest. `heading`/`page` are
+      honoured when present, but ABSENCE OF THE MARKER IS NOT PROOF OF
+      ENTITY-NESS: a producer minting sub-file nodes without stamping
+      `node_kind` (see the contract above) yields structural nodes that this
+      returns True for, and two such nodes sharing a label in different files
+      would merge. The conservative fix is on the producer side — stamp
+      `node_kind` — not a guess here about what an unstamped node meant.
+
+    A node that cannot be checked at all (no ID, no provenance) answers False
+    and stays blocked.
+    """
+    nid = node.get("id") or ""
+    source_file = node.get("source_file") or ""
+    if not nid or not source_file:
+        return False  # uncheckable — leave the file-anchored block in place
+    if node.get("node_kind") in _FILE_STRUCTURE_NODE_KINDS:
+        return False  # the extractor says this node is part of the file's structure
+    return nid not in _id_prefixes(source_file)
+
+
+# Path-segment lifecycle markers used by _collision_rank. Lower penalty
+# wins. Without them, pure lexical source_file order makes ``plans/_done/…``
+# beat ``plans/in-progress/…`` because "_" < "i" in ASCII. Active-vs-archived
+# marker idea by @michaelxer; matched against ROOT-RELATIVE directory
+# segments only, so a checkout directory that happens to be named ``wip`` or
+# ``done`` never leaks into the ranking.
 _ACTIVE_PATH_SEGMENTS = frozenset({
     "in-progress",
     "in_progress",
@@ -324,7 +386,7 @@ def _lifecycle_penalty(rank_path: str) -> int:
     segments = [s for s in rank_path.casefold().split("/") if s]
     marked = [
         0 if s in _ACTIVE_PATH_SEGMENTS else 2
-        for s in segments[:-1]
+        for s in segments[:-1]  # directories only, never the basename
         if s in _ACTIVE_PATH_SEGMENTS or s in _ARCHIVED_PATH_SEGMENTS
     ]
     return min(marked) if marked else 1
@@ -365,9 +427,9 @@ def _collision_rank(node: dict, root: Path | None = None) -> tuple:
     rank_path = _rank_path(node.get("source_file") or "", root)
     return (
         not _defines_id(node),  # definidores (Falso) classificam antes das referências (Verdadeiro)
-        _lifecycle_penalty(rank_path),
-        len(label),
-        label,
+        _lifecycle_penalty(rank_path),  # active paths beat archived ones
+        len(label),             # shorter, more canonical label first
+        label,                  # lexical tiebreak
         tuple(reversed([s for s in rank_path.split("/") if s and s != "."])),
     )
 
@@ -381,6 +443,9 @@ def _same_source_entity(survivor: dict, duplicate: dict) -> bool:
     """
     keep_file = survivor.get("source_file") or ""
     lose_file = duplicate.get("source_file") or ""
+    # Require a non-empty source_file: two provenance-less records ("" == "")
+    # are NOT proof of the same symbol, and merging their attributes
+    # would be a cross-pollination bug in the opposite direction (review).
     return bool(keep_file) and keep_file == lose_file
 
 
@@ -389,10 +454,15 @@ def _merge_missing_attributes(survivor: dict, duplicate: dict) -> dict:
     without overriding values the survivor already has (#2091)."""
     merged = dict(survivor)
     for key, value in duplicate.items():
+        # Never inherit a provenance tag from a dropped record: a false
+        # _origin="ast" on an LLM survivor is read as an authority signal by the
+        # ghost-merge and watch deletion logic (review).
         if key == "_origin":
             continue
         if value is None:
             continue
+        # Treat an explicit None on the survivor as absent — the codebase emits
+        # `source_location: None`, and that is exactly the attribute loses.
         if merged.get(key) is None:
             merged[key] = value
     return merged
@@ -435,6 +505,7 @@ def _report_id_collision(nid: str, survivor: dict, losers: list[dict]) -> None:
             )
 
 
+# ── main entry point ──────────────────────────────────────────────────────────
 
 def _remap_hyperedge_members(hyperedges: list[dict], remap: dict[str, str]) -> None:
     """Rewire hyperedge member ids onto dedup survivors, in place.
@@ -514,6 +585,10 @@ def deduplicate_entities(
     if len(nodes) <= 1:
         return nodes, edges
 
+    # Resolve the scan root once: _collision_rank ranks each node's source_file
+    # relative to it, so an absolute stored path and its repo-relative twin rank
+    # identically and lifecycle markers in the checkout location's own segments
+    # cannot flip the survivor.
     try:
         root_resolved: Path | None = Path(root).resolve() if root else None
     except Exception:
@@ -522,6 +597,9 @@ def deduplicate_entities(
     # Pré-desduplicação: um nó por ID. O sobrevivente é o nó que *define* o
     # ID (seu source_file é o arquivo que o ID codifica), não apenas o primeiro visto -
     # caso contrário, a ordem do bloco decide se uma entidade mantém seus próprios atributos ou um
+    # passing cross-reference's. Missing attributes from same-source records are
+    # retained so AST structure and semantic enrichment can coexist.
+    # Genuine cross-file ID collisions stay isolated and are reported below.
     seen_ids: dict[str, dict] = {}
     dropped: dict[str, list[dict]] = defaultdict(list)
     for node in nodes:
@@ -534,11 +612,17 @@ def deduplicate_entities(
         elif _collision_rank(node, root_resolved) < _collision_rank(incumbent, root_resolved):
             # O nó com menor classificação vence; o mínimo sobre um pedido total é independente
             # da ordem em que os nós chegam, então o sobrevivente não depende mais de
+            # chunk ordering.
             seen_ids[nid] = node
             dropped[nid].append(incumbent)
         else:
             dropped[nid].append(node)
 
+    # Gap-fill each survivor from its SAME-SOURCE losers, applied in deterministic
+    # _collision_rank order (best loser first). Merging here — not incrementally in
+    # the loop above — keeps the merged attributes independent of chunk arrival
+    # order with 3+ colliding records, preserving the order-independence
+    # contract (review).
     for nid, losers in dropped.items():
         survivor = seen_ids[nid]
         same_source = sorted(
@@ -557,6 +641,7 @@ def deduplicate_entities(
     if len(unique_nodes) <= 1:
         return unique_nodes, edges
 
+    # ── pass 1: exact normalization ───────────────────────────────────────────
     norm_to_nodes: dict[str, list[dict]] = defaultdict(list)
     for node in unique_nodes:
         # Os símbolos de código são digitados por ID, nunca por rótulo – ignore-os totalmente, então
@@ -572,6 +657,10 @@ def deduplicate_entities(
     for key, group in norm_to_nodes.items():
         if len(group) <= 1:
             continue
+        # Partition by source_file — same-file exact matches always merge here.
+        # Cross-file exact matches are handled just below, gated to `concept`
+        # nodes only: Pass 2 cannot form them because its candidate list keeps a
+        # single node per normalized label.
         by_file: dict[str, list[dict]] = defaultdict(list)
         for node in group:
             sf = node.get("source_file") or ""
@@ -586,9 +675,29 @@ def deduplicate_entities(
                 for node in file_group:
                     uf.union(winner["id"], node["id"])
                 exact_merges += len(file_group) - 1
+        # Cross-file residue: union exact matches across files, but only where
+        # it is provably safe. `concept` is the one file_type meant to
+        # unify across files — code is keyed by ID and
+        # image/paper labels are often shared basenames (logo.png), so both stay
+        # blocked. rationale/document join `concept` here ONLY when the node
+        # reads as an entity inside its file: a file-anchored
+        # *file_type* does not make an individual node file-anchored. An entity
+        # extracted from a note — a person, a project — inherits `document` from
+        # the file's extension, not from anything about itself, so in note-heavy
+        # corpora almost no entity node is typed `concept` and this merge never
+        # got to run on them. A file's own node and its headings still never
+        # merge.
+        # Provenance is required, and the entropy gate mirrors Pass 2 so
+        # short generic labels ("API") stay distinct — both untouched here.
+        # Scoped to this exact-normalization pass: Pass 2's fuzzy
+        # `_crossfile_fileanchored_blocked` is unchanged, so's
+        # near-identical boilerplate and heading siblings stay blocked.
+        # Sorting by id keeps the winner order-independent.
         mergeable = sorted(
             (n for n in group
-             if n.get("file_type") == "concept"
+             if (n.get("file_type") == "concept"
+                 or (n.get("file_type") in _FILE_ANCHORED_NONCODE
+                     and _reads_as_file_entity(n)))
              and (n.get("source_file") or "")
              and _entropy(n.get("label", "")) >= _ENTROPY_THRESHOLD),
             key=lambda n: n["id"],
@@ -655,7 +764,10 @@ def deduplicate_entities(
                 neighbor_norm = norm_cache.get(neighbor_id) or _norm(neighbor.get("label", neighbor.get("id", "")))
                 # Pontuação de rótulos longos entre arquivos no Jaro simples (sem bônus de prefixo).
                 # O bônus do prefixo líder de Jaro-Winkler levanta pares que compartilham um
+                # prefixo, mas divergem em um token distintivo ("testing-library
+                # jest-native" vs "react-native") past threshold, fabricating
                 # mesclagens destrutivas de arquivos cruzados; só com Jaro eles ficam aquém
+                # enquanto duplicatas verdadeiras entre arquivos ainda o eliminam. Mesmo arquivo
                 # quase duplicatas mantêm Jaro-Winkler (baixo risco e intermediário
                 # a inserção de stopword precisa do bônus de prefixo para mesclar); rótulos curtos
                 # mantenha Jaro-Winkler também (bloqueado por _short_label_blocked).
@@ -669,6 +781,7 @@ def deduplicate_entities(
                     continue
                 if _short_label_blocked(norm_label, neighbor_norm, score):
                     continue
+                # Prefix-extension pairs (getActiveSession / getActiveSessions,
                 # parseConfig / parseConfigFile) quase nunca são duplicados —
                 # um é uma extensão estrita de sufixo do outro. Bloquear a mesclagem
                 # independentemente da pontuação de JW.
@@ -680,6 +793,10 @@ def deduplicate_entities(
                 # independentemente da pontuação.
                 if _numeric_tokens_differ(norm_label, neighbor_norm):
                     continue
+                # Template-named siblings differing in a content word are
+                # distinct too, on either path: same-file pairs keep the prefix
+                # bonus, and a cross-file pair can still reach threshold on the
+                # community boost alone.
                 if _content_token_swap(norm_label, neighbor_norm):
                     continue
                 if _crossfile_fileanchored_blocked(node, neighbor):
@@ -692,12 +809,22 @@ def deduplicate_entities(
                     score += _COMMUNITY_BOOST
 
                 if score >= _MERGE_THRESHOLD:
+                    # Belt-and-braces (, narrowed by): candidates are
+                    # norm-unique (`seen_norms` above), so two candidates can
+                    # never share a normalized label and this branch is
+                    # unreachable today. Retained in case candidate selection
+                    # changes. Equal-norm cross-file pairs are handled in Pass 1
+                    # instead, gated to `concept` nodes — the original
+                    # rationale (same-named code symbols) was obsoleted by code
+                    # being excluded from label matching entirely.
                     if norm_label == neighbor_norm:
                         sf_a = node.get("source_file") or ""
                         sf_b = neighbor.get("source_file") or ""
                         if sf_a != sf_b:
                             continue
+                    # Escolha o vencedor apenas do par verificado. Selecionando
                     # da união de ambos os grupos de rótulos normalizados puxa
+                    # never-compared nodes (same label, different source_file)
                     # na fusão, contornando os guardas.
                     winner = _pick_winner([node, neighbor])
                     uf.union(winner["id"], node_id)
@@ -712,6 +839,13 @@ def deduplicate_entities(
     components = uf.components()
     remap: dict[str, str] = {}
 
+    # id -> (position, node), built once. Previously each component re-scanned
+    # the whole unique_nodes list, making remap construction O(nodes x
+    # components) — 31% of dedup wall-clock on a 50k-node corpus.
+    # The position is carried so group_nodes keeps unique_nodes order: _pick_winner
+    # resolves ties (equal chunk-suffix status and equal id length) via min(),
+    # which returns the first minimum, so reordering here would silently change
+    # which node survives.
     nodes_by_id: dict[str, tuple[int, dict]] = {
         n["id"]: (i, n) for i, n in enumerate(unique_nodes)
     }
@@ -731,6 +865,7 @@ def deduplicate_entities(
             if member != winner_id:
                 remap[member] = winner_id
 
+    # ── apply remap ───────────────────────────────────────────────────────────
     if not remap:
         return unique_nodes, edges
 
@@ -748,6 +883,12 @@ def deduplicate_entities(
         msg += f" ({', '.join(parts)})"
     print(msg + ".", flush=True)
 
+    # Hyperedge members are node references exactly like edge endpoints, and
+    # must follow the survivor for the same reason. Without this the member
+    # naming a merged-away id was simply absent from the rebuilt graph: the
+    # group lost a participant silently, could fall under the 3-member threshold
+    # that makes it a hyperedge at all, and left NO dangling reference, so a
+    # referential-integrity check saw nothing wrong.
     if hyperedges:
         _remap_hyperedge_members(hyperedges, remap)
 
@@ -757,6 +898,7 @@ def deduplicate_entities(
         e = dict(edge)
         # Tolerar chaves "de"/"para" de back-ends LLM que não seguem o
         # esquema exatamente - build_from_json normaliza mais tarde, mas a desduplicação é executada
+        # primeiro, o acesso ao colchete seria KeyError aqui (# 803).
         # Use verificação explícita de presença de chave (não `ou`), então string vazia src/tgt
         # não são substituídos silenciosamente pela chave substituta.
         src = e["source"] if "source" in e else e.get("from")
@@ -817,6 +959,7 @@ def _llm_tiebreak(
             if uf.find(node["id"]) == uf.find(neighbor["id"]):
                 continue
             norm_j = _norm(neighbor.get("label", neighbor.get("id", "")))
+            # Passagem de espelho 2: Jaro simples para etiquetas longas de arquivos cruzados.
             _xfile = (node.get("source_file") or "") != (neighbor.get("source_file") or "")
             if _xfile and max(len(norm_i), len(norm_j)) >= 12:
                 score = Jaro.normalized_similarity(norm_i, norm_j) * 100
@@ -829,6 +972,8 @@ def _llm_tiebreak(
             _lo, _hi = sorted((norm_i, norm_j), key=len)
             if _hi.startswith(_lo) and _hi != _lo:
                 continue
+            # Mirror pass 2: decisively-distinct pairs never reach the LLM
+            #.
             if _numeric_tokens_differ(norm_i, norm_j):
                 continue
             if _content_token_swap(norm_i, norm_j):
@@ -849,6 +994,7 @@ def _llm_tiebreak(
     try:
         from omnigraph.llm import _call_llm
     except ImportError as exc:
+        # F-038: anteriormente este substituto silencioso escondia o fato de que `_call_llm`
         # não existia em `omnigraph.llm`, então `--dedup-llm` era autônomo.
         # Revele a falha na importação para que regressões futuras sejam visíveis.
         print(

@@ -15,6 +15,11 @@ DEFAULT_AFFECTED_RELATIONS = (
     "references",
     "imports",
     "imports_from",
+    # `import('…')` — emitted by the Svelte/Astro/Vue rescue passes and (since
+    #) by plain JS/TS too. Omitting it made every dynamic import
+    # invisible to blast-radius traversal even where the edge WAS in the
+    # graph, and dynamic import is precisely how codebases break require
+    # cycles, so the missing edges sat under the most load-bearing modules.
     "dynamic_import",
     "re_exports",
     "inherits",
@@ -32,6 +37,9 @@ class AffectedHit:
     node_id: str
     depth: int
     via_relation: str
+    # The traversed edge's location — the actual call/import/reference SITE in
+    # this node's file, not the node's own definition line (#BUG1). Defaults keep
+    # existing constructors/tests working; None falls back to the node's def line.
     via_file: "str | None" = None
     via_location: "str | None" = None
 
@@ -85,6 +93,9 @@ def _as_repo_relative(query: str, root: Path | None = None) -> str:
         try:
             return path.relative_to(anchor).as_posix()
         except ValueError:
+            # Rooted outside the repo: nothing here can make it repo-relative,
+            # so leave it alone rather than guess at a basename that would match
+            # some unrelated file with the same name.
             return query
     return path.as_posix()
 
@@ -150,6 +161,8 @@ def resolve_seed(graph: nx.Graph, query: str, root: Path | None = None) -> str |
     ]
     if len(bare_name_matches) == 1:
         return bare_name_matches[0]
+    # Compare paths in repo-relative form. Only this branch is path-shaped; the
+    # label branches above keep the query verbatim.
     query_path = _normalize_label(_as_repo_relative(query, root))
     exact_source_matches = [
         str(node_id)
@@ -227,6 +240,10 @@ def affected_nodes(
             if source in seen:
                 continue
             seen.add(source)
+            # Carry the matched edge's location (taken from the SAME edge dict
+            # whose relation passed the filter, so relation and location stay
+            # consistent) — that is the call/import/reference site in `source`'s
+            # own file, which is where the user should click (#BUG1).
             hit = AffectedHit(
                 source, current_depth + 1, relation,
                 via_file=str(data.get("source_file") or "") or None,
@@ -264,9 +281,11 @@ def format_affected(
     for hit in hits:
         data = graph.nodes[hit.node_id]
         if hit.via_location:
+            # The relation SITE in this node's file (call/import/reference line),
+            # labeled by [via_relation] so it's never mistaken for a def line.
             location = f"{hit.via_file or data.get('source_file') or '-'}:{hit.via_location}"
         else:
-            location = _format_location(data)
+            location = _format_location(data)  # honest fallback: the node's own def line
         lines.append(
             f"- {_node_label(graph, hit.node_id)} [{hit.via_relation}] {location}"
         )
@@ -285,6 +304,7 @@ def load_graph(path: Path) -> nx.Graph:
             "Re-run 'omnigraph extract' to regenerate it."
         ) from exc
     # A força direcionada para que a direção do chamador → chamador armazenado sobreviva à viagem de ida e volta;
+    # espelha serve.py e __main__.py.
     raw = {**raw, "directed": True}
     # Normalize a chave de aresta: a saída `extract` do omnigraph usa "arestas" enquanto
     # O padrão node_link_data do networkx é "links". Sem isso, uma chave de arestas
