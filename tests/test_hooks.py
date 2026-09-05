@@ -184,7 +184,11 @@ def test_post_merge_hook_fires_on_fast_forward_pull(tmp_path):
     (a / "f.txt").write_text("x", encoding="utf-8")
     _git("add", "-A", cwd=a)
     _git("commit", "-qm", "init", cwd=a)
-    _git("push", "-q", "origin", "HEAD:main", cwd=a)
+    # Rename explicitly and push with -u: init.defaultBranch/push.default vary
+    # by environment, and a bare `git push` later must land on the same ref
+    # `b` tracks regardless of what either machine defaults to.
+    _git("branch", "-M", "main", cwd=a)
+    _git("push", "-q", "-u", "origin", "main", cwd=a)
     _git("fetch", "-q", cwd=b)
     _git("checkout", "-q", "main", cwd=b)
 
