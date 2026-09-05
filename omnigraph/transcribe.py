@@ -1,3 +1,4 @@
+# Video transcription using faster-whisper
 # Converte arquivos de vídeo/áudio em transcrições de texto para extração do grafo
 from __future__ import annotations
 

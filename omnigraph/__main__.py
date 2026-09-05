@@ -19,10 +19,13 @@ except Exception:
     __version__ = "unknown"
 
 # Diretório de saída - substitua por OMNIGRAPH_OUT env var para árvores de trabalho ou configurações de saída compartilhada.
+# Aceita um nome relativo ("omnigraph-out-feature") ou um caminho absoluto ("/shared/omnigraph-out").
 # Definido uma vez em zspekfy.paths para que os guardas do caminho de segurança/fluxo de chamada honrem o
+# same override.
 from omnigraph.paths import OMNIGRAPH_OUT as _OMNIGRAPH_OUT
 
 # Subsistema de instalação/desinstalação movido para zspekfy/install.py; reexportado aqui então
+# `from omnigraph.__main__ import <nome>` continua funcionando inalterado.
 from omnigraph.install import (  # noqa: E402,F401
     dispatch_install_cli,
     _agents_install,
@@ -144,6 +147,7 @@ def __getattr__(name: str) -> str:
     # PEP 562: resolve preguiçosamente as constantes de seção herdadas sempre ativas para externos
     # importadores (por exemplo, os testes de string de instalação). O código no módulo chama _always_on()
     # diretamente; nada é lido no momento da importação, então um bloco ausente não pode mais
+    # coloque a CLI em `import omnigraph.__main__` (follow-up).
     base = _ALWAYS_ON_ALIASES.get(name)
     if base is not None:
         return _always_on(base)
@@ -156,8 +160,26 @@ def __getattr__(name: str) -> str:
 
 
 
-def _check_skill_version(skill_dst: Path) -> None:
-    """Warn if the installed skill is from an older omnigraph version."""
+def _check_skill_version(skill_dst: Path, platform_names: "list[str] | None" = None) -> None:
+    """Warn if the installed skill is from an older omnigraph version.
+
+    ``platform_names`` are the platforms installing into this destination
+    (resolved here when not given - the call site passes one positional
+    argument only, because tests stub this function with one-arg lambdas), so
+    the warning can name the exact command that refreshes THIS copy (#3144):
+    a plain `omnigraph install` only refreshes the detected platform, and a
+    stale marker at another platform's destination made the warning permanent
+    - the user followed the advice, the warning stayed, and only editing the
+    marker by hand cleared it.
+    """
+    if platform_names is None:
+        try:
+            platform_names = [
+                name for name in _PLATFORM_CONFIG
+                if _platform_skill_destination(name) == skill_dst
+            ]
+        except Exception:
+            platform_names = []
     version_file = skill_dst.parent / ".omnigraph_version"
     try:
         if not version_file.exists():
@@ -190,6 +212,7 @@ def _check_skill_version(skill_dst: Path) -> None:
             # escreve a habilidade agrupada PRÓPRIA (mais antiga) do pacote e carimba novamente a versão,
             # portanto, seguir o antigo conselho de "executar instalação" seria silenciosamente DOWNGRADE o
             # habilidade. A verdadeira solução é atualizar o pacote. Comum para um obsoleto
+            # `uv tool` CLI, ou um contribuidor cujo dev checkout carimbou uma habilidade mais recente.
             print(
                 f"  warning: skill is from omnigraph {installed}, but the package is "
                 f"{__version__} (older). Upgrade the package "
@@ -198,7 +221,16 @@ def _check_skill_version(skill_dst: Path) -> None:
                 file=sys.stderr,
             )
         else:
-            print(f"  warning: skill is from omnigraph {installed}, package is {__version__}. Run 'omnigraph install' to update.", file=sys.stderr)
+            _cmd = (
+                f"omnigraph install --platform {platform_names[0]}"
+                if platform_names else "omnigraph install"
+            )
+            print(
+                f"  warning: skill at {skill_dst.parent} is from omnigraph {installed}, "
+                f"package is {__version__}. Run '{_cmd}' to update it "
+                f"(a plain 'omnigraph install' refreshes only the detected platform).",
+                file=sys.stderr,
+            )
 
 
 def _version_tuple(version: str) -> tuple[int, ...]:
@@ -239,12 +271,15 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 # PreToolUse nudge payloads, emitidos literalmente pelo shell agnóstico
+# Subcomando `omnigraph hook-guard` (veja _run_hook_guard). Os ganchos anteriores
+# bash POSIX embutido (case/esac, [ -f ], echo entre aspas simples) que o Windows
 # cmd.exe/PowerShell não pode ser analisado, portanto, no Windows, o gancho falhou e o empurrão
 # desapareceu silenciosamente — os usuários tiveram que invocar /omnigraph manualmente. Movendo o
 # lógica em um subcomando Python invocado por meio de um caminho exe absoluto torna o gancho
 # analise de forma idêntica em sh, cmd.exe e PowerShell. Código Claude aceita
 # adicionalContext em PreToolUse (Codex Desktop não - esse caminho permanece um
 # não operacional via `hook-check`). Separadores compactos mantêm a carga útil byte por byte
+# mesmo JSON que o antigo `echo` emitiu.
 
 
 # Extensões de origem/doc que o protetor Read|Glob ativa (literalmente do antigo gancho).
@@ -269,7 +304,9 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 # Os blocos de instruções sempre ativos são empacotados em omnigraph/always_on/,
+# gerado por ferramentas/skillgen e protegido por `skillgen --check`. Lendo-os em
 # load mantém o contrato install-string / issue- byte por byte enquanto permite
+# um humano edita um fragmento em vez de um literal entre aspas triplas aqui.
 
 
 
@@ -279,6 +316,11 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 
+# Texto de deslocamento do gancho Gemini CLI BeforeTool. O gancho sempre retorna
+# {"decision":"allow"} (nunca bloqueia uma ferramenta) e anexa isso como adicionalContext
+# quando existe um grafo. Emitido por `omnigraph hook-guard gemini`. O velho gancho era um
+# `python -c "..."` one-liner que dependia de um `python` vazio em PATH (geralmente
+# `python`/`py` ou ausente no Windows) e crases incorporados + aspas de escape que
 # Mangles do Windows PowerShell (acompanhamento nº 522); o formulário do subcomando não possui tal
 # dependência e analisa em cada shell.
 
@@ -360,6 +402,9 @@ _CODEX_HOOK = {
                     {
                         "type": "command",
                         # Use a própria CLI zspekfy para que o gancho seja independente do shell:
+                        # sem sintaxe bash [-f], sem problema de python3 vs python Conda,
+                        # nenhum JSON escapando dentro das strings do PowerShell. Funciona em
+                        # Windows (PowerShell/cmd.exe), macOS e Linux.
                         "command": "omnigraph hook-check",
                     }
                 ],
@@ -547,6 +592,7 @@ def _run_cli() -> None:
         print("    --top N                 how many to show (default 10)")
         print("    --graph <path>          path to graph.json (default omnigraph-out/graph.json)")
         print("    --json                  emit JSON instead of text")
+        print("  prs                     PR dashboard: CI state, review status, worktree mapping")
         print("  save-result             save a Q&A result to omnigraph-out/memory/ for graph feedback loop")
         print("    --question Q            the question asked")
         print("    --answer A              the answer to save")
@@ -599,13 +645,25 @@ def _run_cli() -> None:
         print("    --cargo                 extract crate→crate deps from Cargo.toml")
         print("    --global                also merge the resulting graph into the global graph")
         print("    --as <tag>              repo tag for --global (default: target directory name)")
+        print("  provider [list|show|add|remove]  manage custom LLM providers")
         print("  global add <graph.json>  add/update a project graph in the global graph (~/.omnigraph/global-graph.json)")
         print("    --as <tag>               repo tag (default: parent directory name)")
         print("  global remove <tag>      remove a repo's nodes from the global graph")
         print("  global list              list repos in the global graph")
         print("  global path              print path to the global graph file")
         print("  benchmark [graph.json]  measure token reduction vs naive full-corpus approach")
+        print("  export html             emit interactive graph.html [--graph PATH] [--labels PATH] [--node-limit N] [--no-viz]")
         print("  export callflow-html    emit Mermaid-based architecture/call-flow HTML")
+        print("                          [GRAPH|DIR] [--graph PATH] [--labels PATH] [--report PATH] [--sections PATH] [--output HTML]")
+        print("                          [--lang auto|zh-CN|en] [--max-sections N] [--diagram-scale N]")
+        print("  export obsidian         emit Obsidian vault notes + canvas [--graph PATH] [--labels PATH] [--dir PATH]")
+        print("  export wiki             emit wiki markdown articles [--graph PATH] [--labels PATH]")
+        print("  export svg              emit graph.svg [--graph PATH] [--labels PATH]")
+        print("  export graphml          emit GraphML [--graph PATH]")
+        print("  export neo4j            emit Cypher or push to Neo4j [--graph PATH] [--push URI] [--user U] [--password P]")
+        print("                          (or set NEO4J_PASSWORD instead of --password to keep it off argv)")
+        print("  export falkordb         emit Cypher or push to FalkorDB [--graph PATH] [--push URI] [--user U] [--password P]")
+        print("                          (or set FALKORDB_PASSWORD instead of --password to keep it off argv)")
         print("  hook install            install post-commit/post-checkout/post-merge git hooks (all platforms)")
         print("  hook uninstall          remove git hooks")
         print("  hook status             check if git hooks are installed")
@@ -679,6 +737,8 @@ def _run_cli() -> None:
     cmd = sys.argv[1]
 
     # Guarda de ajuda universal: -h/--help/-? em qualquer lugar após o comando mostrar ajuda
+    # e paradas — evita que sinalizadores acionem subcomandos destrutivos silenciosamente
+    # (por exemplo, "cursor install --help" foi instalado silenciosamente no Cursor).
     # Isento: comandos de texto livre (a string do usuário pode conter esses tokens) e
     # "instalar"/"desinstalar" que possuem seus próprios manipuladores de ajuda por subcomando.
     _FREE_TEXT_CMDS = {"query", "explain", "path", "save-result", "install", "uninstall"}

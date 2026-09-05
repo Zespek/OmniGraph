@@ -17,6 +17,7 @@ _MERGE_MARKER_END = "# omnigraph-merge-hook-end"
 # instala o intérprete dentro de um ambiente isolado, então o inicializador em
 # PATH é o único ponto de entrada - e os clientes git da GUI/executores de CI geralmente têm um
 # PATH mínimo que omite ~/.local/bin.  Fixando sys.executable no momento da instalação
+# faz o gancho funcionar independentemente do PATH no momento do gatilho do git.
 _PYTHON_DETECT = """\
 # Detect the correct Python interpreter (handles uv tool, pipx, venv, system installs).
 # _PINNED was recorded at hook-install time; tried first so the hook works even
@@ -68,10 +69,17 @@ if [ -z "$OMNIGRAPH_PYTHON" ]; then
         # POSIX launcher: parse the shebang. head -c + tr strip NUL bytes first —
         # when the launcher is a Windows binary reached without its .exe suffix,
         # a raw `head -1` reads binary into the command substitution and the
-        # shell warns about ignored null bytes on every commit.
+        # shell warns about ignored null bytes on every commit. Gate on a
+        # leading '#!': a launcher can also be a binary trampoline with no
+        # shebang at all (uv tool installs on Windows), and its bytes must
+        # never reach the shebang parse (#2852).
         case "$OMNIGRAPH_BIN" in
-            *.exe) _SHEBANG="" ;;
-            *)     _SHEBANG=$(head -c 256 "$OMNIGRAPH_BIN" 2>/dev/null | tr -d '\\000' | head -n 1 | sed 's/^#![[:space:]]*//') ;;
+            *.exe) _GFY_HEAD="" ;;
+            *)     _GFY_HEAD=$(head -c 256 "$OMNIGRAPH_BIN" 2>/dev/null | tr -d '\\000') ;;
+        esac
+        case "$_GFY_HEAD" in
+            '#!'*) _SHEBANG=$(printf '%s\\n' "$_GFY_HEAD" | head -n 1 | sed 's/^#![[:space:]]*//') ;;
+            *)     _SHEBANG="" ;;
         esac
         case "$_SHEBANG" in
             */env\\ *) OMNIGRAPH_PYTHON="${_SHEBANG#*/env }" ;;
@@ -86,6 +94,29 @@ if [ -z "$OMNIGRAPH_PYTHON" ]; then
             OMNIGRAPH_PYTHON=""
         fi
     fi
+fi
+# Fourth probe: uv tool environments. `uv tool install` (the README's
+# recommended method) puts omnigraph in an isolated venv that no ambient
+# python can import, and on Windows its launcher on PATH is a binary
+# trampoline with no shebang to parse — so the probes above can all miss a
+# healthy install and the hook dies at the last-resort fallback (#2852).
+# Scan the uv tool envs directly; UV_TOOL_DIR overrides the default
+# location. A tool env is adopted only if its python passes the probe, so a
+# co-installed tool without omnigraph never satisfies it.
+if [ -z "$OMNIGRAPH_PYTHON" ]; then
+    for _GFY_TOOLS in \
+        "${UV_TOOL_DIR:-}" \
+        "$HOME/.local/share/uv/tools" \
+        "$HOME/AppData/Roaming/uv/tools"; do
+        [ -n "$_GFY_TOOLS" ] || continue
+        for _GFY_CAND in "$_GFY_TOOLS"/*/bin/python "$_GFY_TOOLS"/*/Scripts/python.exe; do
+            [ -x "$_GFY_CAND" ] || continue
+            if "$_GFY_CAND" -c "$_GFY_PROBE" 2>/dev/null; then
+                OMNIGRAPH_PYTHON="$_GFY_CAND"
+                break 2
+            fi
+        done
+    done
 fi
 # Last resort: try python3 / python (works for system/venv installs on PATH).
 if [ -z "$OMNIGRAPH_PYTHON" ]; then
@@ -103,6 +134,7 @@ fi
 # O Python que a reconstrução executa, compartilhado por ambos os ganchos. Incorporado literalmente em
 # o iniciador abaixo e executado novamente no filho desanexado. Não deve conter o
 # caracteres de aspas duplas, $, crase ou barra invertida: é transportado dentro de um
+# shell double-quoted `-c "..."` argument (see _detached_launch).
 _REBUILD_BODY_COMMIT = """\
 import os, signal, sys, threading
 from pathlib import Path
@@ -135,7 +167,7 @@ try:
     _out = os.environ.get('OMNIGRAPH_OUT', 'omnigraph-out')
     _saved = Path(_out) / '.omnigraph_root'
     if _saved.exists():
-        _txt = _saved.read_text(encoding='utf-8').strip()
+        _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, changed_paths=changed, force=_force)
@@ -184,7 +216,7 @@ try:
     _out = os.environ.get('OMNIGRAPH_OUT', 'omnigraph-out')
     _saved = Path(_out) / '.omnigraph_root'
     if _saved.exists():
-        _txt = _saved.read_text(encoding='utf-8').strip()
+        _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
             _root = Path(_txt)
     _rebuild_code(_root, force=_force)
@@ -214,7 +246,17 @@ except Exception as exc:
 # ainda retornou 0, então o grafo ficou obsoleto e sem sinal. omnigraph já
 # requer Python, então deixamos o Python fazer a separação: um pequeno processo externo gera
 # a reconstrução real é totalmente desvinculada e retorna imediatamente, para que o gancho nunca
-# quando permitido. Esta carga útil é transportada dentro de um argumento -c entre aspas duplas do shell,
+# blocos. POSIX usa start_new_session (o equivalente setsid); Windows usa
+# CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP, breaking away from any job object
+# when allowed. Do NOT 'simplify' CREATE_NO_WINDOW back into DETACHED_PROCESS:
+# on Windows 11 with Windows Terminal as the default console host, a
+# console-less python still gets a VISIBLE console allocated when its runtime
+# touches the console API during startup (ctrl-handler installation), popping
+# an empty Terminal window over whatever the user is doing - once per commit,
+# for the whole rebuild. Reproduced via GetConsoleWindow(): DETACHED_PROCESS
+# child reports a visible hwnd, CREATE_NO_WINDOW child reports none (3bac3df).
+# This payload is carried inside a shell double-quoted -c argument,
+# portanto, ele usa deliberadamente apenas strings Python entre aspas simples (sem ", $, ` ou \\).
 _LAUNCHER_TEMPLATE = """\
 import os, subprocess, sys
 _src = '''
@@ -259,6 +301,7 @@ def _detached_launch(rebuild_body: str) -> str:
 # o usuário nunca solicitou e corre o deploy/CI `git clean` contra o desanexado
 # reconstruir ("falha ao remover omnigraph-out/: diretório não vazio").
 # Uma árvore de trabalho vinculada possui git-dir! = git-common-dir. Ambos são resolvidos para absoluto
+# via `cd ... && pwd` antes de comparar: o GIT_DIR / --git-dir exportado do git pode ser
 # absoluto enquanto --git-common-dir é o relativo ".git", e uma comparação bruta seria
 # falso positivo no checkout PRIMARY e ignorá-lo erroneamente.
 _WORKTREE_GUARD = """\
@@ -518,7 +561,9 @@ def _hooks_dir(root: Path) -> Path:
     are still surfaced: git itself fails on them, and its stderr is printed.
     """
     # NOTA: NÃO passe --path-format=absolute — adicionado no git 2.31; idiota mais velho
+    # ecoa de volta como um argumento literal, contaminando stdout e causando um
     # diretório fantasma a ser criado. git -C <root> já retorna um
+    # caminho absoluto para casos de worktree/external-gitdir e um caminho relativo a
     # <root> para repositórios normais — a ancoragem na raiz cobre ambos.
     import subprocess as _sp
     try:
@@ -666,6 +711,11 @@ def _register_merge_driver(root: Path) -> str:
     import subprocess as _sp
     pinned = _pinned_python()
     if pinned:
+        # Double-quoted: the allowlist in _pinned_python() permits a space (Windows
+        # profile paths), and git runs this driver string through a shell, so an
+        # unquoted "C:\\Users\\First Last\\...\\python.exe" would split into two
+        # words and the driver would never run. The same allowlist keeps
+        # '$' and backticks out, so double quotes cannot introduce expansion.
         driver = f'"{pinned}" -m omnigraph merge-driver %O %A %B'
     else:
         driver = "omnigraph merge-driver %O %A %B"
@@ -687,6 +737,7 @@ def _register_merge_driver(root: Path) -> str:
         content = attrs.read_text(encoding="utf-8")
         if _has_merge_attr(content):
             return f"already registered ({line})"
+        # Nunca destrua outras entradas; preservar uma nova linha final.
         if content and not content.endswith("\n"):
             content += "\n"
         attrs.write_text(content + line + "\n", encoding="utf-8", newline="\n")
@@ -700,6 +751,7 @@ def _unregister_merge_driver(root: Path) -> str:
     import subprocess as _sp
     for key in ("merge.omnigraph.name", "merge.omnigraph.driver"):
         try:
+            # --unset sai diferente de zero se a chave estiver ausente; tudo bem.
             _sp.run(
                 ["git", "-C", str(root), "config", "--unset", key],
                 capture_output=True, text=True,
@@ -717,6 +769,7 @@ def _unregister_merge_driver(root: Path) -> str:
     if kept == content.splitlines():
         return "gitattributes entry not found - nothing to remove."
     if kept:
+        # Outras entradas sobreviveram; o arquivo permanece.
         attrs.write_text("\n".join(kept) + "\n", encoding="utf-8", newline="\n")
         return "removed from .gitattributes (other entries preserved)"
     attrs.unlink()
@@ -769,6 +822,10 @@ def install(path: Path = Path(".")) -> str:
     cfg = _load_omnigraphrc(root)
     viz_limit = cfg.get("viz_node_limit")
     if viz_limit is not None:
+        # Use the `:-` default form (like OMNIGRAPH_MAX_WORKERS below) so an
+        # explicit `OMNIGRAPH_VIZ_NODE_LIMIT=... git commit` still wins over the
+        # baked project default — persisting config must not clobber a per-run
+        # override.
         viz_export = f'export OMNIGRAPH_VIZ_NODE_LIMIT="${{OMNIGRAPH_VIZ_NODE_LIMIT:-{viz_limit}}}"\n'
     else:
         viz_export = ""
@@ -813,6 +870,8 @@ def status(path: Path = Path(".")) -> str:
     if root is None:
         return "Not in a git repository."
     hooks_dir = _user_hooks_dir(_hooks_dir(root))
+    # status is a read-only diagnostic: a malformed .omnigraphrc must not turn it
+    # into a traceback. Report the config problem and continue with no limit.
     try:
         cfg = _load_omnigraphrc(root)
     except ValueError as exc:
@@ -828,6 +887,9 @@ def status(path: Path = Path(".")) -> str:
         if marker not in text:
             return "not installed (hook exists but omnigraph not found)"
         if cfg_limit is not None:
+            # Baked as `"${OMNIGRAPH_VIZ_NODE_LIMIT:-<n>}"` so a per-run override
+            # wins; match the default <n>, and still accept the older bare
+            # `"<n>"` form from hooks installed before that change.
             m = re.search(
                 r'export OMNIGRAPH_VIZ_NODE_LIMIT="(?:\$\{OMNIGRAPH_VIZ_NODE_LIMIT:-(\d+)\}|(\d+))"',
                 text,

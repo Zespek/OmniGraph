@@ -116,10 +116,15 @@ if (-not $OMNIGRAPH_PYTHON) {
     $OMNIGRAPH_PYTHON = Find-OmniGraphPython
 }
 
-# Save interpreter path — all subsequent steps read this
-$OMNIGRAPH_PYTHON | Out-File -FilePath omnigraph-out\.omnigraph_python -Encoding utf8 -NoNewline
+# Save interpreter path — all subsequent steps read this.
+# `Out-File -Encoding utf8` always writes a BOM on Windows PowerShell 5.1 (utf8NoBOM
+# only exists from PowerShell 6), and that BOM rides into the saved path, so the hook
+# rebuild fails with WinError 123 (#3028). WriteAllText with an explicit BOM-less
+# encoding writes the bytes POSIX writes, and adds no trailing newline.
+$Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText((Join-Path $PWD 'omnigraph-out\.omnigraph_python'), [string]$OMNIGRAPH_PYTHON, $Utf8NoBom)
 # Save scan root so `omnigraph update` (no args) knows where to look next time
-(Resolve-Path INPUT_PATH).Path | Out-File -FilePath omnigraph-out\.omnigraph_root -Encoding utf8 -NoNewline
+[System.IO.File]::WriteAllText((Join-Path $PWD 'omnigraph-out\.omnigraph_root'), (Resolve-Path INPUT_PATH).Path, $Utf8NoBom)
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.

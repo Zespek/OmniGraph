@@ -1,3 +1,4 @@
+# Security helpers - URL validation, safe fetch, path guards, label sanitisation
 from __future__ import annotations
 
 import html
@@ -22,11 +23,13 @@ _MAX_TEXT_BYTES  = 10_485_760   # Limite rígido de 10 MB para HTML/texto
 
 # Limite de bomba de memória de carregamento de grafo: rejeite arquivos .json maiores que isso antes
 # Analisando-os em JSON em um dicionário. Sem isso, um multi-gigabyte (ou
+# specifically crafted) graph.json can exhaust process memory during
+# json.loads + node_link_graph rehydration.
 # Limite de reserva padrão. Mantido como uma constante em nível de módulo, então o valor é
 # chamadores/testes detectáveis ​​e existentes que fazem referência a ele diretamente mantêm
 # trabalhando; o limite efetivo é resolvido no momento da chamada por
 # ``_max_graph_file_bytes`` (que permite ``OMNIGRAPH_MAX_GRAPH_BYTES`` substituí-lo).
-_MAX_GRAPH_FILE_BYTES = 512 * 1024 * 1024
+_MAX_GRAPH_FILE_BYTES = 512 * 1024 * 1024   # 512 MiB
 
 
 def _max_graph_file_bytes() -> int:
@@ -62,15 +65,20 @@ def _max_graph_file_bytes() -> int:
         return _MAX_GRAPH_FILE_BYTES
     return value * multiplier
 
+# Metadados da AWS, links locais e endpoints de metadados comuns na nuvem
 _BLOCKED_HOSTS = {"metadata.google.internal", "metadata.google.com"}
 
 # Espaço de endereço compartilhado RFC 6598 (CGN) - is_private perde isso no Python <3.11
 _CGN_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# Prefixo bem conhecido RFC 6052 NAT64 -- is_reserved=True em Python, mas estes incorporam
 # endereços IPv4 públicos e são tráfego público legítimo da Internet, não vetores SSRF.
 _NAT64_WKP = ipaddress.ip_network("64:ff9b::/96")
 
 
+# ---------------------------------------------------------------------------
+# URL validation
+# ---------------------------------------------------------------------------
 
 def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if *ip* falls in a private/reserved/internal range.
@@ -109,12 +117,14 @@ def validate_url(url: str) -> str:
 
     hostname = parsed.hostname
     if hostname:
+        # Block known cloud metadata hostnames
         if hostname.lower() in _BLOCKED_HOSTS:
             raise ValueError(
                 f"Blocked cloud metadata endpoint '{hostname}'. "
                 f"Got: {url!r}"
             )
 
+        # Resolva o nome do host e bloqueie intervalos de IP privados/reservados
         try:
             infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
             for info in infos:
@@ -133,11 +143,16 @@ def validate_url(url: str) -> str:
     return url
 
 
+# ---------------------------------------------------------------------------
+# SSRF-guarded connections
+#
+# Em vez de corrigir o processo global socket.getaddrinfo (um
 # perigo TOCTOU não thread-safe quando múltiplas buscas são executadas simultaneamente),
 # subclassificamos a conexão HTTP(S) para que cada conexão resolva o DNS exatamente
 # uma vez, valida o IP resultante e, em seguida, conecta-se a esse IP exato. Lá
 # não há segunda resolução, portanto, um ataque de religação de DNS não pode trocar em um ambiente privado
 # endereço (por exemplo, 169.254.169.254) entre validação e conexão.
+# ---------------------------------------------------------------------------
 
 
 def _resolve_and_validate(host: str, port: int) -> tuple[int, str]:
@@ -221,7 +236,7 @@ class _NoFileRedirectHandler(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        validate_url(newurl)
+        validate_url(newurl)          # gera ValueError se o esquema estiver errado
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -236,6 +251,9 @@ def _build_opener() -> urllib.request.OpenerDirector:
     )
 
 
+# ---------------------------------------------------------------------------
+# Safe fetch
+# ---------------------------------------------------------------------------
 
 def safe_fetch(url: str, max_bytes: int = _MAX_FETCH_BYTES, timeout: int = 30) -> bytes:
     """Fetch *url* and return raw bytes.
@@ -290,6 +308,9 @@ def safe_fetch_text(url: str, max_bytes: int = _MAX_TEXT_BYTES, timeout: int = 1
     return raw.decode("utf-8", errors="replace")
 
 
+# ---------------------------------------------------------------------------
+# Path validation
+# ---------------------------------------------------------------------------
 
 def validate_graph_path(path: str | Path, base: Path | None = None) -> Path:
     """Resolve *path* and verify it stays inside *base*.
@@ -362,6 +383,9 @@ def check_graph_file_size_cap(path: Path) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Label sanitisation (mirrors code-review-graph's _sanitize_name pattern)
+# ---------------------------------------------------------------------------
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
 _MAX_LABEL_LEN = 256
@@ -381,6 +405,9 @@ def sanitize_label(text: str | None) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# Metadata sanitisation (recursive, bounded, HTML-safe)
+# ---------------------------------------------------------------------------
 
 _METADATA_MAX_VALUE_LEN = 512
 _METADATA_MAX_LIST_ITEMS = 50
