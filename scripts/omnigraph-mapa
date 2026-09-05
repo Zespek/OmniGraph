@@ -111,6 +111,22 @@ rodar_cluster() {
 
 LOG="$(mktemp 2>/dev/null || echo "$HOME/.omnigraph_mapa.log")"
 
+# garante que a pasta de saída não seja commitada sem querer: um 'git add -A'
+# comum pegaria ela, e um colega que já gerou o mapa localmente teria o
+# 'git pull' ABORTADO por arquivos não rastreados que seriam sobrescritos.
+garantir_gitignore() {
+  raiz="$(git -C "$alvo" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  saida="${OMNIGRAPH_OUT:-omnigraph-out}"
+  gi="$raiz/.gitignore"
+  if [ -f "$gi" ] && grep -qE "^/?${saida}/?\$" "$gi" 2>/dev/null; then
+    return 0
+  fi
+  [ -f "$gi" ] && [ -s "$gi" ] && [ -n "$(tail -c1 "$gi")" ] && printf '\n' >> "$gi"
+  printf '%s/\n' "$saida" >> "$gi"
+  echo "${roxo}▸${zero} adicionado '${saida}/' ao .gitignore (evita commitar o mapa sem querer)"
+}
+garantir_gitignore
+
 echo "${roxo}▸ Gerando o mapa de:${zero} $alvo"
 
 # se não pediram --code-only, tenta garantir a IA de pé (subindo o Ollama se
@@ -156,6 +172,20 @@ rodar_cluster
 # o mapa não ficar parado nesta primeira geração, silencioso e nunca falha o
 # resto do script (pasta sem git, por exemplo, é comum e não é um erro aqui).
 ( cd "$alvo" && "$OG" hook install ) >/dev/null 2>&1 || true
+
+# .gitignore/.gitattributes recém-criados e ainda não commitados: se cada
+# colega gerar o mapa por conta própria, cada um cria sua própria cópia sem
+# rastreamento, e o primeiro a subir um commit trava o 'git pull' de todo
+# mundo (arquivo não rastreado seria sobrescrito pelo merge).
+raiz_git="$(git -C "$alvo" rev-parse --show-toplevel 2>/dev/null)"
+if [ -n "$raiz_git" ]; then
+  pendentes="$(git -C "$raiz_git" status --porcelain -- .gitignore .gitattributes 2>/dev/null | grep '^??' | awk '{print $2}')"
+  if [ -n "$pendentes" ]; then
+    echo
+    echo "${amarelo}! Commite estes arquivos e avise o time (evita travar o 'git pull' de quem já gerou o mapa):${zero}"
+    echo "$pendentes" | sed 's/^/    /'
+  fi
+fi
 
 html="$alvo/omnigraph-out/graph.html"
 

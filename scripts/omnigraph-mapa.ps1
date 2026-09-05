@@ -72,6 +72,23 @@ function RodarCluster {
   }
 }
 
+function GarantirGitignore {
+  # Evita commitar a pasta de saida sem querer: um 'git add -A' comum pegaria
+  # ela, e um colega que ja gerou o mapa localmente teria o 'git pull'
+  # ABORTADO por arquivos nao rastreados que seriam sobrescritos.
+  $raiz = (& git -C $alvo rev-parse --show-toplevel 2>$null)
+  if (-not $raiz) { return }
+  $saida = if ($env:OMNIGRAPH_OUT) { $env:OMNIGRAPH_OUT } else { "omnigraph-out" }
+  $gi = Join-Path $raiz ".gitignore"
+  if (Test-Path $gi) {
+    $conteudo = Get-Content $gi -Raw -ErrorAction SilentlyContinue
+    if ($conteudo -and ($conteudo -split "`r?`n" | Where-Object { $_ -match "^/?$([regex]::Escape($saida))/?$" })) { return }
+  }
+  Add-Content -Path $gi -Value "$saida/"
+  Write-Host "> adicionado '$saida/' ao .gitignore (evita commitar o mapa sem querer)" -ForegroundColor Magenta
+}
+GarantirGitignore
+
 Write-Host "> Gerando o mapa de: $alvo" -ForegroundColor Magenta
 
 # tenta garantir a IA de pe (subindo o Ollama se preciso); senao, modo codigo
@@ -116,6 +133,21 @@ Write-Progress -Activity "Gerando o mapa" -Completed
 # resto do script (pasta sem git, por exemplo, e comum e nao e um erro aqui).
 Push-Location $alvo
 try { & $og hook install *> $null } catch {} finally { Pop-Location }
+
+# .gitignore/.gitattributes recem-criados e ainda nao commitados: se cada
+# colega gerar o mapa por conta propria, cada um cria sua propria copia sem
+# rastreamento, e o primeiro a subir um commit trava o 'git pull' de todo
+# mundo (arquivo nao rastreado seria sobrescrito pelo merge).
+$raizGit = (& git -C $alvo rev-parse --show-toplevel 2>$null)
+if ($raizGit) {
+  $pendentes = (& git -C $raizGit status --porcelain -- .gitignore .gitattributes 2>$null) |
+    Where-Object { $_ -match "^\?\?" } | ForEach-Object { ($_ -split "\s+", 2)[1] }
+  if ($pendentes) {
+    Write-Host ""
+    Write-Host "! Commite estes arquivos e avise o time (evita travar o 'git pull' de quem ja gerou o mapa):" -ForegroundColor Yellow
+    $pendentes | ForEach-Object { Write-Host "    $_" }
+  }
+}
 
 $html = Join-Path $alvo "omnigraph-out\graph.html"
 
