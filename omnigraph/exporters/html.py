@@ -103,21 +103,42 @@ def _html_styles() -> str:
 def _hyperedge_script(hyperedges_json: str) -> str:
     return f"""<script>
 const hyperedges = {hyperedges_json};
+function convexHull(pts) {{
+  const sorted = pts.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+  const n = sorted.length;
+  if (n <= 2) return sorted;
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [];
+  for (const p of sorted) {{
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }}
+  const upper = [];
+  for (let i = n - 1; i >= 0; i--) {{
+    const p = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }}
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}}
 network.on('afterDrawing', function(ctx) {{
     hyperedges.forEach(h => {{
         const positions = h.nodes
             .map(nid => network.getPositions([nid])[nid])
             .filter(p => p !== undefined);
         if (positions.length < 2) return;
+        const hull = convexHull(positions);
         ctx.save();
         ctx.globalAlpha = 0.12;
         ctx.fillStyle = '#bd00ff';
         ctx.strokeStyle = '#bd00ff';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        const cx = positions.reduce((s, p) => s + p.x, 0) / positions.length;
-        const cy = positions.reduce((s, p) => s + p.y, 0) / positions.length;
-        const expanded = positions.map(p => ({{
+        const cx = hull.reduce((s, p) => s + p.x, 0) / hull.length;
+        const cy = hull.reduce((s, p) => s + p.y, 0) / hull.length;
+        const expanded = hull.map(p => ({{
             x: cx + (p.x - cx) * 1.15,
             y: cy + (p.y - cy) * 1.15
         }}));
