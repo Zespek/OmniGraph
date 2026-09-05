@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 import re
 
+# A category stem splits only when both halves look like plain ObjC identifiers, so
+# `C++Bridge.h` and `Foo+.h` are left intact.
 _OBJC_STEM_PART = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -106,6 +108,11 @@ def extract_objc(path: Path) -> dict:
     # tabela `var -> ClassName` por arquivo de declarações locais `Foo *f = ...;`.
     raw_calls: list[dict] = []
     objc_type_table: dict[str, str] = {}
+    # per-CLASS `field -> ClassName` tables from `@property Bar *bar;` and
+    # ivar `Bar *_bar;` declarations, keyed by the class nid the .h/.m pair share
+    # (preserved by _merge_decl_def_classes), so the cross-file resolver can type a
+    # `[self.bar doIt]` / `[_bar doIt]` receiver. A conflicting redeclaration of the
+    # same (class, field) tombstones the entry (None) — drop, don't guess.
     objc_field_types: dict[str, dict[str, str | None]] = {}
 
     def add_node(nid: str, label: str, line: int) -> None:
@@ -187,6 +194,8 @@ def extract_objc(path: Path) -> dict:
         type_name = _read(type_ids[0]).strip()
         if not type_name or not type_name[:1].isupper():
             return None
+        # struct_declarator wraps ONE pointer_declarator (`*bar`) or identifier
+        # (`bar`); anything else (bitfields, arrays) has more children -> bail.
         inner = declarators[0].children
         if len(inner) != 1:
             return None
@@ -199,7 +208,7 @@ def extract_objc(path: Path) -> dict:
         table = objc_field_types.setdefault(cls_nid, {})
         if field in table:
             if table[field] != type_name:
-                table[field] = None
+                table[field] = None  # conflicting redeclaration -> drop, don't guess
         else:
             table[field] = type_name
 
@@ -222,6 +231,7 @@ def extract_objc(path: Path) -> dict:
         line = node.start_point[0] + 1
 
         if t == "preproc_include":
+            # #importar <Foundation/Foundation.h> ou #import "MyClass.h"
             for child in node.children:
                 if child.type == "system_lib_string":
                     raw = _read(child).strip("<>")
@@ -230,11 +240,14 @@ def extract_objc(path: Path) -> dict:
                         tgt_nid = _make_id(module)
                         add_edge(file_nid, tgt_nid, "imports", line, context="import")
                 elif child.type == "string_literal":
+                    # recorrer a string_literal para encontrar string_content
                     for sub in child.children:
                         if sub.type == "string_content":
                             raw = _read(sub)
                             # Resolva a inclusão citada em um arquivo real para que o ID de destino
                             # corresponde ao id do nó (possivelmente sem ambiguidade) _make_id fornecido
+                            # esse arquivo; o id da haste nua nunca sobrevive
+                            # _disambiguate_colliding_node_ids quando existe um par .h/.m,
                             # então a aresta ficou pendurada e caiu.
                             resolved = _resolve_c_include_path(raw, str_path)
                             if resolved is not None:
@@ -246,6 +259,7 @@ def extract_objc(path: Path) -> dict:
             return
 
         if t == "module_import":
+            # @import Foundation;  /  @import Foundation.NSString;
             path_node = node.child_by_field_name("path")
             if path_node is not None:
                 module = _read(path_node).split(".")[0].strip()
@@ -254,12 +268,20 @@ def extract_objc(path: Path) -> dict:
             return
 
         if t == "class_interface":
+            # @interface ClassName : SuperClass <Protocols>
+            # children: @interface, identifier(name), ':', identifier(super), parameterized_arguments, ...
             identifiers = [c for c in node.children if c.type == "identifier"]
             if not identifiers:
                 for child in node.children:
                     walk(child, parent_nid)
                 return
             name = _read(identifiers[0])
+            # A category / class extension extends an existing class, so key its
+            # class node off the BASE stem (`Foo+Cat.h` -> `Foo`). Without this,
+            # `Foo+Cat.h` minted a SECOND node labelled `Foo`, which made every
+            # `[Foo ...]` receiver ambiguous and tripped the resolver's
+            # single-definition god-node guard — destroying edges the same corpus
+            # produced fine when the members lived in `Foo.h`.
             cls_stem = _objc_category_base_stem(stem) if _objc_is_category(node) else stem
             cls_nid = _make_id(cls_stem, name)
             add_node(cls_nid, name, line)
@@ -274,6 +296,7 @@ def extract_objc(path: Path) -> dict:
                     add_edge(cls_nid, super_nid, "inherits", line)
                     colon_seen = False
                 elif child.type == "parameterized_arguments":
+                    # protocols adopted: @interface Foo : Bar <Proto1, Proto2>
                     for sub in child.children:
                         if sub.type == "type_name":
                             for s in sub.children:
@@ -285,6 +308,9 @@ def extract_objc(path: Path) -> dict:
                     for sub in child.children:
                         if sub.type == "struct_declaration":
                             # O tipo é um type_identifier direto
+                            # (NSString *x) ou encapsulado em um generic_specifier
+                            # (NSArray<Produto *> *xs). Percorra cada nome de tipo no
+                            # parte do tipo, ignorando o declarador (o *campo
                             # nome), então as coleções genéricas não são mais invisíveis.
                             seen_types: set[str] = set()
                             for s in sub.children:
@@ -298,6 +324,8 @@ def extract_objc(path: Path) -> dict:
                                     type_nid = ensure_named_node(tname, prop_line)
                                     edges.append(_semantic_reference_edge(
                                         cls_nid, type_nid, "field", str_path, prop_line))
+                            # a bare capitalized property type also types the
+                            # `[self.field msg]` receiver in the cross-file resolver.
                             entry = _field_decl_entry(sub)
                             if entry is not None:
                                 _record_field_type(cls_nid, *entry)
@@ -308,6 +336,7 @@ def extract_objc(path: Path) -> dict:
             return
 
         if t == "class_implementation":
+            # @implementation ClassName
             name = None
             for child in node.children:
                 if child.type == "identifier":
@@ -340,8 +369,10 @@ def extract_objc(path: Path) -> dict:
                 proto_nid = _make_id(stem, name)
                 add_node(proto_nid, f"<{name}>", line)
                 add_edge(file_nid, proto_nid, "contains", line)
+                # Protocolos adotados: `@protocol Derived <Base, Other>`. Esses
                 # aninhar sob um nó protocol_reference_list (distinto do nó
                 # nó parameterized_arguments usado pela adoção de @interface), então
+                # eles nunca foram emitidos. Emita uma aresta `implementos` para cada um,
                 # combinando como a adoção do protocolo @interface é tratada.
                 for child in node.children:
                     if child.type == "protocol_reference_list":
@@ -358,6 +389,7 @@ def extract_objc(path: Path) -> dict:
             container = parent_nid or file_nid
             # Os métodos de classe começam com '+', os métodos de instância com '-' (a gramática
             # emite o sigilo como o primeiro filho). O seletor é a concatenação
+            # dos filhos do identificador direto: um para um seletor simples (-go),
             # vários para um composto (-tableView:numberOfRowsInSection: ->
             # "tableViewnumberOfRowsInSection"); method_parameter contém o argumento
             # tipos/nomes, não palavras-chave do seletor, portanto é ignorado corretamente.
@@ -381,6 +413,7 @@ def extract_objc(path: Path) -> dict:
 
     walk(root)
 
+    # Second pass: resolve calls inside method bodies
     all_method_nids = {n["id"] for n in nodes if n["id"] != file_nid}
     class_method_nids: dict[str, set[str]] = {}
     for m_nid, _, container_nid in method_bodies:
@@ -400,6 +433,7 @@ def extract_objc(path: Path) -> dict:
                 # identificador `alloc` e cujo receptor é o identificador de classe simples
                 # `Foo`; resolva o nome da classe e emita uma aresta de `referências` para que o
                 # alocando links de método para o tipo alocado. ensure_named_node
+                # emite um stub sem fonte para nomes desconhecidos, que o corpus religa
                 # entra em colapso SOMENTE quando existe exatamente uma classe real com esse nome, então um
                 # classe desconhecida/ambígua não produz nenhuma aresta falsa resolvida.
                 meth = n.child_by_field_name("method")
@@ -412,11 +446,15 @@ def extract_objc(path: Path) -> dict:
                     if type_nid != caller_nid:
                         edges.append(_semantic_reference_edge(
                             caller_nid, type_nid, "type", str_path, ref_line))
+                # [receiver sel] e [receiver kw1:a kw2:b] ambos analisam para um
+                # message_expression cujas partes do seletor carregam o nome do campo
                 # "método" (um para um seletor simples, vários para um composto);
+                # o receptor carrega o nome de campo "receptor". Reconstrua o
                 # seletor de cada filho de "método" então self/super/ClassName
                 # receptores nunca são confundidos com um seletor e envios compostos
                 # resolver também (toda a segunda passagem era anteriormente um código morto para
                 # ObjC porque a gramática os emite como `identificador`, não
+                # `selector`/`keyword_argument_list`).
                 sel_parts = [
                     _read(child)
                     for i, child in enumerate(n.children)
@@ -448,6 +486,13 @@ def extract_objc(path: Path) -> dict:
                             "lang": "objc",
                         })
                     elif recv is not None and recv.type == "field_expression":
+                        # `[self.bar doIt]`: capture ONLY the exact `self.<field>`
+                        # shape and stamp the BARE field name, typed via the class's
+                        # property/ivar table. Anything else (`obj.prop`, chains,
+                        # `Foo.shared`) stays dropped: passing the dotted text
+                        # through would let a capitalized `Foo.shared` enter the
+                        # explicit-class arm, where _key strips the dot and collides
+                        # with a real class `FooShared` — a fabricated edge.
                         kids = recv.children
                         if (len(kids) == 3 and kids[0].type == "identifier"
                                 and _read(kids[0]) == "self" and kids[1].type == "."
@@ -481,10 +526,12 @@ def extract_objc(path: Path) -> dict:
                                          n.start_point[0] + 1,
                                          confidence="EXTRACTED", weight=1.0)
             elif n.type == "selector_expression":
+                # @selector(doSomething:withParam:) — compile-time method ref.
                 # Corresponda EXATAMENTE ao nome do seletor (um id de método é
                 # _make_id(container, name)) em relação aos métodos de cada classe e emite
                 # somente quando exatamente um método corresponde, para evitar distribuição ambígua.
                 # A correspondência exata (não um sufixo) mantém -doThing distinto de
+                # -reallyDoThing.
                 sel_parts = [_read(c) for c in n.children if c.type == "identifier"]
                 sel_name = "".join(sel_parts)
                 if sel_name:
@@ -508,6 +555,7 @@ def extract_objc(path: Path) -> dict:
               "input_tokens": 0, "output_tokens": 0}
     if objc_type_table:
         result["objc_type_table"] = {"path": str_path, "table": objc_type_table}
+    # Drop tombstoned (conflicting) entries and empty tables before export.
     field_tables = {
         cls: {f: t for f, t in tbl.items() if t}
         for cls, tbl in objc_field_types.items()

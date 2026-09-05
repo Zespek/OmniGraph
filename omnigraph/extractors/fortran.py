@@ -29,6 +29,9 @@ def _cpp_preprocess(path: Path) -> bytes:
     try:
         # Passe um caminho absoluto para que um arquivo corpus chamado "-I/etc/x.F90" não possa
         # ser analisado pelo cpp como uma opção (o cpp não aceita um final de opções "--"
+        # terminator). What matters is that an absolute path cannot begin with
+        # "-" — not that it begins with "/", which only holds on POSIX (a Windows
+        # absolute path starts with a drive letter, and is equally safe).
         result = subprocess.run(
             ["cpp", "-w", "-P", "-nostdinc", "-I", "/dev/null", str(path.resolve())],
             capture_output=True,
@@ -182,6 +185,7 @@ def extract_fortran(path: Path) -> dict:
         t = node.type
         if t in ("subroutine", "function", "module", "program", "internal_procedures"):
             return
+        # chamar FOO(args) — tree-sitter-fortran usa subroutine_call
         if t == "subroutine_call":
             name_node = next((c for c in node.children if c.type == "identifier"), None)
             if name_node:
@@ -191,7 +195,9 @@ def extract_fortran(path: Path) -> dict:
                          confidence="EXTRACTED", context="call")
         # x = computar(args) — as invocações de função são `call_expression`, que
         # compartilha a sintaxe `name(...)` do Fortran com indexação de array. Emita apenas um
+        # chama edge quando o receptor resolve um procedimento definido neste arquivo
         # (uma variável de array não produz nenhum nó correspondente), então os acessos ao array não podem
+        # fabricate spurious `calls` edges.
         elif t == "call_expression":
             name_node = next((c for c in node.children if c.type == "identifier"), None)
             if name_node:

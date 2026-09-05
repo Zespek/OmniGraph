@@ -4,27 +4,36 @@ from __future__ import annotations
 import warnings
 from pathlib import Path
 
-from omnigraph.extractors.base import _make_id
+from omnigraph.extractors.base import _file_stem, _make_id
 
 
+# Standard CL definer forms that introduce data/type/variable bindings
+# (not callable, no body to walk for calls)
 _CL_DATA_DEFINERS = frozenset({
     "defstruct", "deftype", "define-condition",
     "defvar", "defparameter", "defconstant",
     "define-symbol-macro",
 })
 
+# Subset of data definers that take a VALUE as their second argument, which
+# may itself be a string literal. For these, we must not mistake the value
+# for a docstring.
 _CL_VALUE_DEFINERS = frozenset({"defvar", "defparameter", "defconstant"})
 
+# Standard CL macro-style definers
 _CL_MACRO_DEFINERS = frozenset({
     "define-modify-macro", "define-compiler-macro",
     "define-setf-expander", "defsetf",
 })
 
+# Symbols that start with "def" but are NOT definitions (denylist for the
+# def-prefix heuristic that catches custom definers like definline-maybe)
 _CL_NOT_DEFINERS = frozenset({
     "default", "default-value", "defaults", "define",
     "defer", "deferred", "deflate", "deftest",
 })
 
+# CL special forms / macros that should not count as "calls" in the graph
 _CL_SPECIAL_FORMS = frozenset({
     "let", "let*", "flet", "labels", "macrolet",
     "if", "when", "unless", "cond", "case", "ecase", "typecase", "etypecase",
@@ -57,6 +66,10 @@ def extract_commonlisp(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-commonlisp not installed"}
 
     try:
+        # tree-sitter-commonlisp 0.4.1 (latest) ships the old binding that returns
+        # an int pointer from language(); tree_sitter.Language only accepts that
+        # int via a deprecated path. Silence that one warning at the call site
+        # until the grammar ships a PyCapsule binding.
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
@@ -71,17 +84,24 @@ def extract_commonlisp(path: Path) -> dict:
     except Exception as e:
         return {"nodes": [], "edges": [], "error": str(e)}
 
-    stem = path.stem
+    # Path-qualified, not the bare `path.stem`: same-named .lisp files in
+    # different directories must not collide. Pre-collapsed through
+    # `_make_id` because `_cl_id` would otherwise map the `/` separators to
+    # `_slash` via _CL_CHAR_MAP.
+    stem = _make_id(_file_stem(path))
     str_path = str(path)
     nodes: list[dict] = []
     edges: list[dict] = []
     seen_ids: set[str] = set()
-    function_bodies: list[tuple[str, object]] = []
+    function_bodies: list[tuple[str, object]] = []  # (nid, body_nodes)
     current_package: str | None = None
 
     def _text(node) -> str:
         return source[node.start_byte:node.end_byte].decode("utf-8", errors="replace")
 
+    # CL symbols can contain operator chars like = < > ? ! + * / that the
+    # generic _make_id strips. Map them to readable suffixes so upi=, upi<,
+    # upi> become distinct ids.
     _CL_CHAR_MAP = {
         '=': '_eq', '<': '_lt', '>': '_gt', '?': '_p', '!': '_bang',
         '+': '_plus', '*': '_star', '/': '_slash', '%': '_pct', '&': '_amp',
@@ -138,6 +158,31 @@ def extract_commonlisp(path: Path) -> dict:
             })
         return nid
 
+    def ensure_class_ref(name: str, line: int) -> str:
+        """Resolve a superclass name to a node id.
+
+        If the class is defined in THIS file, bind to its local node. Otherwise
+        mint a SOURCELESS stub (like `add_import_stub`) so the corpus-level
+        rewire can collapse it onto the real `defclass` in another file. Without
+        this, a cross-file superclass had no matching node and its `inherits`
+        edge was pruned by the dangling-edge filter — silently erasing every
+        inheritance edge whose parent lives in a different file."""
+        local = _cl_id(stem, name)
+        if local in seen_ids:
+            return local
+        stub = _cl_id(name)
+        if stub not in seen_ids:
+            seen_ids.add(stub)
+            nodes.append({
+                "id": stub,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "source_location": "",
+                "origin_file": str_path,
+            })
+        return stub
+
     def _first_sym(node) -> str | None:
         """Get the first sym_lit text from a list_lit's children."""
         for child in node.children:
@@ -169,10 +214,12 @@ def extract_commonlisp(path: Path) -> dict:
         add_node(pkg_nid, pkg_name, line)
         add_edge(file_nid, pkg_nid, "contains", line)
 
+        # Extract :use clauses as imports
         for child in children:
             if child.type == "list_lit":
                 first = _first_sym(child)
                 if first is None:
+                    # Could be (:use ...) with kwd_lit
                     for gc in child.children:
                         if gc.type == "kwd_lit" and _kwd_text(gc) == "use":
                             for uc in child.children:
@@ -186,6 +233,7 @@ def extract_commonlisp(path: Path) -> dict:
 
     def _handle_defclass(node) -> None:
         children = node.children
+        # Find class name: second sym_lit after "defclass"
         sym_lits = [c for c in children if c.type == "sym_lit"]
         if len(sym_lits) < 2:
             return
@@ -201,13 +249,14 @@ def extract_commonlisp(path: Path) -> dict:
                 parent_nid = pkg_nid
         add_edge(parent_nid, class_nid, "contains", line)
 
+        # Superclasses (third element, a list)
         list_lits = [c for c in children if c.type == "list_lit"]
         if list_lits:
             superclass_list = list_lits[0]
             for sc in superclass_list.children:
                 if sc.type == "sym_lit":
                     sc_name = _text(sc)
-                    sc_nid = _cl_id(stem, sc_name)
+                    sc_nid = ensure_class_ref(sc_name, superclass_list.start_point[0] + 1)
                     add_edge(class_nid, sc_nid, "inherits",
                              superclass_list.start_point[0] + 1)
 
@@ -221,6 +270,7 @@ def extract_commonlisp(path: Path) -> dict:
         if not header:
             return
 
+        # Determine keyword type
         keyword_type = "defun"
         func_name = None
         for child in header.children:
@@ -259,9 +309,11 @@ def extract_commonlisp(path: Path) -> dict:
         else:
             add_edge(parent_nid, func_nid, "contains", line)
 
+        # Method specializers: (defmethod name ((param class) ...))
         if keyword_type == "defmethod":
             for child in header.children:
                 if child.type == "list_lit":
+                    # This is the parameter list
                     for param in child.children:
                         if param.type == "list_lit":
                             syms = [c for c in param.children if c.type == "sym_lit"]
@@ -272,6 +324,7 @@ def extract_commonlisp(path: Path) -> dict:
                                          param.start_point[0] + 1)
                     break
 
+        # Docstring
         for child in node.children:
             if child.type == "str_lit":
                 doc_text = _text(child).strip('"')
@@ -282,6 +335,7 @@ def extract_commonlisp(path: Path) -> dict:
                              child.start_point[0] + 1)
                 break
 
+        # Collect body for call extraction
         body_nodes = [c for c in node.children
                       if c.type not in ("(", ")", "defun_header", "str_lit")]
         if body_nodes:
@@ -311,13 +365,17 @@ def extract_commonlisp(path: Path) -> dict:
         a leading docstring str_lit."""
         children = [c for c in node.children if c.type not in ("(", ")")]
         idx = 0
+        # Skip def keyword
         if idx < len(children) and children[idx].type == "sym_lit" \
            and _text(children[idx]).lower() == def_keyword:
             idx += 1
+        # Skip name (sym_lit or list_lit)
         if idx < len(children) and children[idx].type in ("sym_lit", "list_lit"):
             idx += 1
+        # Skip params list (the next list_lit, if any)
         if idx < len(children) and children[idx].type == "list_lit":
             idx += 1
+        # Skip leading docstring
         if idx < len(children) and children[idx].type == "str_lit":
             idx += 1
         return children[idx:]
@@ -340,6 +398,7 @@ def extract_commonlisp(path: Path) -> dict:
             label = f"{name} (macro)"
             is_callable = True
         else:
+            # Custom def-prefixed: assume function-like
             label = f"{name}()"
             is_callable = True
 
@@ -352,6 +411,9 @@ def extract_commonlisp(path: Path) -> dict:
                 parent_nid = pkg_nid
         add_edge(parent_nid, nid, "contains", line)
 
+        # Docstring. Skip for defvar/defparameter/defconstant — their second
+        # argument is a value (possibly a string literal) which would be
+        # wrongly captured as a docstring.
         if kw not in _CL_VALUE_DEFINERS:
             for child in node.children:
                 if child.type == "str_lit":
@@ -382,6 +444,7 @@ def extract_commonlisp(path: Path) -> dict:
         (optimizing ...), (eval-when ...), (progn ...), etc."""
         nonlocal current_package
 
+        # Check for defun node type inside list_lit
         for child in top.children:
             if child.type == "defun":
                 _handle_defun_node(child)
@@ -421,6 +484,7 @@ def extract_commonlisp(path: Path) -> dict:
             _handle_def_form(top, first_lower)
             return True
         if _is_def_prefixed(first_lower):
+            # Custom definer (definline, definline-maybe, defcomponent, etc.)
             _handle_def_form(top, first_lower)
             return True
 
@@ -442,6 +506,7 @@ def extract_commonlisp(path: Path) -> dict:
 
     _walk_forms(root)
 
+    # Call extraction pass
     label_to_nid: dict[str, str] = {}
     for n in nodes:
         raw = n["label"]

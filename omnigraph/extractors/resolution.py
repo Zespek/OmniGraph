@@ -19,6 +19,7 @@ import sys
 
 _TSCONFIG_ALIAS_CACHE: dict[str, dict[str, list[str]]] = {}
 
+# compilerOptions.baseUrl per config path, as an absolute dir.
 _TSCONFIG_BASEURL_CACHE: "dict[str, Path | None]" = {}
 
 _WORKSPACE_MANIFEST_NAMES = ("pnpm-workspace.yaml", "package.json")
@@ -44,6 +45,7 @@ def _resolve_js_import_path(candidate: Path) -> Path:
             return tsx_candidate
 
     # Anexe extensões ao nome completo do arquivo, o que abrange importações sem extensão,
+    # ajudantes multiponto e arquivos de runas Svelte 5 como Foo.svelte.ts.
     for ext in _JS_RESOLVE_EXTS:
         with_ext = candidate.parent / f"{candidate.name}{ext}"
         if with_ext.is_file():
@@ -67,9 +69,9 @@ def _strip_jsonc(text: str) -> str:
     """
     # Remova comentários de bloco e linha, deixando os literais de string intactos.
     pattern = re.compile(
-        r'"(?:\\.|[^"\\])*"'
-        r"|/\*.*?\*/"
-        r"|//[^\n]*",
+        r'"(?:\\.|[^"\\])*"'    # string entre aspas duplas (com escapes)
+        r"|/\*.*?\*/"           # /* block comment */
+        r"|//[^\n]*",           # // line comment
         re.DOTALL,
     )
 
@@ -113,10 +115,12 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
         return {}
 
     aliases: dict[str, list[str]] = {}
+    # `extends` pode ser uma string ou, desde o TypeScript 5.0, uma matriz de caminhos.
     # Para uma matriz, os pais são processados ​​em ordem com entradas posteriores
     # substituindo os anteriores; a configuração de extensão (caminhos abaixo) substitui
     # todos os pais. Sem a ramificação da lista, um array `extends` gerado
     # `AttributeError: o objeto 'list' não possui o atributo 'startswith'`, que
+    # _safe_extract se transformou em um salto de todo o arquivo.
     extends = data.get("extends")
     if isinstance(extends, str):
         extends_list = [extends]
@@ -138,6 +142,7 @@ def _read_tsconfig_aliases(tsconfig: Path, base_dir: Path, seen: set) -> dict[st
     # o diretório tsconfig), não o diretório tsconfig diretamente. Honrando
     # baseUrl é necessário para o layout monorepo/NestJS comum, onde
     # baseUrl aponta para um subdiretório, por exemplo. baseUrl "./src" com
+    # "@services/*": ["services/*"] deve ser resolvido para <dir>/src/services em vez
     # do que <dir>/services. O padrão é "." então configurações sem baseUrl (caminhos
     # em relação ao diretório tsconfig, o comportamento do TS 4.1+) continua funcionando.
     compiler_options = data.get("compilerOptions", {})
@@ -204,7 +209,9 @@ def _load_tsconfig_aliases(start_dir: Path) -> dict[str, list[str]]:
     Follows extends chains so SvelteKit/Nuxt/NestJS inherited aliases are included.
     Returns a dict mapping alias patterns to ordered resolved target patterns;
     wildcard tokens remain intact for substitution during resolution (#927).
-    Result is cached by config path string.
+    Result is cached by config path string. The cache has no mtime/content
+    component, so extract() clears it per run (#2917); do not assume the entry
+    survives a config edit within a long-lived process.
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -222,7 +229,8 @@ def _load_tsconfig_base_url(start_dir: Path) -> "Path | None":
     so a config declaring baseUrl and NO paths yielded an empty alias map and
     every non-relative import went unresolved (#2153). Exposed separately so it
     can act as a resolution root of last resort, after all declared aliases miss.
-    Returns None when no config declares baseUrl.
+    Returns None when no config declares baseUrl. Cached by config path with no
+    mtime component, so extract() clears it per run (#2917).
     """
     found = _find_js_config(start_dir)
     if found is None:
@@ -439,6 +447,8 @@ def _package_entry_candidates(package_dir: Path, subpath: str) -> list[Path]:
         pass
 
     if subpath:
+        # Consulte o mapa de subcaminhos `exports` do pacote antes do caminho simples
+        # fallback: "./browser" -> conditions -> file, plus single
         # padrões curinga "./*". Os alvos que escapam do diretório do pacote são
         # rejeitado; a resolução então cai no caminho vazio.
         exports = manifest_data.get("exports")
@@ -536,6 +546,7 @@ def _resolve_js_import_target(raw: str, str_path: str) -> "tuple[str, Path | Non
     # Não resolvido: relativo/absoluto, tsconfig-alias e resolução do espaço de trabalho foram
     # todos foram executados e falharam, então este é um pacote externo (ou um pacote local pendente
     # caminho). Namespace o id com o prefixo "ref" - a convenção J-4 já
+    # usado para tsconfig `extends`/`$ref` externos - para que NUNCA possa ser recolhido
     # o mesmo _make_id que um nó de arquivo/símbolo local. Sem isso, o nu
     # ID do último segmento (por exemplo, "tailwindcss/colors" -> "colors") colide com qualquer
     # arquivo local não relacionado desse tronco por meio do índice de alias de pré-migração do build.py,
@@ -618,9 +629,9 @@ def _vue_mask_non_script(src: str) -> tuple[str, str | None]:
     lang: str | None = None
     for m in _VUE_SCRIPT_RE.finditer(src):
         out.append(_blank(src[pos:m.start()]))  # marcação/estilo antes deste bloco
-        out.append(_blank(m.group(1)))
-        out.append(m.group(2))
-        out.append(_blank(m.group(3)))
+        out.append(_blank(m.group(1)))           # <script …> open tag
+        out.append(m.group(2))                   # script body, verbatim
+        out.append(_blank(m.group(3)))           # </script> close tag
         pos = m.end()
         if lang is None:
             lang_m = _VUE_SCRIPT_LANG_RE.search(m.group(1))
@@ -677,12 +688,13 @@ def _disambiguate_colliding_node_ids(
         # ``_make_id(source_key, old_id)`` — source_key é o relativo ao repositório bruto
         # caminho. Mas _make_id recolhe todos os separadores, então dois caminhos DISTINTOS
         # cuja única diferença é uma troca de separador versus pontuação interna
+        # (``a/b/c.md`` vs ``a.b/c.md``, ``foo/bar_baz.md`` vs ``foo_bar/baz.md``)
         # normalizar para o MESMO ID salgado e ainda colidir (# 1522 - o resíduo
         # de # 1504, o radical do caminho completo 0.9.0 não alcançou). Quando isso acontecer,
         # anexe um hash curto e estável da source_key *raw*, que É injetiva
         # por caminhos distintos, então os colisores se separam. Calculado em código de
         # source_file (nunca confiável no LLM), portanto, a paridade semântica AST↔ é válida.
-        naive: dict[str, str] = {}
+        naive: dict[str, str] = {}  # source_key -> _make_id(source_key, old_id)
         for source_key in source_keys:
             if source_key:
                 naive[source_key] = _make_id(source_key, old_id)
@@ -705,6 +717,10 @@ def _disambiguate_colliding_node_ids(
                 node["id"] = new_id
 
     if not remap:
+        # No colliding ids to salt apart, but the transient `target_file` hint an
+        # importer stamps on every resolved import still has to be dropped
+        # here — this early exit skips the edge loop below, so without it a
+        # non-colliding import would carry its absolute path into graph.json.
         for edge in edges:
             edge.pop("target_file", None)
         return
@@ -724,6 +740,7 @@ def _disambiguate_colliding_node_ids(
     # nó de arquivo, mas `foo.h` e seu irmão `foo.c`/`foo.m`/`foo.cpp` colapsam para
     # o mesmo ID do arquivo `foo`, então a desambiguação os separa por caminho. UM
     # aresta de importação de arquivo cruzado de um TERCEIRO arquivo não carrega nenhuma source_key do salt, então
+    # a pesquisa (target, edge_source_key) falha e a aresta fica pendurada no agora
     # id `foo` morto. Reposicione essas arestas de importação para a variante HEADER (o include
     # sempre direcionado ao cabeçalho), codificado pelo ID de colisão original.
     _HEADER_SUFFIXES = (".h", ".hpp", ".hh", ".hxx")
@@ -740,6 +757,14 @@ def _disambiguate_colliding_node_ids(
     for edge in edges:
         edge_source_key = _source_key(str(edge.get("source_file", "")), root)
         source_key = (edge.get("source", ""), edge_source_key)
+        # An import/re-export edge's target is a FILE node that can collapse with a
+        # same-basename cross-extension sibling (foo.ts vs foo.mjs). Keying
+        # its target salt by the IMPORTER's own source_file mis-points it back at the
+        # importer's variant (a self-loop). When the emitter stamped the resolved
+        # target file, key the target salt by THAT file so the salt lands on the
+        # correct sibling. Generalizes the C/ObjC header carve-out (below) to
+        # every language and to re_exports. `pop` it as we consume it: this is the
+        # hint's only reader, and its absolute path must not persist into graph.json.
         target_file = edge.pop("target_file", None)
         if target_file and edge.get("relation") in ("imports", "imports_from", "re_exports"):
             target_edge_key = _source_key(str(target_file), root)
@@ -851,7 +876,7 @@ def _apply_symbol_resolution_facts(
         for edge in edges
     }
 
-    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None) -> None:
+    def add_edge(source: str, target: str, relation: str, context: str, line: int, source_path: Path, target_file: str | None = None, local_alias: str | None = None, type_only: bool = False) -> None:
         key = (source, target, relation, context or "")
         if key in existing_edges:
             return
@@ -866,10 +891,19 @@ def _apply_symbol_resolution_facts(
             "source_location": f"L{line}",
             "weight": 1.0,
         }
+        # A re-export edge's target is a FILE node that can collapse with a
+        # same-basename cross-extension sibling; stamp the resolved target file so
+        # the id-disambiguation salt is keyed by the TARGET, not the importer.
         if target_file is not None:
             edge["target_file"] = target_file
+        # The local name this import bound in the importing file, when it differs
+        # from the target's own name (`from pkg import mod as alias`) -- lets the
+        # cross-file member-call resolver match `alias.func()`.
         if local_alias is not None:
             edge["local_alias"] = local_alias
+        # Erased at compile time: Import Cycles skips these edges.
+        if type_only:
+            edge["type_only"] = True
         edges.append(edge)
 
     for declaration in facts.declarations:
@@ -901,6 +935,7 @@ def _apply_symbol_resolution_facts(
                     changed = True
 
     named_exports_by_file: dict[Path, dict[str, tuple[Path, str]]] = {}
+    export_origins: dict[tuple[Path, str], set[tuple[Path, str]]] = {}
     star_exports_by_file: dict[Path, list[Path]] = {}
 
     for star_fact in facts.star_exports:
@@ -917,6 +952,7 @@ def _apply_symbol_resolution_facts(
                 star_fact.line,
                 star_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
+                type_only=star_fact.type_only,
             )
 
     for namespace_fact in facts.namespace_exports:
@@ -948,6 +984,7 @@ def _apply_symbol_resolution_facts(
                 namespace_fact.line,
                 namespace_fact.file_path,
                 target_file=str(path_by_resolved.get(target_path, target_path)),
+                type_only=namespace_fact.type_only,
             )
 
     for export_fact in facts.exports:
@@ -960,7 +997,14 @@ def _apply_symbol_resolution_facts(
             if origin is None and (file_path, export_fact.local_name) in symbol_nodes:
                 origin = (file_path, export_fact.local_name)
         if origin is None:
+            # An explicit export remains evidence even when extraction did not
+            # materialize its binding. Do not mistake it for an absent export.
+            if export_fact.local_name is not None:
+                export_origins.setdefault((file_path, export_fact.exported_name), set()).add(
+                    (file_path, export_fact.local_name)
+                )
             continue
+        export_origins.setdefault((file_path, export_fact.exported_name), set()).add(origin)
         named_exports_by_file.setdefault(file_path, {})[export_fact.exported_name] = origin
         if origin[0] != file_path:
             source_id = source_file_id.get(file_path)
@@ -973,6 +1017,7 @@ def _apply_symbol_resolution_facts(
                     export_fact.line,
                     export_fact.file_path,
                     target_file=str(path_by_resolved.get(origin[0], origin[0])),
+                    type_only=export_fact.type_only,
                 )
 
     def resolve_exported_origin(target_path: Path, imported_name: str, seen: set[tuple[Path, str]] | None = None) -> tuple[Path, str]:
@@ -994,6 +1039,71 @@ def _apply_symbol_resolution_facts(
             if resolved in symbol_nodes:
                 return resolved
         return key
+
+    def exported_candidates(
+        key: tuple[Path, str], seen: frozenset[tuple[Path, str]]
+    ) -> tuple[set[tuple[Path, str]], bool]:
+        # Distinguish a cycle cutoff from an absent export. A cycle contributes
+        # no origin; a named export of an unrepresented binding remains unknown.
+        if key in seen:
+            return set(), True
+        seen = seen | {key}
+        origins = export_origins.get(key)
+        candidates: set[tuple[Path, str]] = set()
+        cyclic = False
+        if origins is None:
+            for path in star_exports_by_file.get(key[0], []):
+                branch, branch_cyclic = exported_candidates((path, key[1]), seen)
+                candidates.update(branch)
+                cyclic |= branch_cyclic
+            return candidates, cyclic
+        for origin in origins:
+            if origin == key:
+                candidates.add(origin)
+            else:
+                branch, branch_cyclic = exported_candidates(origin, seen)
+                candidates.update(branch)
+                cyclic |= branch_cyclic
+                if not branch and not branch_cyclic:
+                    candidates.add(origin)
+        return candidates, cyclic
+
+    # The structural extractor names the immediate barrel's symbol. Resolve
+    # that exact authored export site through the shared import/export facts,
+    # including `import {x}; export {x}` bridges with no local declaration.
+    export_sites: dict[tuple[Path, str, Path], list[_SymbolExportFact]] = {}
+    for export_fact in facts.exports:
+        if export_fact.target_path is not None and export_fact.target_name is not None:
+            site = (
+                export_fact.file_path.resolve(),
+                f"L{export_fact.line}",
+                export_fact.target_path.resolve(),
+            )
+            export_sites.setdefault(site, []).append(export_fact)
+    owned_ids = {node.get("id") for node in nodes}
+    for edge in edges:
+        if edge.get("relation") != "re_exports" or edge.get("target") in owned_ids:
+            continue
+        target_file = edge.get("target_file")
+        source_path = _js_source_path(str(edge.get("source_file", "")), root)
+        if not target_file or source_path is None:
+            continue
+        target_path = Path(target_file)
+        site = (source_path, str(edge.get("source_location", "")), target_path.resolve())
+        for export_fact in export_sites.get(site, []):
+            expected = _make_id(_file_stem(target_path), export_fact.target_name)
+            if edge.get("target") != expected:
+                continue
+            candidates, _ = exported_candidates(
+                (export_fact.target_path.resolve(), export_fact.target_name), frozenset()
+            )
+            if len(candidates) == 1:
+                origin = next(iter(candidates))
+                target_id = symbol_nodes.get(origin)
+                if target_id in owned_ids:
+                    edge["target"] = target_id
+                    edge["target_file"] = str(path_by_resolved.get(origin[0], origin[0]))
+            break
 
     for import_fact in facts.imports:
         source_id = source_file_id.get(import_fact.file_path.resolve())
@@ -1029,6 +1139,15 @@ def _apply_symbol_resolution_facts(
             local_alias=local_name if local_name != to_path.stem else None,
         )
 
+    # producer guard: never emit a `calls` use-edge from a source id
+    # that owns no node. All node appends (ensure_symbol_node, declarations,
+    # namespace exports) happened above, so the owned set is complete here.
+    # A node-less caller id can never be canonicalized by the extract()
+    # remaps (they learn only from nodes), so an absolute-derived one would
+    # leak the machine/scan-path slug into the edge source. Reattribute the
+    # edge to the caller's FILE node — the true file-level dependency
+    # survives, and the file id is exactly what the remap
+    # canonicalizes — or drop it when no file node id is available.
     owned = {str(n.get("id")) for n in nodes}
     for use_fact in facts.uses:
         file_path = use_fact.file_path.resolve()
@@ -1038,13 +1157,21 @@ def _apply_symbol_resolution_facts(
             origin_path, origin_symbol = resolve_exported_origin(*unresolved_origin)
             target_id = symbol_nodes.get((origin_path, origin_symbol))
         if target_id is None and use_fact.relation in ("inherits", "implements"):
+            # Fallback do mesmo arquivo apenas para HERITAGE: uma base declarada no mesmo
             # arquivo (`classe X estende Y`, `interface A estende B`) não tem importação
             # alias, então resolva-o diretamente nos nós de símbolo do próprio arquivo.
             # Com escopo definido para herança porque chamadas/usos do mesmo arquivo já são resolvidos via
+            # o passe grafo de chamadas dedicado; ampliar isso duplicaria aqueles
+            # edges. Import resolution still takes precedence.
             target_id = symbol_nodes.get((file_path, use_fact.local_name))
         if target_id is None:
             continue
         source_id = use_fact.source_id
+        # Structural walking can omit named-function-local declarations while
+        # materializing callback-local ones. Only actual node ownership decides
+        # whether a type relationship has a represented source declaration.
+        if use_fact.relation in ("inherits", "implements", "references") and source_id not in owned:
+            continue
         if use_fact.relation == "calls" and source_id not in owned:
             source_id = source_file_id.get(file_path)
             if source_id is None:
@@ -1062,6 +1189,7 @@ def _parse_js_tree(path: Path):
     try:
         from tree_sitter import Language, Parser
         # .vue incorpora o script em marcação não JS; mascare-o e analise o
+        # <script> com TS.
         vue_lang: str | None = None
         if path.suffix == ".vue":
             masked, vue_lang = _vue_mask_non_script(
@@ -1074,6 +1202,13 @@ def _parse_js_tree(path: Path):
             path.suffix == ".vue" and vue_lang not in ("js", "jsx")
         )
         if path.suffix == ".tsx":
+            # .tsx must use the JSX-aware TSX grammar, mirroring the engine's
+            # _TSX_CONFIG (ts_language_fn="language_tsx"). Parsing .tsx with
+            # language_typescript misparses JSX, and tree-sitter's error
+            # recovery floats nested arrow components up to top level —
+            # _js_top_level_function_bodies then mints caller ids for callers
+            # that own no node, leaking absolute-path slugs into calls-edge
+            # sources.
             import tree_sitter_typescript as tstypescript
             language = Language(tstypescript.language_tsx())
         elif use_ts:
@@ -1088,6 +1223,7 @@ def _parse_js_tree(path: Path):
         return None
 
 def _walk_js_tree(node):
+    # Iterative DFS avoids Python's O(depth) generator-chain overhead.
     # O rendimento recursivo cria um quadro gerador por nível - em 26+
     # níveis de profundidade, o valor de cada folha teve que se propagar através de 26 quadros.
     stack = [node]
@@ -1164,8 +1300,18 @@ def _js_exported_declaration_names(node, source: bytes) -> list[str]:
     if declaration is None:
         return names
 
-    if declaration.type == "lexical_declaration":
+    if declaration.type in ("lexical_declaration", "variable_declaration"):
+        # Preserve legacy aggregate-pattern facts for identifier-valued lexical
+        # declarations; individual destructured bindings are a separate feature.
         names.extend(alias for alias, _target in _js_lexical_aliases(declaration, source))
+        for declarator in declaration.named_children:
+            if declarator.type != "variable_declarator":
+                continue
+            name_node = declarator.child_by_field_name("name")
+            if name_node is not None and name_node.type == "identifier":
+                name = _read_text(name_node, source)
+                if name not in names:
+                    names.append(name)
         return names
 
     if declaration.type in (
@@ -1339,19 +1485,34 @@ def _ts_walk_class_members(class_node, source: bytes, path: Path, class_nid: str
     line = class_node.start_point[0] + 1
     for child in class_node.children:
         if child.type == "class_heritage":
+            saw_clause = False
             for clause in child.children:
                 if clause.type == "extends_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "inherits", "type",
                                            clause.start_point[0] + 1)
                         )
                 elif clause.type == "implements_clause":
+                    saw_clause = True
                     for name in _ts_heritage_clause_entries(clause, source):
                         facts.uses.append(
                             _SymbolUseFact(path, class_nid, name, "implements", "type",
                                            clause.start_point[0] + 1)
                         )
+            if not saw_clause:
+                # The JavaScript grammar carries the base directly under
+                # class_heritage (`extends Base` -> [extends, identifier]) with no
+                # extends_clause/implements_clause wrapper like the TypeScript
+                # grammar. Treat the heritage node itself as the extends clause so
+                # `class Derived extends Base {}` in a .js file still emits an
+                # inherits edge. Mirrors the extends_type_clause branch below.
+                for name in _ts_heritage_clause_entries(child, source):
+                    facts.uses.append(
+                        _SymbolUseFact(path, class_nid, name, "inherits", "type",
+                                       child.start_point[0] + 1)
+                    )
         elif child.type == "extends_type_clause":
             # A herança da interface (`interface A estende B, C`) é uma
             # nó extends_type_clause, NÃO um class_heritage. Suas entradas básicas
@@ -1490,6 +1651,13 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
 
             raw_module = _js_module_specifier(node, source)
             export_clause = _js_export_clause(node)
+            # `export type { X } from ...` / `export type * from ...`: the
+            # statement-level `type` keyword is a bare anonymous child; the
+            # default binding NAMED type sits inside the clause instead.
+            stmt_type_only = any(
+                child.type == "type" and not child.is_named
+                for child in node.children
+            )
             if raw_module is not None:
                 target_path = _resolve_js_module_path(raw_module, path.parent)
                 if target_path is None:
@@ -1503,11 +1671,13 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                             namespace_name,
                             target_path,
                             node.start_point[0] + 1,
+                            type_only=stmt_type_only,
                         )
                     )
                 elif _js_export_statement_is_star(node):
                     facts.star_exports.append(
-                        _StarExportFact(path, target_path, node.start_point[0] + 1)
+                        _StarExportFact(path, target_path, node.start_point[0] + 1,
+                                        type_only=stmt_type_only)
                     )
                 if export_clause is not None:
                     for original_name, exported_name in _js_named_specifiers(
@@ -1520,6 +1690,7 @@ def _collect_js_symbol_resolution_facts(paths: list[Path], facts: _SymbolResolut
                                 node.start_point[0] + 1,
                                 target_path=target_path,
                                 target_name=original_name,
+                                type_only=stmt_type_only,
                             )
                         )
                 continue
@@ -1691,6 +1862,12 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
         candidate = base / module_name.replace(".", "/") if module_name else base
         return _probe_python_module_candidate(candidate)
 
+    # Absolute import. Probe the scan root first (unchanged for the common
+    # root-is-package-root layout), then walk up from the importing file toward
+    # the root so a `src/` (or otherwise nested) package root resolves regardless
+    # of where the scan started — `import pkg.mod` from src/pkg/app.py must find
+    # src/pkg/mod.py whether the scan root is the repo or src/. Mirrors
+    # the upward walk already used for Lua (_resolve_lua_import_target).
     rel = module_name.replace(".", "/")
     hit = _probe_python_module_candidate(root / rel)
     if hit is not None:
@@ -1699,9 +1876,15 @@ def _resolve_python_module_path(module_name: str, current_path: Path, root: Path
         try:
             anc.relative_to(root)
         except ValueError:
-            break
+            break  # left the scan root; stop walking up
         if anc == root:
-            continue
+            continue  # already probed root/rel above
+        # Only probe sys.path-root candidates — dirs that are NOT themselves part
+        # of a package. Probing a package dir would resolve an absolute
+        # `from helpers import x` to a sibling in the current package (Python-2
+        # implicit-relative semantics), fabricating edges to what may be an
+        # external dependency (review). A src-layout root (src/, no
+        # __init__.py) is still probed.
         if (anc / "__init__.py").is_file():
             continue
         cand = _probe_python_module_candidate(anc / rel)
@@ -1756,8 +1939,10 @@ def _collect_python_symbol_resolution_facts(
             target_path = _resolve_python_module_path(module_name, path, root, level)
             if target_path is None:
                 continue
+            # `from pkg import submod` — se o alvo for um pacote
             # (__init__.py) e um nome importado corresponde a um arquivo de submódulo em
             # disco, emita uma aresta de importação em nível de arquivo para esse submódulo em vez
+            # do que apenas para o pacote.
             pkg_dir = target_path.parent if target_path.name == "__init__.py" else None
             for imported_name, local_name in _python_imported_names(node, source):
                 line = node.start_point[0] + 1
@@ -1817,6 +2002,8 @@ def _augment_symbol_resolution_edges(
 def _resolve_cross_file_imports(
     per_file: list[dict],
     paths: list[Path],
+    all_nodes: list[dict] | None = None,
+    all_edges: list[dict] | None = None,
 ) -> list[dict]:
     """
     Two-pass import resolution: turn file-level imports into class-level edges.
@@ -1841,6 +2028,7 @@ def _resolve_cross_file_imports(
     language = Language(tspython.language())
     parser = Parser(language)
 
+    # Pass 1: _file_stem(path) → {ClassName: node_id}
     # Digitado por radical qualificado por diretório (por exemplo, "auth_models") para evitar colisões
     # quando vários arquivos compartilham o mesmo nome de arquivo em diretórios diferentes.
     # Um índice bare-stem secundário lida com importações absolutas onde apenas o módulo
@@ -1859,6 +2047,8 @@ def _resolve_cross_file_imports(
             # Indexar apenas entidades em nível de classe. Rótulos de função/método terminam em "()"
             # então são excluídos pelo filtro `endswith(")")`; nós de arquivo terminam em ".py";
             # rótulos privados/internos começam com "_"; nós de lógica carregam
+            # file_type=="rationale" e nunca deve participar de arquivos cruzados
+            # import resolution.
             if (
                 label
                 and not label.endswith((")", ".py"))
@@ -1869,11 +2059,26 @@ def _resolve_cross_file_imports(
                 if src_path.stem not in bare_to_qualified:
                     bare_to_qualified[src_path.stem] = fq_stem
 
+    # Pass 2: for each file, find `from .X import A, B, C`, then attribute the
+    # `uses` edge to the specific local symbol (class OR function) whose body
+    # actually references the imported name — not to every class that merely
+    # shares the file. The edge is anchored at the real reference, not
+    # the import line, so `source_location` points at genuine corroboration.
     new_edges: list[dict] = []
+    node_by_id = {node["id"]: node for node in all_nodes if node.get("id")} if all_nodes else {}
+    repointed_from: set[str] = set()
+    TYPE_REPOINT_RELATIONS = frozenset({"references", "inherits", "implements", "extends"})
 
     for file_result, path in zip(per_file, paths):
         str_path = str(path)
+        file_srcs = {n.get("source_file") for n in file_result.get("nodes", []) if n.get("source_file")}
+        file_srcs.add(str_path)
+        file_srcs.add(path.as_posix())
 
+        # Map each local symbol (class or function) to its node id, keyed by the
+        # bare symbol name. Function labels end in "()"; the file node ends in
+        # ".py"; rationale nodes never import. First writer wins on a
+        # name collision (inherently ambiguous within a file).
         name_to_nid: dict[str, str] = {}
         for n in file_result.get("nodes", []):
             if n.get("source_file") != str_path or n.get("file_type") == "rationale":
@@ -1894,7 +2099,10 @@ def _resolve_cross_file_imports(
         except Exception:
             continue
 
+        # local_name -> target node id (local_name honours `import X as Y`, so a
+        # reference to the alias in the body still attributes correctly).
         import_targets: dict[str, str] = {}
+        # referenced name -> {source symbol nid: first reference line}
         ref_sources: dict[str, dict[str, int]] = {}
 
         def _text(n) -> str:
@@ -1902,6 +2110,8 @@ def _resolve_cross_file_imports(
 
         def resolve_import(node) -> None:
             # Encontre o nome do módulo - lida com importações absolutas e relativas.
+            # Relativo: `from .models import X` → relative_import → dotted_name
+            # Absoluto: `from models import X` → campo module_name
             # target_fq é o radical qualificado pelo diretório usado como chave em
             # stem_to_entities. As importações relativas são resolvidas exatamente através do
             # importando o diretório do arquivo; as importações absolutas caem para o
@@ -1909,20 +2119,44 @@ def _resolve_cross_file_imports(
             target_fq: str | None = None
             for child in node.children:
                 if child.type == "relative_import":
+                    prefix_text = ""
+                    dotted_text = ""
                     for sub in child.children:
-                        if sub.type == "dotted_name":
-                            bare = _text(sub).split(".")[-1]
-                            candidate = path.parent / f"{bare}.py"
-                            target_fq = _file_stem(candidate)
-                            break
+                        if sub.type == "import_prefix":
+                            prefix_text = _text(sub)
+                        elif sub.type == "dotted_name":
+                            dotted_text = _text(sub)
+                    dots = prefix_text.count(".") if prefix_text else 1
+                    cur_dir = path.parent
+                    for _ in range(dots - 1):
+                        cur_dir = cur_dir.parent
+                    if dotted_text:
+                        candidate = cur_dir.joinpath(*dotted_text.split(".")).with_suffix(".py")
+                    else:
+                        candidate = cur_dir / "__init__.py"
+                    target_fq = _file_stem(candidate)
                     break
                 if child.type == "dotted_name" and target_fq is None:
-                    bare = _text(child).split(".")[-1]
-                    target_fq = bare_to_qualified.get(bare)
+                    dotted_name = _text(child)
+                    dotted_as_path = "/".join(dotted_name.split("."))
+                    if dotted_as_path in stem_to_entities:
+                        target_fq = dotted_as_path
+                    else:
+                        suffix_matches = [
+                            fq for fq in stem_to_entities
+                            if fq.endswith(f"/{dotted_as_path}") or fq.endswith(f"\\{dotted_as_path}")
+                        ]
+                        if len(suffix_matches) == 1:
+                            target_fq = suffix_matches[0]
+                        else:
+                            bare = dotted_name.split(".")[-1]
+                            target_fq = bare_to_qualified.get(bare)
 
             if not target_fq or target_fq not in stem_to_entities:
                 return
 
+            # Imported names come AFTER the 'import' keyword token. For
+            # `import X as Y` the target is found via X but the body uses Y.
             past_import_kw = False
             for child in node.children:
                 if child.type == "import":
@@ -1947,9 +2181,16 @@ def _resolve_cross_file_imports(
                     import_targets[local_name] = tgt_nid
 
         def visit(node, current_nid: str | None) -> None:
+            # Identifiers inside an import statement are the import itself, not a
+            # real use — resolve the import here and don't descend into it.
             if node.type == "import_from_statement":
                 resolve_import(node)
                 return
+            # Attribute references to the top-level symbol that contains them: a
+            # class is a unit (a reference inside one of its methods counts for
+            # the class, matching the documented DigestAuth->Response edge), and
+            # a module-level function is its own source. Only set at module scope
+            # (current_nid is None) so nested defs never override the container.
             if current_nid is None and node.type in ("class_definition", "function_definition"):
                 name_node = node.child_by_field_name("name")
                 if name_node is not None:
@@ -1973,10 +2214,41 @@ def _resolve_cross_file_imports(
                     "target": tgt_nid,
                     "relation": "uses",
                     "confidence": "INFERRED",
+                    # 0.95 = "direct structural evidence (named cross-file
+                    # reference)" from the extraction-spec rubric, which is
+                    # exactly what this edge is: a name this file imports, then
+                    # references. Omitting the score entirely fell through to the
+                    # 0.5 default the same rubric forbids outright.
+                    "confidence_score": 0.95,
                     "source_file": str_path,
                     "source_location": f"L{line}",
                     "weight": 0.8,
                 })
+
+        # Repoint AST type-reference and inheritance edges from sourceless stubs
+        # to the exact imported target definition.
+        if all_edges and import_targets:
+            for edge in all_edges:
+                if edge.get("source_file") not in file_srcs:
+                    continue
+                if edge.get("relation") not in TYPE_REPOINT_RELATIONS:
+                    continue
+                tgt = edge.get("target")
+                tgt_node = node_by_id.get(tgt)
+                if not tgt_node or tgt_node.get("source_file"):
+                    continue
+                stub_label = tgt_node.get("label", "")
+                resolved_id = import_targets.get(stub_label)
+                if resolved_id and resolved_id != tgt:
+                    edge["target"] = resolved_id
+                    repointed_from.add(tgt)
+
+    if all_nodes is not None and all_edges is not None and repointed_from:
+        still_referenced = {e.get("source") for e in all_edges} | {e.get("target") for e in all_edges}
+        all_nodes[:] = [
+            node for node in all_nodes
+            if node.get("id") not in repointed_from or node.get("id") in still_referenced
+        ]
 
     return new_edges
 
@@ -1998,7 +2270,7 @@ def _decldef_class_stem(source_file: str) -> tuple[str, str] | None:
     suffix = p.suffix.lower()
     if suffix not in _DECLDEF_HEADER_SUFFIXES and suffix not in _DECLDEF_IMPL_SUFFIXES:
         return None
-    stem = p.stem.split("+", 1)[0]
+    stem = p.stem.split("+", 1)[0]  # ObjC category: Foo+Cat -> Foo
     if not stem:
         return None
     return (str(p.parent), stem)
@@ -2034,7 +2306,10 @@ def _merge_decl_def_classes(
     and leaves it alone, and the downstream resolvers see ONE definition. Because
     the colliding nodes already share an id, no edge re-pointing is needed: every
     edge that referenced the impl symbol already points at the surviving id. We
-    only drop the redundant duplicate node and prefer the header's label.
+    only drop the redundant duplicate node and prefer the header's label — but
+    the dropped impl node's provenance is preserved on the survivor as
+    ``definition_file`` / ``definition_location``, so the definition site is
+    still reachable from the merged node.
 
     GOD-NODE GUARDS (false merges are the main risk):
 
@@ -2074,6 +2349,7 @@ def _merge_decl_def_classes(
             continue
         # Os arquivos de origem distintos desta colisão devem formar um irmão limpo
         # header/impl definido com exatamente um cabeçalho. Cada arquivo deve ser analisado como um
+        # header/impl file (others -> bail), share one directory + base stem.
         sibling_keys: set[tuple[str, str]] = set()
         headers: list[dict] = []
         ok = True
@@ -2088,6 +2364,13 @@ def _merge_decl_def_classes(
                 headers.append(node)
         if not ok:
             continue
+        # All from one (dir, base_stem) sibling family. Pick the declaring header.
+        # Usually there is exactly one. An ObjC class whose members are split across
+        # categories has several (`Foo.h`, `Foo+Cat.h`) — fold those too, keeping the
+        # BASE header (the stem with no `+`), or the lowest-sorting category header
+        # when the base class lives outside the corpus (`NSString+Trim.h`). Two
+        # NON-category headers still bail to disambiguation, as before, so an
+        # unrelated `Foo.h` / `Foo.hpp` pair is untouched.
         if len(sibling_keys) != 1 or not headers:
             continue
         if len(headers) == 1:
@@ -2097,6 +2380,30 @@ def _merge_decl_def_classes(
             if len(base_headers) > 1:
                 continue
             keeper = base_headers[0] if base_headers else min(headers, key=_source_stem)
+        # The keeper is the DECLARATION, so without this the graph reports the
+        # header as the symbol's only location and the definition site — the file
+        # and line a reader actually wants — is discarded with the dropped node.
+        # Recorded as separate attributes: the survivor's id, label and
+        # source_file are untouched, so no existing graph is re-keyed, no edge
+        # moves, and the single-definition guarantee downstream resolvers rely on
+        # is unchanged. Chosen deterministically (lowest source_file, then
+        # location) so an ObjC class whose members are split across several
+        # category impls does not depend on node arrival order.
+        impls = sorted(
+            (n for n in group
+             if n is not keeper
+             and Path(str(n.get("source_file", ""))).suffix.lower()
+             in _DECLDEF_IMPL_SUFFIXES),
+            key=lambda n: (str(n.get("source_file", "")),
+                           str(n.get("source_location", ""))),
+        )
+        if impls:
+            definition = impls[0]
+            if definition.get("source_file"):
+                keeper["definition_file"] = definition["source_file"]
+            if definition.get("source_location"):
+                keeper["definition_location"] = definition["source_location"]
+
         for node in group:
             if node is not keeper:
                 drop_objs.add(id(node))
@@ -2105,7 +2412,8 @@ def _merge_decl_def_classes(
         return
 
     # Elimine os nós duplicados redundantes. O nó sobrevivente (cabeçalho) mantém seu
-    # próprio rótulo/source_file; as arestas permanecem inalteradas porque o id é idêntico. Então
+    # own label/source_file (and now carries the impl's definition_file/
+    # definition_location); edges are unchanged because the id is identical. Then
     # desduplicar quaisquer arestas agora idênticas (por exemplo, o `contém`/`método` do arquivo impl
     # aresta que duplica o cabeçalho após o colapso).
     all_nodes[:] = [n for n in all_nodes if id(n) not in drop_objs]
@@ -2148,6 +2456,8 @@ def _resolve_cross_file_java_imports(
     language = Language(tsjava.language())
     parser = Parser(language)
 
+    # Pre-pass: declared package per source_file string (and parsed trees for
+    # pass 2, so each file is only parsed once).
     parsed: dict[str, tuple[bytes, object]] = {}
     pkg_by_src: dict[str, str] = {}
     for path, file_result in zip(paths, per_file):
@@ -2171,6 +2481,9 @@ def _resolve_cross_file_java_imports(
     def _pkg_matches(imp_pkg: str, tgt_pkg: str) -> bool:
         if imp_pkg == tgt_pkg:
             return True
+        # `import p.Outer.Inner` against a nested type defined in package p:
+        # the leftover segments must all be type-like (uppercase-first), which
+        # conventional lowercase external packages can never satisfy.
         if tgt_pkg:
             if not imp_pkg.startswith(tgt_pkg + "."):
                 return False
@@ -2179,6 +2492,8 @@ def _resolve_cross_file_java_imports(
             rest = imp_pkg
         return bool(rest) and all(seg[:1].isupper() for seg in rest.split("."))
 
+    # Pass 1: class-name → (node_id, package) index (only internal,
+    # uppercase-starting names)
     name_to_ids: dict[str, list[tuple[str, str]]] = {}
     for file_result in per_file:
         for node in file_result.get("nodes", []):
@@ -2471,6 +2786,9 @@ def _resolve_java_type_references(
             pkg_by_file[s] = pkg
             imports_by_file[s] = imps
 
+    # FQN (package.Class or package.Outer.Inner) -> definition node id, for
+    # type-like defs with a source. Nested declarations need their containing
+    # type path because qualified annotation references preserve it.
     fqn_to_id: dict[str, str] = {}
     node_by_id = {
         node.get("id"): node for node in all_nodes if node.get("id")
@@ -2518,6 +2836,10 @@ def _resolve_java_type_references(
                 nid,
             )
 
+    # Shadow stubs: no source_file, type-like label. Dotted labels are included
+    # for qualified inline annotations (`@com.example.anno.Loggable`), which the
+    # engine mints with their full dotted name so a same-named local class can't
+    # absorb them.
     stub_label: dict[str, str] = {
         node["id"]: node.get("label", "")
         for node in all_nodes
@@ -2535,6 +2857,7 @@ def _resolve_java_type_references(
     # classe não fica pendurada em um nó fantasma sem fonte quando dois pacotes definem
     # o mesmo nome simples - o próprio nó sobrevive com um ID com escopo de caminho, mas
     # a referência deve apontar para a DIREITA. Espelha o resolvedor C#,
+    # whose REPOINT set already covers `references`.
     REPOINT_RELATIONS = {"implements", "inherits", "extends", "imports", "references"}
 
     node_ids = {n.get("id") for n in all_nodes if n.get("id")}
@@ -2568,6 +2891,8 @@ def _resolve_java_type_references(
             continue
         ref_file = edge.get("source_file", "")
         if "." in label:
+            # FQN-labeled stub (qualified inline annotation): resolve it against
+            # the internal definitions; an external FQN stays parked as-is.
             resolved = fqn_to_id.get(label)
             if resolved and resolved != tgt:
                 edge["target"] = resolved
@@ -2577,11 +2902,17 @@ def _resolve_java_type_references(
         if fqn:
             resolved = fqn_to_id.get(fqn)
             if resolved is None:
+                # `import p.Outer.Inner`: strip trailing type-like segments to
+                # find the defining package of an internal nested type.
                 head = fqn.split(".")[:-1]
                 while resolved is None and head and head[-1][:1].isupper():
                     head.pop()
                     resolved = fqn_to_id.get(".".join(head + [label]))
             if resolved is None:
+                # Explicit import with no internal definition: proven EXTERNAL.
+                # Park the edge on an FQN-labeled stub the bare-name rewire
+                # cannot collapse onto a same-named local class (— this
+                # is the Java counterpart of the PHP fix).
                 edge["target"] = _external_stub(fqn)
                 repointed_from.add(tgt)
                 continue
@@ -2595,6 +2926,9 @@ def _resolve_java_type_references(
     if new_nodes:
         all_nodes.extend(new_nodes)
 
+    # Bare imported and inline-qualified annotation references can start on
+    # different stubs, then converge on one source-backed node above. Collapse
+    # only indistinguishable Java attribute-reference facts after that rewire.
     seen_attribute_refs: set[tuple] = set()
     deduped_edges: list[dict] = []
     for edge in all_edges:
@@ -2692,8 +3026,8 @@ def _resolve_php_type_references(
     parser = Parser(language)
 
     ns_by_file: dict[str, str] = {}
-    uses_by_file: dict[str, dict[str, str]] = {}
-    raw_by_file: dict[str, dict[tuple[str, str], str | None]] = {}
+    uses_by_file: dict[str, dict[str, str]] = {}                     # lower alias -> FQN
+    raw_by_file: dict[str, dict[tuple[str, str], str | None]] = {}  # (relation, lower bare) -> raw | None(ambiguous)
 
     for path, result in zip(paths, per_file):
         srcs = {n.get("source_file") for n in result.get("nodes", []) if n.get("source_file")}
@@ -2715,7 +3049,7 @@ def _resolve_php_type_references(
                 return
             key = (relation, bare)
             if key in raws and raws[key] != raw:
-                raws[key] = None
+                raws[key] = None  # por exemplo `implementa A\I, B\I` — nunca adivinhe
             else:
                 raws.setdefault(key, raw)
 
@@ -2752,7 +3086,7 @@ def _resolve_php_type_references(
                 group = None
                 for c in n.children:
                     if c.type == "namespace_name":
-                        prefix = _read_text(c, source)
+                        prefix = _read_text(c, source)          # prefixo de uso de grupo
                     elif c.type == "namespace_use_group":
                         group = c
                     elif c.type == "namespace_use_clause":
@@ -2802,7 +3136,7 @@ def _resolve_php_type_references(
         nid = node.get("id", "")
         if not (label and src and nid) or src not in ns_by_file:
             continue
-        if label.endswith(")") or "." in label:
+        if label.endswith(")") or "." in label:  # methods / file nodes
             continue
         ns = ns_by_file[src]
         fqn = f"{ns}\\{label}" if ns else label
@@ -2875,6 +3209,7 @@ def _resolve_php_type_references(
             edge["target"] = resolved
             repointed_from.add(tgt)
         elif explicit and resolved is None:
+            # Externo comprovado: estacione a aresta em um stub rotulado como FQN
             # A religação de nome simples não pode entrar em colapso (esta é a correção # 1923).
             edge["target"] = _external_stub(fqn)
             repointed_from.add(tgt)
@@ -2897,7 +3232,7 @@ def _resolve_php_type_references(
 
 _pascal_unit_cache: dict[str, dict[str, str]] = {}
 
-_pascal_class_stem_cache: dict[str, dict[str, str]] = {}
+_pascal_class_stem_cache: dict[str, dict[str, str]] = {}  # root_key → {stem_lower: _file_stem}
 
 def _pascal_project_root(from_path: Path) -> Path:
     """Return the highest ancestor directory that looks like a Pascal project root.
@@ -2916,7 +3251,7 @@ def _pascal_project_root(from_path: Path) -> Path:
     current = from_path.parent
     for _ in range(12):
         if len(current.parts) <= 1:
-            break
+            break  # nunca use uma raiz do sistema de arquivos (D:/, C:/, /)
         pas_count = sum(1 for _ in current.glob("*.pas"))
         dpr_count = sum(1 for _ in current.glob("*.dpr"))
         if pas_count >= 2 or dpr_count >= 1:

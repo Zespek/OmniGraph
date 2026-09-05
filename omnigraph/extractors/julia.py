@@ -84,6 +84,26 @@ def extract_julia(path: Path) -> dict:
             })
         return nid
 
+    def _type_head_names(type_head) -> tuple[str | None, str | None]:
+        """Return (type_name, supertype_name) from a Julia `type_head`.
+
+        A bare declaration (`Foo`) exposes an `identifier`; a subtyping
+        declaration (`Foo <: Bar`) wraps both names in a `binary_expression`.
+        Both the struct and abstract-type paths need this, so parse it once.
+        """
+        bin_expr = next(
+            (c for c in type_head.children if c.type == "binary_expression"), None
+        )
+        if bin_expr:
+            identifiers = [c for c in bin_expr.children if c.type == "identifier"]
+            if identifiers:
+                name = _read_text(identifiers[0], source)
+                super_name = _read_text(identifiers[-1], source) if len(identifiers) >= 2 else None
+                return name, super_name
+            return None, None
+        name_node = next((c for c in type_head.children if c.type == "identifier"), None)
+        return (_read_text(name_node, source) if name_node else None), None
+
     def _func_name_from_signature(sig_node) -> str | None:
         """Extract function name from a Julia signature node (call_expression > identifier)."""
         for child in sig_node.children:
@@ -101,11 +121,13 @@ def extract_julia(path: Path) -> dict:
             return
         if t == "call_expression" and body_node.children:
             callee = body_node.children[0]
+            # Direct call: foo(...)
             if callee.type == "identifier":
                 callee_name = _read_text(callee, source)
                 target_nid = _make_id(stem, callee_name)
                 add_edge(func_nid, target_nid, "calls", body_node.start_point[0] + 1,
                          confidence="EXTRACTED", context="call")
+            # Method call: obj.method(...)
             elif callee.type == "field_expression" and len(callee.children) >= 3:
                 method_node = callee.children[-1]
                 method_name = _read_text(method_node, source)
@@ -118,6 +140,7 @@ def extract_julia(path: Path) -> dict:
     def walk(node, scope_nid: str) -> None:
         t = node.type
 
+        # Module
         if t == "module_definition":
             name_node = next((c for c in node.children if c.type == "identifier"), None)
             if name_node:
@@ -130,24 +153,13 @@ def extract_julia(path: Path) -> dict:
                     walk(child, mod_nid)
             return
 
+        # Struct (struct / mutable struct - ambos mapeiam para struct_definition em tree-sitter-julia)
         if t == "struct_definition":
             # type_head pode conter: identificador (simples) ou expressão_binária (Foo <: Bar)
             type_head = next((c for c in node.children if c.type == "type_head"), None)
             if not type_head:
                 return
-            struct_name: str | None = None
-            super_name: str | None = None
-            bin_expr = next((c for c in type_head.children if c.type == "binary_expression"), None)
-            if bin_expr:
-                identifiers = [c for c in bin_expr.children if c.type == "identifier"]
-                if identifiers:
-                    struct_name = _read_text(identifiers[0], source)
-                    if len(identifiers) >= 2:
-                        super_name = _read_text(identifiers[-1], source)
-            else:
-                name_node = next((c for c in type_head.children if c.type == "identifier"), None)
-                if name_node:
-                    struct_name = _read_text(name_node, source)
+            struct_name, super_name = _type_head_names(type_head)
             if not struct_name:
                 return
             struct_nid = _make_id(stem, struct_name)
@@ -169,18 +181,27 @@ def extract_julia(path: Path) -> dict:
                             struct_nid, type_nid, "field", str_path, field_line))
             return
 
+        # Abstract type
         if t == "abstract_definition":
+            # type_head is a bare `identifier` (`abstract type Foo end`) or a
+            # `binary_expression` for the subtyping form (`abstract type Foo <: Bar end`).
+            # The latter was dropped entirely — abstract types are the backbone of
+            # Julia's dispatch hierarchies, so an intermediate `Foo <: Bar` vanishing
+            # broke the inheritance chain and lost the type node itself.
             type_head = next((c for c in node.children if c.type == "type_head"), None)
             if type_head:
-                name_node = next((c for c in type_head.children if c.type == "identifier"), None)
-                if name_node:
-                    abs_name = _read_text(name_node, source)
+                abs_name, super_name = _type_head_names(type_head)
+                if abs_name:
                     abs_nid = _make_id(stem, abs_name)
                     line = node.start_point[0] + 1
                     add_node(abs_nid, abs_name, line)
                     add_edge(scope_nid, abs_nid, "defines", line)
+                    if super_name:
+                        add_edge(abs_nid, ensure_named_node(super_name, line),
+                                 "inherits", line, confidence="EXTRACTED")
             return
 
+        # Function: function foo(...) ... end
         if t == "function_definition":
             sig_node = next((c for c in node.children if c.type == "signature"), None)
             if sig_node:
@@ -193,6 +214,7 @@ def extract_julia(path: Path) -> dict:
                     function_bodies.append((func_nid, node))
             return
 
+        # Short function: foo(x) = expr
         if t == "assignment":
             lhs = node.children[0] if node.children else None
             if lhs and lhs.type == "call_expression" and lhs.children:
@@ -209,12 +231,15 @@ def extract_julia(path: Path) -> dict:
                         function_bodies.append((func_nid, rhs))
             return
 
+        # Using / Import
         if t in ("using_statement", "import_statement"):
             line = node.start_point[0] + 1
 
             def _julia_mod_name(n):
+                # identificador (`Foo`), identificador de escopo (`Base.Threads`) ou
                 # import_path (relativo `..Sibling`) -> o nome do módulo. Apenas nu
                 # identificadores foram tratados, portanto, importações qualificadas/relativas - e o
+                # pacote com escopo definido de um `selected_import` - foram descartados silenciosamente.
                 if n.type == "import_path":
                     ids = [c for c in n.children if c.type == "identifier"]
                     return _read_text(ids[-1], source) if ids else None
@@ -233,6 +258,7 @@ def extract_julia(path: Path) -> dict:
                 if child.type in ("identifier", "scoped_identifier", "import_path"):
                     _emit_import(_julia_mod_name(child))
                 elif child.type == "selected_import":
+                    # `import Base.Threads: nthreads` — o pacote (primeiro nomeado
                     # filho) pode ser um identificador de escopo/caminho de importação.
                     pkg = next(
                         (c for c in child.children
@@ -252,6 +278,7 @@ def extract_julia(path: Path) -> dict:
         # Para nós function_definition, caminhe os filhos diretamente para evitar
         # a verificação de limite retornando antecipadamente no próprio nó de nível superior.
         # Ignore o filho "assinatura" - ele contém a própria call_expression da função
+        # o que criaria um auto-loop.
         if body_node.type == "function_definition":
             for child in body_node.children:
                 if child.type != "signature":

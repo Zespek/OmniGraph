@@ -60,6 +60,7 @@ def resolve_pascal_inherited_calls(
     # ou nid de função livre) pode ser mapeado para a CLASSE cuja cadeia herda
     # deveria ser percorrido. Derivado de `all_edges` (já remapeado/finalizado
     # pelas passagens de desambiguação de id que são executadas antes dos resolvedores, da mesma forma que
+    # caller_nid em si) em vez de ser transportado como um campo separado no bruto
     # call - um campo que o mecanismo genérico de id-remap não saberia atualizar.
     owner_of: dict[str, str] = {}
     class_procs: dict[str, dict[str, list[str]]] = {}
@@ -77,6 +78,7 @@ def resolve_pascal_inherited_calls(
             # Extrator Pascal emite uma aresta de `método` para a interface
             # declaração e um para a implementação, então o mesmo
             # method_nid chega duas vezes. A desduplicação mantém o único proprietário
+            # god-node guard below (`len(candidates) == 1`) measuring real
             # colisões de mesmo nome entre classes, não o mesmo método
             # contado duas vezes - caso contrário, toda chamada herdada parecerá ambígua.
             bucket = class_procs.setdefault(owner, {}).setdefault(name_lower, [])

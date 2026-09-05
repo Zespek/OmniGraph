@@ -151,6 +151,7 @@ def _augment_systemverilog_semantics(
         body = match.group(4) or ""
         line = line_for(match.start())
         # `#(type T = Payload)` declara `T` como um parâmetro de tipo de classe, não um
+        # tipo referenciado - colete-os para pular abaixo.
         type_params = frozenset(re.findall(r"\btype\s+(\w+)", header))
         class_nid = _make_id(stem, class_name)
         add_node(class_nid, class_name, line)
@@ -172,12 +173,14 @@ def _augment_systemverilog_semantics(
             body,
             flags=re.DOTALL,
         )
+        # Optional leading class-property qualifiers (rand/local/protected/etc.)
         # deve ser consumido: caso contrário, um campo qualificado como `rand Config x;`
         # (três tokens) falha na forma `<tipo> <nome>;` e sua referência de tipo
         # é silenciosamente descartado.
         for field in re.finditer(r"^\s*(?:(?:rand|randc|local|protected|static|const|automatic|var)\s+)*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;", body_without_functions, re.MULTILINE):
             # Conte até o início do token de tipo (grupo 1), não a correspondência
             # start: `^\s*` consome as novas linhas iniciais, então field.start()
+            # resolveria para a linha da classe em vez do campo.
             field_line = line + body_without_functions.count("\n", 0, field.start(1))
             for ref_name, role in _sv_collect_type_refs(field.group(1), skip=type_params):
                 add_edge(class_nid, ref_name, "references", field_line, "generic_arg" if role == "generic_arg" else "field")
@@ -245,6 +248,7 @@ def extract_verilog(path: Path) -> dict:
 
         # Os corpos da classe SystemVerilog são manipulados por _augment_systemverilog_semantics
         # (regex sobre o texto fonte). Ignore suas subárvores para que os métodos da classe não sejam
+        # emitido duas vezes aqui - e com o nome errado derivado do tipo de retorno.
         if t in ("class_declaration", "interface_class_declaration"):
             return
 
@@ -261,6 +265,7 @@ def extract_verilog(path: Path) -> dict:
 
         # `function_prototype` só aparece dentro de corpos de classe/classe de interface
         # (pulado acima) e aninha seu nome de forma diferente; não é intencionalmente
+        # handled here.
         elif t == "function_declaration":
             fn_body = _sv_child(node, "function_body_declaration")
             func_name = _sv_first_identifier(_sv_child(fn_body, "function_identifier"), source)
@@ -294,6 +299,7 @@ def extract_verilog(path: Path) -> dict:
                         add_edge(src_nid, tgt_nid, "imports_from", line)
 
         elif t in ("module_instantiation", "checker_instantiation"):
+            # `leaf u_leaf();` analisa como checker_instantiation em 1.0.3;
             # module_instantiation (quando ocorre) expõe um campo `module_type`.
             # Ambos se reduzem ao primeiro identificador sob o nó - o instanciado
             # tipo, não o nome da instância (que aparece mais tarde).

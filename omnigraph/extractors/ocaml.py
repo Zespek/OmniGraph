@@ -38,9 +38,18 @@ def extract_ocaml(path: Path) -> dict:
     edges: list[dict] = []
     seen_ids: set[str] = set()
 
+    # Same-file definition table for call resolution. A name defined more than
+    # once in the file is marked ambiguous and never resolved locally.
     local_defs: dict[str, str] = {}
     ambiguous: set[str] = set()
+    # Names of modules DEFINED in this file. Used to decide whether a qualified
+    # call `M.f` may bind to a local `f`: if `M` is not a local module it is an
+    # external library (e.g. `Reg_spec.create`), so binding to a same-named local
+    # `f` would be a false edge (and a self-loop when the caller is that `f`).
     local_modules: set[str] = set()
+    # (caller_nid, callee_name, qualifier_root_module_or_None, full_path_text,
+    # line) recorded on pass 1, resolved on pass 2 so that forward references
+    # (e.g. `let rec ... and ...`) resolve correctly.
     call_sites: list[tuple[str, str, str | None, str, int]] = []
 
     def add_node(nid: str, label: str, line: int) -> None:
@@ -144,6 +153,7 @@ def extract_ocaml(path: Path) -> dict:
         add_node(nid, type_name, line)
         add_edge(container_nid, nid, "defines" if container_nid == file_nid else "contains", line)
         register_def(type_name, nid)
+        # Variant constructors: variant_declaration -> constructor_declaration -> constructor_name
         for vd in binding.children:
             if vd.type != "variant_declaration":
                 continue
@@ -184,7 +194,7 @@ def extract_ocaml(path: Path) -> dict:
                         walk(child, mnid, enclosing_value)
                     return
 
-        if t == "module_type_definition":
+        if t == "module_type_definition":  # .mli
             mname = named_child_text(node, "module_type_name")
             if mname:
                 line = line_of(node)
@@ -198,7 +208,11 @@ def extract_ocaml(path: Path) -> dict:
                     walk(child, mnid, enclosing_value)
                 return
 
-        if t == "value_definition":
+        if t == "value_definition":  # .ml
+            # Only structure/top-level bindings are real definitions. A local
+            # `let x = e in body` is also a value_definition, but nested under a
+            # let_expression; it must NOT mint a node or steal call attribution
+            # from the enclosing named function.
             is_toplevel = node.parent is not None and node.parent.type in (
                 "compilation_unit", "structure")
             for lb in node.children:
@@ -214,11 +228,13 @@ def extract_ocaml(path: Path) -> dict:
                              "defines" if container_nid == file_nid else "contains", line)
                     register_def(vname, nid)
                     new_scope = nid
+                # Descend into the body (unit/pattern/local bindings keep the
+                # outer scope) to collect nested definitions and call sites.
                 for child in lb.children:
                     walk(child, container_nid, new_scope)
             return
 
-        if t == "value_specification":
+        if t == "value_specification":  # .mli
             vname = named_child_text(node, "value_name")
             if vname:
                 line = line_of(node)
@@ -243,6 +259,7 @@ def extract_ocaml(path: Path) -> dict:
                     caller = enclosing_value if enclosing_value else file_nid
                     call_sites.append((caller, callee, path_root_module(fn),
                                        _read_text(fn, source), line_of(node)))
+            # Fall through: arguments may contain further applications/definitions.
 
         for child in node.children:
             walk(child, container_nid, enclosing_value)
@@ -250,6 +267,15 @@ def extract_ocaml(path: Path) -> dict:
     walk(root, file_nid, "")
 
     for caller, callee, qualifier, full_path, line in call_sites:
+        # A qualified call `M.f` where `M` is NOT a module defined in this file
+        # is an external-library call (e.g. `Reg_spec.create`). Binding it to a
+        # same-named local `f` would be a false edge (and a `create -> create`
+        # self-loop when the caller is that local `f`), so keep it distinct: a
+        # stub keyed by the FULL qualified name (`Reg_spec.create`) never
+        # collapses onto the local `f` in the corpus rewire. Unqualified calls,
+        # and qualified calls into a locally-defined module, still resolve to a
+        # local definition; a bare-name stub still allows the cross-file rewire
+        # to collapse `Geo.area` onto another file's `area` (#hardcaml).
         if qualifier is not None and qualifier not in local_modules:
             if callee in local_defs:
                 add_edge(caller, ref_stub(full_path), "calls", line, confidence="INFERRED")

@@ -31,6 +31,7 @@ def _is_config_json(path: Path, obj_node, source: bytes) -> bool:
     name = path.name.casefold()
     if name in _CONFIG_JSON_NAMES:
         return True
+    # Common compound config names: *.eslintrc.json, *.prettierrc.json, etc.
     if name.endswith((".eslintrc.json", ".prettierrc.json", ".babelrc.json",
                       "tsconfig.json", "jsconfig.json")):
         return True
@@ -55,7 +56,7 @@ def extract_json(path: Path) -> dict:
     and duplicate communities that swamped real structure (#1224). Recognition
     is by filename (package.json, tsconfig.json, …) or a top-level key probe
     (dependencies / extends / $ref / $schema / compilerOptions)."""
-    _JSON_MAX_BYTES = 1_048_576
+    _JSON_MAX_BYTES = 1_048_576  # 1 MiB — skip large fixture dumps / GeoJSON blobs
 
     try:
         import tree_sitter_json as tsjson
@@ -64,7 +65,9 @@ def extract_json(path: Path) -> dict:
         return {"nodes": [], "edges": [], "error": "tree-sitter-json not installed"}
 
     try:
+        # Leitura limitada em vez de stat()+read() para eliminar TOCTOU (J-1):
         # leia um byte além do limite para que possamos detectar arquivos grandes mesmo
+        # se o arquivo crescer entre stat e read.
         with path.open("rb") as _f:
             source = _f.read(_JSON_MAX_BYTES + 1)
         if len(source) > _JSON_MAX_BYTES:
@@ -82,6 +85,7 @@ def extract_json(path: Path) -> dict:
     edges: list[dict] = []
     seen_ids: set[str] = set()
 
+    # Keys whose string values become imports (package.json dep blocks)
     _DEP_KEYS = frozenset({
         "dependencies", "devDependencies", "peerDependencies",
         "optionalDependencies", "bundleDependencies", "bundledDependencies",
@@ -116,6 +120,7 @@ def extract_json(path: Path) -> dict:
             content = key_node.child_by_field_name("string_content")
             if content:
                 return _read_text(content, source)
+            # fallback: strip surrounding quotes
             raw = _read_text(key_node, source)
             return raw.strip('"\'')
         return _read_text(key_node, source)
@@ -130,7 +135,7 @@ def extract_json(path: Path) -> dict:
         for child in obj_node.children:
             if child.type != "pair":
                 continue
-            if pair_count[0] >= 500:
+            if pair_count[0] >= 500:  # verifique por par para que o limite seja respeitado exatamente (J-3)
                 return
             pair_count[0] += 1
             key = _key_text(child)
@@ -156,7 +161,14 @@ def extract_json(path: Path) -> dict:
             if val.type == "object":
                 walk_object(val, key_nid, key, depth + 1, pair_count)
 
-            elif val.type == "array":
+            elif val.type == "array" and key == "extends":
+                # Only a genuine `extends` array (tsconfig 5.0+, eslint) is
+                # inheritance. This branch used to fire for *every* array under
+                # a tracked key, so `compilerOptions.lib: ["dom","esnext"]` and
+                # `exclude: ["node_modules",".next"]` each emitted an `extends`
+                # edge — array membership relabelled as inheritance. The string
+                # branch below already gates on `key == "extends"`; this matches
+                # it. Non-`extends` arrays keep their `contains` edge only.
                 # Prefixe com "ref_" para que as referências externas não colidam com as reais
                 # IDs de nó de código/arquivo que compartilham o mesmo _make_id recolhido (J-4).
                 for item in val.children:
@@ -187,11 +199,30 @@ def extract_json(path: Path) -> dict:
                         add_edge(parent_nid, ref_nid, "references", line)
 
                 elif parent_key in _DEP_KEYS and val_text:
-                    dep_nid = _make_id(key)
+                    # Two defects fixed here, both from the shape:
+                    #
+                    # 1. The edge ran `key_nid -> dep_nid`, and both nodes carry
+                    #    the *same label* (the dependency name), so every
+                    #    dependency produced a visually self-referential
+                    #    `react --imports--> react` (22 of them on a mid-size
+                    #    Next.js repo). The self-loop guard in
+                    #    test_extract_json_import_and_extends_targets_are_real_nodes
+                    #    compares node ids, and these two ids differ, so the
+                    #    duplicate slipped past it. Sourcing the edge at the
+                    #    manifest yields `package.json --imports--> react`.
+                    #
+                    # 2. `_make_id(key)` minted a *bare* id, skipping the "ref"
+                    #    namespacing every other external reference in this file
+                    #    applies (J-4). A dependency named `utils`, `colors` or
+                    #    `types` could then be collapsed onto a same-named local
+                    # module by build.py's alias index -- the failure
+                    #    mode reached through a different door.
+                    dep_nid = _make_id("ref", key)
                     if dep_nid:
                         add_node(dep_nid, key, line, file_type="concept")
-                        add_edge(key_nid, dep_nid, "imports", line, context="import")
+                        add_edge(file_nid, dep_nid, "imports", line, context="import")
 
+    # Entry: find root document → object
     doc = root
     if doc.type == "document" and doc.child_count > 0:
         doc = doc.children[0]
