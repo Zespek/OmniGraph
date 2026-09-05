@@ -74,8 +74,8 @@ MCP_CONFIG_FILENAMES: frozenset[str] = frozenset({
     "mcp_servers.json",
 })
 
-_MAX_BYTES = 1_048_576
-_MAX_SERVERS_PER_FILE = 200
+_MAX_BYTES = 1_048_576  # 1 MiB – mesmo limite de extract_json
+_MAX_SERVERS_PER_FILE = 200  # generous; flags pathological configs
 
 
 def is_mcp_config_path(path: Path) -> bool:
@@ -115,6 +115,7 @@ def extract_mcp_config(path: Path) -> dict[str, Any]:
 
     servers = doc.get("mcpServers")
     if not isinstance(servers, dict):
+        # Algumas ferramentas aninham o mapa (por exemplo, {"mcp": {"servers": {...}}}). Experimente um
         # forma alternativa bem conhecida, mas não pesquise exaustivamente.
         nested = doc.get("mcp")
         if isinstance(nested, dict):
@@ -269,6 +270,12 @@ def _emit_server(
 # ── Detecção de pacote de argumentos ─────────────────────── ────────────────────────
 
 # Padrões observados em configurações reais do servidor MCP:
+#   ["-y", "@modelcontextprotocol/server-filesystem", "/data"]   (npx)
+#   ["-y", "@org/pkg@1.2.3"]
+#   ["mcp-server-fetch"]                                          (uvx / python)
+#   ["mcp-server-time", "--local-timezone=UTC"]
+#   ["@scoped/some-mcp"] (pnpx)
+#   ["mcp-server-fetch"]                                          (uvx direct)
 _NPM_PKG_RE = re.compile(r"^@[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*(?:@[\w.\-+]+)?$")
 _PY_MCP_PKG_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*-mcp(?:-[a-z0-9._-]+)?$|^mcp-[a-z0-9][a-z0-9._-]*$")
 _ARG_FLAG_RE = re.compile(r"^-{1,2}\w")
@@ -306,6 +313,7 @@ def _strip_version(pkg: str) -> str:
     return pkg if version_at == -1 else pkg[:version_at]
 
 
+# ── Node / edge construction (OmniGraph schema) ────────────────────────────────
 
 
 def _add_node(
@@ -365,6 +373,7 @@ def _add_edge(
     edges.append(edge)
 
 
+# ── ID helpers (kept local; mirror extract.py shape) ──────────────────────────
 
 
 def _make_id(*parts: str) -> str:

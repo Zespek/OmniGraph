@@ -39,15 +39,16 @@ from omnigraph.paths import OMNIGRAPH_OUT_NAME
 
 _UNCATEGORIZED = "Uncategorized"
 
+# Camada experiencial derivada escrita junto com graph.json (um SIDECAR, mantido
 # separado da verdade estrutural durável em graph.json - sem aprendizado_*
 # campos são sempre carimbados no próprio grafo). As anotações da superfície de leitura são
 # mesclado no momento da exibição deste arquivo.
 LEARNING_SIDECAR_NAME = ".omnigraph_learning.json"
 _LEARNING_SCHEMA_VERSION = 1
-_PROVENANCE_CAP = 5
+_PROVENANCE_CAP = 5  # most-recent (question, date, outcome) entries per node
 
 # Padrões de pontuação (ambos expostos como sinalizadores CLI).
-_DEFAULT_HALF_LIFE_DAYS = 30.0
+_DEFAULT_HALF_LIFE_DAYS = 30.0   # o peso de um sinal cai pela metade a cada 30 dias
 _DEFAULT_MIN_CORROBORATION = 2   # resultados úteis distintos necessários para "preferir" um nó
 
 # O arredondamento da pontuação assinada mantém a ordem de classificação e o veredicto contestado estável
@@ -55,6 +56,8 @@ _DEFAULT_MIN_CORROBORATION = 2   # resultados úteis distintos necessários para
 _SCORE_NDIGITS = 9
 
 
+# --- frontmatter parsing -------------------------------------------------------
+#
 # save_query_result grava um pequeno subconjunto YAML criado manualmente (sem dependência de PyYAML),
 # então analisamos o mesmo subconjunto manualmente em vez de adicionar uma dependência: escalar
 # `key: "value"` linhas e uma lista de fluxo `source_nodes: ["a", "b"]`. Qualquer coisa que nós
@@ -70,7 +73,7 @@ def _yaml_unescape(s: str) -> str:
     out: list[str] = []
     i = 0
     simple = {"n": "\n", "r": "\r", "t": "\t", "0": "\0", '"': '"', "\\": "\\",
-              "L": "\u2028", "P": "\u2029"}
+              "L": "\u2028", "P": "\u2029"}  # YAML line/paragraph separators
     while i < len(s):
         ch = s[i]
         if ch == "\\" and i + 1 < len(s):
@@ -153,6 +156,7 @@ def load_memory_docs(memory_dir: Path) -> list[dict[str, Any]]:
     return docs
 
 
+# --- graph / community lookup (optional) ---------------------------------------
 
 
 def _load_node_community(graph_path: Path, analysis_path: Path,
@@ -191,6 +195,7 @@ def _load_node_community(graph_path: Path, analysis_path: Path,
     except (OSError, ValueError):
         id_to_label = {}
     # Iteração cid classificada + setdefault faz com que qualquer colisão de rótulo seja resolvida
+    # deterministically (smallest community id wins).
     node_community: dict[str, str] = {}
     for cid in sorted(communities, key=str):
         label = labels.get(str(cid)) or labels.get(cid) or f"Community {cid}"
@@ -251,6 +256,7 @@ def _doc_community(nodes: list[str],
     return min(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0]
 
 
+# --- scoring helpers -----------------------------------------------------------
 
 
 def _parse_dt(date_str: str) -> datetime | None:
@@ -279,11 +285,13 @@ def _decay(date_str: str, now: datetime, half_life_days: float) -> float:
     return 0.5 ** (age_days / half_life_days)
 
 
+# --- aggregation ---------------------------------------------------------------
 
 
 def _empty_bucket() -> dict[str, Any]:
     return {
         "counts": {k: 0 for k in (*OUTCOMES, "unmarked")},
+        # node -> running signed, time-decayed score
         "node_score": {},
         # nó -> contagens distintas de resultados positivos/negativos (para corroboração)
         "node_pos": Counter(),
@@ -329,7 +337,7 @@ def _finalize_sources(bucket: dict[str, Any],
             contested.append({"node": node, "pos": pos, "neg": neg,
                               "score": score, "verdict": verdict,
                               "last": bucket["node_last"].get(node, "")})
-        elif pos:
+        elif pos:  # somente positivo
             entry = {"node": node, "n": pos, "score": score}
             (preferred if pos >= min_corroboration else tentative).append(entry)
         # nós somente negativos são revelados por meio de questões sem saída, não aqui.
@@ -403,6 +411,7 @@ def aggregate_lessons(docs: list[dict[str, Any]],
                     {"question": doc.get("question", ""),
                      "correction": doc.get("correction", ""), "date": date})
 
+    # Somente agrupamento superficial por comunidade quando um grafo foi realmente fornecido;
     # sem um, todo documento cai em Sem categoria e a seção simplesmente
     # duplique o bloco plano "Lições".
     community_out: dict[str, dict[str, Any]] = {}
@@ -429,6 +438,7 @@ def aggregate_lessons(docs: list[dict[str, Any]],
     }
 
 
+# --- rendering -----------------------------------------------------------------
 
 
 def _render_bucket(out: list[str], data: dict[str, Any], k: int) -> None:
@@ -500,6 +510,7 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
 
     if agg["by_community"]:
         out += ["## By topic", ""]
+        # Uncategorized sorts last; everything else alphabetically.
         def _topic_key(label: str) -> tuple[int, str]:
             return (1 if label == _UNCATEGORIZED else 0, label)
         for label in sorted(agg["by_community"], key=_topic_key):
@@ -510,6 +521,7 @@ def render_lessons_md(agg: dict[str, Any]) -> str:
     return "\n".join(out).rstrip("\n") + "\n"
 
 
+# --- orchestrator --------------------------------------------------------------
 
 
 def lessons_fresh(out_path: Path, memory_dir: Path,
@@ -529,7 +541,7 @@ def lessons_fresh(out_path: Path, memory_dir: Path,
     try:
         out_mtime = out_path.stat().st_mtime
     except OSError:
-        return False
+        return False  # missing/unreadable -> must build
     newest = 0.0
     md = Path(memory_dir)
     if md.is_dir():
@@ -598,6 +610,8 @@ def reflect(memory_dir: Path, out_path: Path,
     return out_path, agg
 
 
+# --- work-memory overlay sidecar ------------------------------------------------
+#
 # Uma projeção experiencial derivada do agregado refletido, escrita ao lado
 # graph.json como ``.omnigraph_learning.json``. Ele carrega quais nós provaram
 # preferido/provisório/contestado, uma impressão digital de código para detecção de obsolescência e
@@ -677,11 +691,11 @@ def _resolve_source_path(src: str, graph_path: Path) -> Path | None:
     out_dir = gp.parent
     candidates: list[Path] = []
     try:
-        recorded = (out_dir / ".omnigraph_root").read_text(encoding="utf-8").strip()
+        recorded = (out_dir / ".omnigraph_root").read_text(encoding="utf-8-sig").strip()
         if recorded:
             candidates.append(Path(recorded))
     except (OSError, ValueError):
-        pass
+        pass  # unreadable/non-UTF-8 marker -> fall through (best-effort)
     # Primeiro a raiz apropriada ao layout (precisão), depois a outra (robustez).
     if out_dir.name == OMNIGRAPH_OUT_NAME:
         candidates += [out_dir.parent, out_dir]
@@ -770,7 +784,7 @@ def build_learning_overlay(agg: dict[str, Any], graph_path: Path,
         if cid is None:
             return  # ambíguo ou obsoleto – não pode ser exibido em um único nó
         if cid in nodes_out:
-            return
+            return  # first status wins (preferred > tentative > contested order)
         node = node_by_id.get(cid)
         out: dict[str, Any] = {
             "status": status,
@@ -788,6 +802,7 @@ def build_learning_overlay(agg: dict[str, Any], graph_path: Path,
         else:
             # preferido/provisório não contém veredicto contestado; derivar `último` de
             # proveniência se o finalizador não o fez (baldes somente positivos rastreiam
+            # via node_last apenas para contestados).
             if not out["last"] and out["provenance"]:
                 out["last"] = out["provenance"][0]["date"]
         nodes_out[cid] = out
@@ -856,10 +871,11 @@ def _is_stale(entry: dict[str, Any], graph_path: Path) -> bool:
     freshly-written verdict on unchanged code is never spuriously stale."""
     src = entry.get("source_file", "")
     if not src:
+        # Nenhum arquivo para rastrear – nada para verificar novamente.
         return False
     sp = _resolve_source_path(src, graph_path)
     if sp is None:
-        return True
+        return True  # file gone / unfindable — re-verify
     stored = entry.get("code_fingerprint", "")
     if not stored:
         return True  # tinha um arquivo, mas nunca tirou suas impressões digitais -> não posso confiar -> obsoleto

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 import re
+import uuid
 import urllib.error
 import urllib.parse
 from datetime import datetime, timezone
@@ -94,6 +95,7 @@ def _html_to_markdown(html: str, url: str) -> str:
         from markdownify import markdownify
         return markdownify(html, heading_style="ATX", bullets="-", strip=["img"])
     except ImportError:
+        # Fallback: basic tag strip
         text = re.sub(r"<[^>]+>", " ", html)
         text = re.sub(r"\s+", " ", text).strip()
         return text[:8000]
@@ -101,6 +103,7 @@ def _html_to_markdown(html: str, url: str) -> str:
 
 def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a tweet URL. Returns (content, filename)."""
+    # Normalize para twitter.com para oEmbed
     oembed_url = url.replace("x.com", "twitter.com")
     oembed_api = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(oembed_url)}&omit_script=true"
     try:
@@ -108,6 +111,7 @@ def _fetch_tweet(url: str, author: str | None, contributor: str | None) -> tuple
         tweet_text = re.sub(r"<[^>]+>", "", data.get("html", "")).strip()
         tweet_author = data.get("author_name", "unknown")
     except Exception:
+        # oEmbed failed - save URL stub
         tweet_text = f"Tweet at {url} (could not fetch content)"
         tweet_author = "unknown"
 
@@ -133,6 +137,7 @@ Source: {url}
 def _fetch_webpage(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch a generic webpage and convert to markdown."""
     html = _fetch_html(url)
+    # Extract title
     title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
     title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else url
 
@@ -160,6 +165,7 @@ Source: {url}
 
 def _fetch_arxiv(url: str, author: str | None, contributor: str | None) -> tuple[str, str]:
     """Fetch arXiv abstract page."""
+    # Converter /abs/ ou /pdf/ em abs para a API
     arxiv_id = re.search(r"(\d{4}\.\d{4,5})", url)
     if arxiv_id:
         api_url = f"https://export.arxiv.org/abs/{arxiv_id.group(1)}"
@@ -294,7 +300,11 @@ def save_query_result(
 
     now = datetime.now(timezone.utc)
     slug = re.sub(r"[^\w]", "_", question.lower())[:50].strip("_")
-    filename = f"query_{now.strftime('%Y%m%d_%H%M%S')}_{slug}.md"
+    # A second-granularity stamp plus a 50-char slug is not unique: two saves in
+    # the same second whose questions share a prefix resolve to one path, and the
+    # later write_text silently replaces the earlier one. The short uuid
+    # makes every save its own file; the query_ prefix and .md suffix are kept.
+    filename = f"query_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}_{slug}.md"
 
     frontmatter_lines = [
         "---",
