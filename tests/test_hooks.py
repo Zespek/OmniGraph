@@ -188,6 +188,14 @@ def test_post_merge_hook_fires_on_fast_forward_pull(tmp_path):
     _git("fetch", "-q", cwd=b)
     _git("checkout", "-q", "main", cwd=b)
 
+    # Control: some CI sandboxes disable git hook execution outright (e.g. a
+    # locked-down hooksPath). Prove hooks fire AT ALL here via post-commit -
+    # the hook type this whole system already relies on in production - before
+    # blaming post-merge specifically for a silent sandbox-wide no-op.
+    control_hook = a / ".git" / "hooks" / "post-commit"
+    control_hook.write_text("#!/bin/sh\necho FIRED > control-sentinel.txt\n", encoding="utf-8")
+    control_hook.chmod(0o755)
+
     # Install a sentinel post-merge hook in b (not the real omnigraph one, to
     # keep this test fast) just to prove git invokes it on a plain pull.
     hook = b / ".git" / "hooks" / "post-merge"
@@ -196,6 +204,8 @@ def test_post_merge_hook_fires_on_fast_forward_pull(tmp_path):
 
     (a / "f.txt").write_text("x\ny\n", encoding="utf-8")
     _git("commit", "-qam", "second", cwd=a)
+    if not (a / "control-sentinel.txt").exists():
+        pytest.skip("git hooks are not invoked in this sandbox (post-commit control did not fire)")
     _git("push", "-q", cwd=a)
     _git("pull", "-q", cwd=b)
 
