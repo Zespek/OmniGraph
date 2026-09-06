@@ -4,7 +4,10 @@ For any question about this repo's architecture, structure, components, or how t
 code, your first action should be `omnigraph query "<question>"` when `omnigraph-out/graph.json`
 exists. Use `omnigraph path "<A>" "<B>"` for relationship questions and `omnigraph explain "<concept>"`
 for focused-concept questions. These return a scoped subgraph, usually much smaller than the full
-report or raw grep output.
+report or raw grep output. The search matches literal keywords against the code's own identifiers,
+not semantic meaning: if the user asks in a language other than the codebase's, phrase the query in
+the codebase's language (translate the concept, do not pass the user's own words verbatim) or it will
+return no matches.
 
 Triggers: "how do I…", "where is…", "what does … do", "add/modify a <component>",
 "explain the architecture", or anything that depends on how files or classes relate.
