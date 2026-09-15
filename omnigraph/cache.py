@@ -17,6 +17,7 @@ from pathlib import Path
 # caminho absoluto ("/shared/omnigraph-out"). Fonte única de verdade em zspekfy.paths
 #; reexportado aqui como _OMNIGRAPH_OUT para os locais de chamada existentes.
 from omnigraph.paths import OMNIGRAPH_OUT as _OMNIGRAPH_OUT
+from omnigraph.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 # As entradas de cache AST são a saída do próprio código extrator do omnigraph, portanto
 # são válidos apenas para a versão que os escreveu: codificação puramente no arquivo
@@ -399,7 +400,7 @@ def _flush_stat_index() -> None:
         try:
             os.write(fd, json.dumps(on_disk, separators=(",", ":")).encode())
             os.close(fd)
-            os.replace(tmp, p)
+            _os_replace_with_fallback(tmp, p)
         except Exception:
             try:
                 os.close(fd)
@@ -1126,14 +1127,7 @@ def save_cached(path: Path, result: dict, root: Path = Path("."), kind: str = "a
     try:
         os.write(fd, json.dumps(on_disk).encode())
         os.close(fd)
-        try:
-            os.replace(tmp_path, entry)
-        except PermissionError:
-            # Windows: os.replace pode falhar com WinError 5 se o alvo for
-            # brevemente bloqueado. Volte para copiar e excluir.
-            import shutil
-            shutil.copy2(tmp_path, entry)
-            os.unlink(tmp_path)
+        _os_replace_with_fallback(tmp_path, entry)
     except Exception:
         try:
             os.close(fd)

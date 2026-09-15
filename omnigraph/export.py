@@ -16,7 +16,12 @@ from networkx.readwrite import json_graph
 from omnigraph.security import sanitize_label
 from omnigraph.analyze import _node_community_map
 from omnigraph.build import edge_data
-from omnigraph.paths import stem_filename_budget, write_json_atomic, write_text_atomic
+from omnigraph.paths import (
+    os_replace_with_fallback,
+    stem_filename_budget,
+    write_json_atomic,
+    write_text_atomic,
+)
 
 from omnigraph.exporters.graphdb import push_to_falkordb, push_to_neo4j  # noqa: E402,F401
 
@@ -1270,7 +1275,7 @@ def to_graphml(
     tmp = out.with_name(out.name + ".tmp")
     try:
         nx.write_graphml(H, str(tmp))
-        os.replace(str(tmp), str(out))
+        os_replace_with_fallback(str(tmp), str(out))
     finally:
         if tmp.exists():
             try:

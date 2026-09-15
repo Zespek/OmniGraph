@@ -30,6 +30,7 @@ except Exception:
     __version__ = "unknown"
 
 from omnigraph.paths import OMNIGRAPH_OUT as _OMNIGRAPH_OUT
+from omnigraph.paths import os_replace_with_fallback as _os_replace_with_fallback
 
 
 def _write_version_stamp(skill_dst: Path, version: str) -> None:
@@ -45,7 +46,7 @@ def _write_version_stamp(skill_dst: Path, version: str) -> None:
     tmp = version_file.with_name(".omnigraph_version.tmp")
     try:
         tmp.write_text(version, encoding="utf-8")
-        os.replace(tmp, version_file)
+        _os_replace_with_fallback(tmp, version_file)
     except Exception:
         try:
             tmp.unlink(missing_ok=True)
@@ -250,7 +251,7 @@ def _copy_skill_file(platform_name: str, *, project: bool = False, project_dir: 
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
     try:
         shutil.copy(skill_src, tmp_dst)
-        os.replace(tmp_dst, skill_dst)
+        _os_replace_with_fallback(tmp_dst, skill_dst)
     except Exception:
         try:
             tmp_dst.unlink(missing_ok=True)
@@ -356,6 +357,34 @@ def _skill_registration(skill_path: str = "~/.claude/skills/omnigraph/SKILL.md")
         "When the user types `/omnigraph`, use the installed omnigraph skill "
         "or instructions before doing anything else.\n"
     )
+def _register_always_on_block(target: Path, prefix: str, registration: str) -> None:
+    """Append an always-on registration to *target*, degrading instead of raising.
+
+    The skill files are copied before this runs, so a *target* that cannot be
+    read or written must not abort an otherwise-complete install (#3474). That
+    happens whenever the dotfile is managed declaratively -- nix/home-manager
+    symlinks ``~/.claude/CLAUDE.md`` into a read-only /nix/store, and chezmoi or
+    stow with read-only sources leave the same shape.
+    """
+    try:
+        if target.exists():
+            content = target.read_text(encoding="utf-8")
+            if "omnigraph" in content:
+                print(f"{prefix}already registered (no change)")
+            else:
+                target.write_text(content.rstrip() + registration, encoding="utf-8")
+                print(f"{prefix}skill registered in {target}")
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(registration.lstrip(), encoding="utf-8")
+            print(f"{prefix}created at {target}")
+    except OSError as exc:
+        print(f"{prefix}skipped: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        print(
+            f"  hint: the skill files were installed; add the omnigraph block to "
+            f"{target} manually to finish always-on registration",
+            file=sys.stderr,
+        )
 _PLATFORM_CONFIG: dict[str, dict] = {
     "claude": {
         "skill_file": "skill.md",
@@ -692,34 +721,17 @@ def install(platform: str = "claude", *, project: bool = False, project_dir: Pat
         else:
             claude_md = Path.home() / ".claude" / "CLAUDE.md"
             skill_ref = "~/.claude/skills/omnigraph/SKILL.md"
-        registration = _skill_registration(skill_ref)
-        if claude_md.exists():
-            content = claude_md.read_text(encoding="utf-8")
-            if "omnigraph" in content:
-                print(f"  CLAUDE.md        ->  already registered (no change)")
-            else:
-                claude_md.write_text(content.rstrip() + registration, encoding="utf-8")
-                print(f"  CLAUDE.md        ->  skill registered in {claude_md}")
-        else:
-            claude_md.parent.mkdir(parents=True, exist_ok=True)
-            claude_md.write_text(registration.lstrip(), encoding="utf-8")
-            print(f"  CLAUDE.md        ->  created at {claude_md}")
+        _register_always_on_block(
+            claude_md, "  CLAUDE.md        ->  ", _skill_registration(skill_ref)
+        )
 
     if platform == "codebuddy":
         # Registre-se em ~/.codebuddy/CODEBUDDY.md (somente CodeBuddy)
-        codebuddy_md = Path.home() / ".codebuddy" / "CODEBUDDY.md"
-        registration = _skill_registration("~/.codebuddy/skills/omnigraph/SKILL.md")
-        if codebuddy_md.exists():
-            content = codebuddy_md.read_text(encoding="utf-8")
-            if "omnigraph" in content:
-                print(f"  CODEBUDDY.md     ->  already registered (no change)")
-            else:
-                codebuddy_md.write_text(content.rstrip() + registration, encoding="utf-8")
-                print(f"  CODEBUDDY.md     ->  skill registered in {codebuddy_md}")
-        else:
-            codebuddy_md.parent.mkdir(parents=True, exist_ok=True)
-            codebuddy_md.write_text(registration.lstrip(), encoding="utf-8")
-            print(f"  CODEBUDDY.md     ->  created at {codebuddy_md}")
+        _register_always_on_block(
+            Path.home() / ".codebuddy" / "CODEBUDDY.md",
+            "  CODEBUDDY.md     ->  ",
+            _skill_registration("~/.codebuddy/skills/omnigraph/SKILL.md"),
+        )
 
     if platform == "opencode":
         _install_opencode_plugin(project_dir if project else Path("."))
@@ -903,7 +915,7 @@ def vscode_install(project_dir: Path | None = None) -> None:
     tmp_dst = skill_dst.with_suffix(skill_dst.suffix + ".tmp")
     try:
         shutil.copy(skill_src, tmp_dst)
-        os.replace(tmp_dst, skill_dst)
+        _os_replace_with_fallback(tmp_dst, skill_dst)
     except Exception:
         try:
             tmp_dst.unlink(missing_ok=True)
