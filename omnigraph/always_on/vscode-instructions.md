@@ -9,7 +9,10 @@ not semantic meaning: if the user asks in a language other than the codebase's, 
 the codebase's language (translate the concept, do not pass the user's own words verbatim) or it will
 return no matches. In a monorepo with multiple independent apps/modules, pass `--scope <path-substring>`
 (e.g. `--scope backend` or `--scope apps/provider`) so results come only from that app - without it, a
-generic term shared across apps can seed the traversal in the wrong one.
+generic term shared across apps can seed the traversal in the wrong one. If the result says
+`[!] TRUNCATED`, that means nodes are missing, not that the answer is complete: rerun with a higher
+`--budget` (e.g. `--budget 8000`) for a broad/architecture question before falling back to grep - the
+default budget can cut before reaching the relevant node.
 
 Triggers: "how do I…", "where is…", "what does … do", "add/modify a <component>",
 "explain the architecture", or anything that depends on how files or classes relate.
