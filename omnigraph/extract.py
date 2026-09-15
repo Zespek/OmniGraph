@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import textwrap
+from bisect import bisect_right
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
@@ -71,6 +72,7 @@ from omnigraph.extractors.resolution import (  # noqa: E402,F401
     _JS_INDEX_FILES,
     _JS_PRIMITIVE_TYPES,
     _JS_RESOLVE_EXTS,
+    _PACKAGE_IMPORTS_CACHE,
     _TSCONFIG_ALIAS_CACHE,
     _TSCONFIG_BASEURL_CACHE,
     _VUE_SCRIPT_LANG_RE,
@@ -78,6 +80,8 @@ from omnigraph.extractors.resolution import (  # noqa: E402,F401
     _WORKSPACE_MANIFEST_NAMES,
     _apply_symbol_resolution_facts,
     _augment_symbol_resolution_edges,
+    _cached_realpath,
+    _cached_source_key,
     _collect_js_symbol_resolution_facts,
     _collect_python_symbol_resolution_facts,
     _contained_in_package,
@@ -262,6 +266,111 @@ def _repoint_python_package_imports(paths, all_nodes, all_edges, root) -> None:
             tgt = e.get("target")
             if tgt in alias_map:
                 e["target"] = alias_map[tgt]
+
+
+def _repoint_python_sibling_imports(paths, all_nodes, all_edges, root) -> None:
+    """Repoint Python sibling-import edges to the real file node in directories
+    without an __init__.py (#3430).
+
+    When a Python file below the scan root lives in a non-package directory
+    (no __init__.py in its immediate parent), plain imports of same-directory
+    modules (e.g. `scripts/main.py: import greeter`) target a bare name (`greeter`),
+    while the real file node is scan-root-relative (`scripts_greeter`). Because
+    the directory is not a package, `_repoint_python_package_imports` skips it
+    (levels == 0), leaving the edge dangling and causing downstream member calls
+    (`greeter.greet()`) to be dropped.
+
+    This pass is strictly importer-directory-local:
+    - Only applies when the importing file's parent directory has no __init__.py.
+    - Resolves only to unambiguous same-directory candidate modules in the scanned corpus.
+    - Never builds a global alias map and never searches outside the importer's directory.
+    - Preserves local aliases (e.g. `import greeter as g`).
+    """
+    try:
+        root = Path(root).resolve()
+    except OSError:
+        root = Path(root)
+
+    node_ids = {n.get("id") for n in all_nodes if isinstance(n, dict)}
+
+    # Index corpus modules by directory for non-package directories only.
+    # dir_path -> {module_name_id: set_of_file_node_ids}
+    dir_siblings: dict[Path, dict[str, set[str]]] = {}
+    for p in paths:
+        if p.suffix.lower() not in (".py", ".pyi"):
+            continue
+        try:
+            p_res = Path(p).resolve()
+            rel = p_res.relative_to(root)
+        except (ValueError, OSError):
+            continue
+
+        file_node = _file_node_id(rel)
+        if file_node not in node_ids:
+            continue
+
+        if p_res.name in ("__init__.py", "__init__.pyi"):
+            # Sibling package directory inside parent_dir (parent_dir / subpkg / __init__.py)
+            pkg_dir = p_res.parent
+            parent_dir = pkg_dir.parent
+            if not (parent_dir / "__init__.py").is_file() and not (parent_dir / "__init__.pyi").is_file():
+                mod_key = _make_id(pkg_dir.name)
+                dir_siblings.setdefault(parent_dir, {}).setdefault(mod_key, set()).add(file_node)
+            continue
+
+        d = p_res.parent
+        # PEP 328 guard: if the directory is a package, implicit relative imports
+        # are forbidden in Python 3. Do not index packages as loose sibling directories.
+        if (d / "__init__.py").is_file() or (d / "__init__.pyi").is_file():
+            continue
+
+        mod_key = _make_id(p_res.stem)
+        dir_siblings.setdefault(d, {}).setdefault(mod_key, set()).add(file_node)
+
+    # Require an unambiguous single candidate per module name in that directory.
+    dir_alias_map: dict[Path, dict[str, str]] = {
+        d: {
+            mod: next(iter(fns))
+            for mod, fns in mod_map.items()
+            if len(fns) == 1
+        }
+        for d, mod_map in dir_siblings.items()
+    }
+
+    if not dir_alias_map:
+        return
+
+    for e in all_edges:
+        if not (
+            isinstance(e, dict)
+            and e.get("relation") in ("imports", "imports_from")
+            and str(e.get("source_file", "")).lower().endswith((".py", ".pyi"))
+        ):
+            continue
+
+        sf = e.get("source_file")
+        if not sf:
+            continue
+        try:
+            sf_path = Path(sf)
+            if not sf_path.is_absolute():
+                sf_path = (root / sf_path).resolve()
+            else:
+                sf_path = sf_path.resolve()
+        except OSError:
+            continue
+
+        imp_dir = sf_path.parent
+        aliases = dir_alias_map.get(imp_dir)
+        if not aliases:
+            continue
+
+        tgt = e.get("target")
+        if tgt in aliases:
+            repointed = aliases[tgt]
+            if repointed != e.get("source"):
+                e["target"] = repointed
+
 
 
 SEMANTIC_RELATIONS = frozenset({
@@ -726,23 +835,46 @@ def _import_scala(node, source: bytes, file_nid: str, stem: str, edges: list, st
 
 
 def _import_php(node, source: bytes, file_nid: str, stem: str, edges: list, str_path: str, scope_stack: list[str] | None = None) -> None:
+    # `node` is a namespace_use_clause: `Client` or `Client as HttpClient`,
+    # whose children are the qualified/bare name, then (if present) `as`
+    # and the alias name, in that order. An aliased clause used to always
+    # target the bare imported name ("Client"), ignoring the alias
+    # entirely -- so two files importing the SAME external class under
+    # DIFFERENT local aliases (a real pattern: disambiguating two
+    # same-named classes from different namespaces) produced two
+    # DIFFERENT stub targets for one class, and _resolve_php_type_references
+    # (which resolves a stub via the file's own alias -> FQN map, keyed by
+    # the alias when the import has one) could never find this one under
+    # its bare-name-derived key, leaving the edge stuck on an unresolved,
+    # never-repointed stub. The alias, when present, is also what
+    # the rest of the file actually references (a parameter typed
+    # `HttpClient`, not `Client`), so preferring it here keeps this edge's
+    # target consistent with those reference edges too.
+    saw_as = False
+    module_name = None
     for child in node.children:
+        if child.type == "as":
+            saw_as = True
+            continue
         if child.type in ("qualified_name", "name", "identifier"):
-            raw = _read_text(child, source)
-            module_name = raw.split("\\")[-1].strip()
-            if module_name:
-                tgt_nid = _make_id(module_name)
-                edges.append({
-                    "source": file_nid,
-                    "target": tgt_nid,
-                    "relation": "imports",
-                    "context": "import",
-                    "confidence": "EXTRACTED",
-                    "source_file": str_path,
-                    "source_location": f"L{node.start_point[0] + 1}",
-                    "weight": 1.0,
-                })
-            break
+            bare = _read_text(child, source).split("\\")[-1].strip()
+            if saw_as:
+                module_name = bare
+                break  # the alias name always comes last; nothing more to see
+            if module_name is None:
+                module_name = bare
+    if module_name:
+        tgt_nid = _make_id(module_name)
+        edges.append({
+            "source": file_nid,
+            "target": tgt_nid,
+            "relation": "imports",
+            "context": "import",
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{node.start_point[0] + 1}",
+            "weight": 1.0,
+        })
 
 
 # ── C/C++ function name helpers ───────────────────────────────────────────────
@@ -1360,6 +1492,59 @@ def _ts_type_argument_ranges(root: Any, *, call_only: bool) -> list[tuple[int, i
     return ranges
 
 
+# Sorted type-argument ranges prepared for lookup: (starts, spans, prefix_max_end).
+# See _ts_build_range_index. A real alias, not a string: quoting the right-hand
+# side would make this a `str` value, which type checkers reject as a type.
+_TsRangeIndex = tuple[list[int], list[tuple[int, int]], list[int]]
+
+
+def _ts_ranges_containing(
+    ranges: _TsRangeIndex, offset: int
+) -> list[tuple[int, int]]:
+    """Return the ranges in ``ranges`` that contain ``offset``.
+
+    Scanning the full range list for every match made
+    :func:`_normalize_ts_import_types` O(matches x ranges); on a large monorepo
+    file with thousands of generic calls and thousands of ``import(...)`` types
+    that quadratic blowup pinned a worker at 100% CPU with no output and no file
+    I/O, so extraction never finished (#3359).
+
+    Every range containing ``offset`` must start at or before it, so binary-search
+    to the last such start and walk left. A range that ends before ``offset`` is
+    not itself a hit but must not stop the walk -- a closed sibling can sit inside
+    an enclosing range that does contain ``offset``. The index's running maximum of
+    ends (``prefix_max_end``) gives the correct stop: once no range at or before
+    this position reaches past ``offset``, none of the remaining ones can.
+    """
+    starts, spans, prefix_max_end = ranges
+    hits: list[tuple[int, int]] = []
+    index = bisect_right(starts, offset) - 1
+    while index >= 0 and prefix_max_end[index] > offset:
+        start, end = spans[index]
+        if end > offset:
+            hits.append((start, end))
+        index -= 1
+    hits.reverse()
+    return hits
+
+
+def _ts_build_range_index(root: Any, *, call_only: bool) -> _TsRangeIndex:
+    """Index :func:`_ts_type_argument_ranges` for :func:`_ts_ranges_containing`.
+
+    Returns the ranges sorted by start, split into a bare ``starts`` list for
+    :func:`bisect_right`, plus a prefix-maximum of ``end`` values so a lookup can
+    tell when no earlier range can still reach a given offset.
+    """
+    spans = sorted(_ts_type_argument_ranges(root, call_only=call_only))
+    starts = [start for start, _ in spans]
+    prefix_max_end: list[int] = []
+    running = -1
+    for _, end in spans:
+        running = max(running, end)
+        prefix_max_end.append(running)
+    return starts, spans, prefix_max_end
+
+
 def _ts_error_nodes(root: Any) -> list[Any]:
     """Return parser error nodes without depending on a grammar's error name."""
     errors: list[Any] = []
@@ -1450,10 +1635,10 @@ def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | N
     # its syntax is parseable as written. This includes the grammar's deliberate
     # comparison-vs-generic ambiguity (`a < b, import("...") > (d)`); retaining
     # that source is essential because it is a runtime expression, not a type.
-    original_type_ranges = _ts_type_argument_ranges(original_root, call_only=False)
+    original_type_ranges = _ts_build_range_index(original_root, call_only=False)
     matches = [
         match for match in matches
-        if not any(start <= match.start() < end for start, end in original_type_ranges)
+        if not _ts_ranges_containing(original_type_ranges, match.start())
     ]
     if not matches:
         return None
@@ -1475,19 +1660,18 @@ def _normalize_ts_import_types(source: bytes, *, tsx: bool = False) -> bytes | N
     # type annotations already parse ``import(...)`` correctly and should keep
     # their native AST shape. A range from an outer call's type_arguments also
     # covers nested generic arguments.
-    type_argument_ranges = _ts_type_argument_ranges(root, call_only=True)
+    type_argument_ranges = _ts_build_range_index(root, call_only=True)
     errors = _ts_error_nodes(original_root)
 
-    if not type_argument_ranges:
+    # `type_argument_ranges` is an index tuple, so test the spans it holds --
+    # the tuple itself is always truthy.
+    if not type_argument_ranges[1]:
         return None
 
     norm = bytearray(source)
     changed = False
     for match in matches:
-        containing_ranges = [
-            candidate for candidate in type_argument_ranges
-            if candidate[0] <= match.start() < candidate[1]
-        ]
+        containing_ranges = _ts_ranges_containing(type_argument_ranges, match.start())
         if containing_ranges and any(
             _ts_mask_candidate_is_malformed(original_root, candidate, errors)
             for candidate in containing_ranges
@@ -1782,6 +1966,11 @@ def _resolve_rescued_specifier(
         resolved_file = (resolved_alias if resolved_alias is not None
                          and resolved_alias.is_file() else None)
         return _make_id(str(resolved_alias)), str(resolved_alias), resolved_file
+    # Unmapped `@/` project-root convention fallback.
+    if raw.startswith("@/"):
+        resolved_unmapped = _resolve_js_module_path(raw, path.parent)
+        if resolved_unmapped is not None and resolved_unmapped.is_file():
+            return _make_id(str(resolved_unmapped)), str(resolved_unmapped), resolved_unmapped
     # Importação simples/com escopo (node_modules) - use o último segmento;
     # build_from_json será descartado como externo se não existir nenhum nó correspondente.
     module_name = raw.split("/")[-1]
@@ -6072,6 +6261,16 @@ def _extract_parallel(
             flush=True,
         )
         return False
+    except OSError as exc:
+        # The pool could not even start. On macOS, leaked POSIX semaphores
+        # exhaust kern.posix.sem.max and sem_open fails with ENOSPC ("No space
+        # left on device", disk nowhere near full). Sequential needs no pool.
+        print(
+            f"  warning: parallel extraction unavailable ({exc}); "
+            "falling back to sequential.",
+            flush=True,
+        )
+        return False
     if failed:
         # retry per-future failures once, in-process, instead of leaving
         # their per_file slots None (which the defensive fill downstream turned
@@ -6198,8 +6397,15 @@ def extract(
     # Clearing per run, not per file, leaves within-run caching intact.
     _TSCONFIG_ALIAS_CACHE.clear()
     _TSCONFIG_BASEURL_CACHE.clear()
+    _PACKAGE_IMPORTS_CACHE.clear()
     _XAML_CSHARP_CLASS_CACHE.clear()
     _MD_LINK_INDEX_CACHE.clear()
+    # Path-resolution memoization is keyed by (path, cwd) with no mtime
+    # component, so — like the alias caches above — a symlink repoint or a path
+    # that starts/stops existing between rebuilds in a long-lived `omnigraph
+    # watch` / MCP process would otherwise replay a stale result. Clear per run.
+    _cached_realpath.cache_clear()
+    _cached_source_key.cache_clear()
 
     # Inferir uma raiz comum para chaves de cache (use o primeiro segmento divergente, não a soma de todas as correspondências)
     try:
@@ -6876,6 +7082,7 @@ def extract(
     # (src/) package root before the resolver/import-evidence passes run, so the
     # graph is identical regardless of scan root.
     _repoint_python_package_imports(paths, all_nodes, all_edges, root)
+    _repoint_python_sibling_imports(paths, all_nodes, all_edges, root)
     _merge_swift_extensions(per_file, all_nodes, all_edges)
     _merge_csharp_partial_class_nodes(per_file, all_nodes, all_edges, paths, root)
     _disambiguate_colliding_node_ids(all_nodes, all_edges, all_raw_calls, root)
@@ -7567,6 +7774,10 @@ def extract(
         # manifest does not freeze them as processed. Callers that
         # only read nodes/edges ignore this key.
         "failed_sources": _failed_sources,
+        # Surfaces the actual dispatched source paths so build_merge /
+        # merge_raw_extraction know which files were genuinely re-extracted
+        # rather than guessing ownership from node["source_file"].
+        "extracted_sources": [str(p) for p in paths],
     }
 
 
