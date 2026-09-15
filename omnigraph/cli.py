@@ -672,6 +672,54 @@ def _enforce_graph_size_cap_or_exit(gp: Path) -> None:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(1)
+def _warn_if_graph_stale_vs_git(gp: Path) -> None:
+    """Best-effort, non-blocking: warn on stderr when tracked files have
+    uncommitted changes newer than the graph, so a query/path/explain answer
+    is not silently built from a snapshot that misses in-progress work.
+
+    Only compares against tracked-and-modified files (git status --porcelain),
+    not the whole working tree, so an unrelated untracked scratch file never
+    triggers this. Fails silently on any error (no git, not a repo, no
+    permission) - this is a nudge, never a requirement.
+    """
+    import subprocess as _sp
+    try:
+        root_res = _sp.run(
+            ["git", "-C", str(gp.parent), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=3,
+        )
+        if root_res.returncode != 0:
+            return
+        root = Path(root_res.stdout.strip())
+        status_res = _sp.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if status_res.returncode != 0:
+            return
+        graph_mtime = gp.stat().st_mtime
+        newer = []
+        for line in status_res.stdout.splitlines():
+            if len(line) < 4 or line[1] not in "M ":
+                continue  # skip untracked ('??') and deleted/renamed-only entries
+            rel = line[3:].strip()
+            fp = root / rel
+            try:
+                if fp.is_file() and fp.stat().st_mtime > graph_mtime:
+                    newer.append(rel)
+            except OSError:
+                continue
+        if newer:
+            preview = ", ".join(newer[:3])
+            if len(newer) > 3:
+                preview += f" and {len(newer) - 3} more"
+            print(
+                f"warning: uncommitted change(s) newer than the graph ({preview}). "
+                f"Run `omnigraph update .` first so this answer reflects them.",
+                file=sys.stderr,
+            )
+    except Exception:
+        pass
 def _hook_strict_enabled(flag: bool) -> bool:
     """Resolve strict mode: OMNIGRAPH_HOOK_STRICT env overrides the baked-in flag
     (truthy forces on without a reinstall, falsy is the kill switch); unset defers
@@ -1249,6 +1297,7 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: graph file must be a .json file", file=sys.stderr)
             sys.exit(1)
         _enforce_graph_size_cap_or_exit(gp)
+        _warn_if_graph_stale_vs_git(gp)
         try:
             import json as _json
             import networkx as _nx
@@ -1591,6 +1640,7 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: graph file not found: {gp}", file=sys.stderr)
             sys.exit(1)
         _enforce_graph_size_cap_or_exit(gp)
+        _warn_if_graph_stale_vs_git(gp)
         _raw = json.loads(gp.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
@@ -1731,6 +1781,7 @@ def dispatch_command(cmd: str) -> None:
             print(f"error: graph file not found: {gp}", file=sys.stderr)
             sys.exit(1)
         _enforce_graph_size_cap_or_exit(gp)
+        _warn_if_graph_stale_vs_git(gp)
         _raw = json.loads(gp.read_text(encoding="utf-8"))
         if "links" not in _raw and "edges" in _raw:
             _raw = dict(_raw, links=_raw["edges"])
