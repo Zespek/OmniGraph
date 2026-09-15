@@ -1249,7 +1249,7 @@ def dispatch_command(cmd: str) -> None:
             sys.exit(1)
     elif cmd == "query":
         if len(sys.argv) < 3:
-            print("Usage: omnigraph query \"<question>\" [--dfs] [--context C] [--budget N] [--graph path]", file=sys.stderr)
+            print("Usage: omnigraph query \"<question>\" [--dfs] [--context C] [--scope PATH] [--budget N] [--graph path]", file=sys.stderr)
             sys.exit(1)
         from omnigraph.serve import _query_graph_text
         from omnigraph.security import sanitize_label
@@ -1261,6 +1261,7 @@ def dispatch_command(cmd: str) -> None:
         budget = 2000
         graph_path = _default_graph_path()
         context_filters: list[str] = []
+        scope: str | None = None
         args = sys.argv[3:]
         i = 0
         while i < len(args):
@@ -1283,6 +1284,12 @@ def dispatch_command(cmd: str) -> None:
                 i += 2
             elif args[i].startswith("--context="):
                 context_filters.append(args[i].split("=", 1)[1])
+                i += 1
+            elif args[i] == "--scope" and i + 1 < len(args):
+                scope = args[i + 1]
+                i += 2
+            elif args[i].startswith("--scope="):
+                scope = args[i].split("=", 1)[1]
                 i += 1
             elif args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
@@ -1356,6 +1363,7 @@ def dispatch_command(cmd: str) -> None:
             token_budget=budget,
             context_filters=context_filters,
             graph_path=str(gp),
+            scope=scope,
         )
         querylog.log_query(
             kind="query",
@@ -1365,6 +1373,7 @@ def dispatch_command(cmd: str) -> None:
             mode=_mode,
             depth=2,
             token_budget=budget,
+            scope=scope,
             duration_ms=(_time.perf_counter() - _t0) * 1000,
         )
         _touch_query_stamp(gp)
@@ -1765,17 +1774,28 @@ def dispatch_command(cmd: str) -> None:
 
     elif cmd == "explain":
         if len(sys.argv) < 3:
-            print('Usage: omnigraph explain "<node>" [--graph path]', file=sys.stderr)
+            print('Usage: omnigraph explain "<node>" [--scope PATH] [--graph path]', file=sys.stderr)
             sys.exit(1)
-        from omnigraph.serve import _find_node, find_node_ambiguity
+        from omnigraph.serve import _find_node, find_node_ambiguity, _filter_graph_by_scope
         from networkx.readwrite import json_graph
 
         label = sys.argv[2]
         graph_path = _default_graph_path()
+        explain_scope: str | None = None
         args = sys.argv[3:]
-        for i, a in enumerate(args):
-            if a == "--graph" and i + 1 < len(args):
+        i = 0
+        while i < len(args):
+            if args[i] == "--graph" and i + 1 < len(args):
                 graph_path = args[i + 1]
+                i += 2
+            elif args[i] == "--scope" and i + 1 < len(args):
+                explain_scope = args[i + 1]
+                i += 2
+            elif args[i].startswith("--scope="):
+                explain_scope = args[i].split("=", 1)[1]
+                i += 1
+            else:
+                i += 1
         gp = Path(graph_path).resolve()
         if not gp.exists():
             print(f"error: graph file not found: {gp}", file=sys.stderr)
@@ -1791,6 +1811,11 @@ def dispatch_command(cmd: str) -> None:
             G = json_graph.node_link_graph(_raw, edges="links")
         except TypeError:
             G = json_graph.node_link_graph(_raw)
+        if explain_scope:
+            G = _filter_graph_by_scope(G, explain_scope)
+            if G.number_of_nodes() == 0:
+                print(f"No nodes found under scope {explain_scope!r}.")
+                sys.exit(0)
         matches = _find_node(G, label)
         if not matches:
             print(f"No node matching '{label}' found.")

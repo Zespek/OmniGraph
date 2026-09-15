@@ -7,7 +7,9 @@ for focused-concept questions. These return a scoped subgraph, usually much smal
 report or raw grep output. The search matches literal keywords against the code's own identifiers,
 not semantic meaning: if the user asks in a language other than the codebase's, phrase the query in
 the codebase's language (translate the concept, do not pass the user's own words verbatim) or it will
-return no matches.
+return no matches. In a monorepo with multiple independent apps/modules, pass `--scope <path-substring>`
+(e.g. `--scope backend` or `--scope apps/provider`) so results come only from that app - without it, a
+generic term shared across apps can seed the traversal in the wrong one.
 
 Triggers: "how do I…", "where is…", "what does … do", "add/modify a <component>",
 "explain the architecture", or anything that depends on how files or classes relate.

@@ -1230,6 +1230,45 @@ def _display_graph_path(graph_path: str) -> str:
         return str(graph_path)
 
 
+def _filter_graph_by_scope(G: nx.Graph, scope: str | None) -> nx.Graph:
+    """Restrict the graph to nodes whose source_file contains `scope` (a
+    case-insensitive substring, e.g. a monorepo app's directory name).
+
+    A monorepo with several independent apps under one graph (backend,
+    client, provider, affiliate...) shares generic vocabulary across them
+    ("service", "controller"), so an unscoped question's seed selection can
+    latch onto a same-named symbol in the wrong app and the traversal from
+    there pulls in more of that app's nodes - the printed result is noisy
+    even though the graph itself is correct. Filtering the graph BEFORE
+    scoring/seeding (not just the printed traversal) keeps the whole answer
+    inside the one app being asked about. Nodes with no source_file (a rare
+    synthetic/aggregate node) are dropped under a scope, since there is
+    nothing to match against.
+    """
+    if not scope:
+        return G
+    needle = scope.strip().lower()
+    if not needle:
+        return G
+    keep = {
+        nid for nid, data in G.nodes(data=True)
+        if needle in str(data.get("source_file") or "").lower()
+    }
+    H = G.__class__()
+    if not keep:
+        return H
+    H.add_nodes_from((nid, G.nodes[nid]) for nid in keep)
+    if isinstance(G, (nx.MultiGraph, nx.MultiDiGraph)):
+        for u, v, key, data in G.edges(keys=True, data=True):
+            if u in keep and v in keep:
+                H.add_edge(u, v, key=key, **data)
+    else:
+        for u, v, data in G.edges(data=True):
+            if u in keep and v in keep:
+                H.add_edge(u, v, **data)
+    return H
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1239,7 +1278,12 @@ def _query_graph_text(
     token_budget: int = 2000,
     context_filters: list[str] | None = None,
     graph_path: str | None = None,
+    scope: str | None = None,
 ) -> str:
+    if scope:
+        G = _filter_graph_by_scope(G, scope)
+        if G.number_of_nodes() == 0:
+            return f"No nodes found under scope {scope!r}."
     terms = _query_terms(question)
     # Uma passagem de pontuação do grafo produz a classificação combinada (usada para direcionar
     # a seleção de sementes baseada em lacunas abaixo) e os vencedores singleton por token
