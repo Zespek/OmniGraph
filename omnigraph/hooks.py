@@ -103,11 +103,19 @@ fi
 # Scan the uv tool envs directly; UV_TOOL_DIR overrides the default
 # location. A tool env is adopted only if its python passes the probe, so a
 # co-installed tool without omnigraph never satisfies it.
+#
+# The snap roots matter because an install made from inside a snap-confined
+# editor lands in that snap's private HOME, which the plain $HOME roots above
+# never see once the hook runs from an ordinary shell. Revisions are globbed
+# rather than pinned: snap rotates them on update, which is exactly what makes
+# a pinned path unsafe (see _is_rotating_prefix).
 if [ -z "$OMNIGRAPH_PYTHON" ]; then
     for _GFY_TOOLS in \
         "${UV_TOOL_DIR:-}" \
         "$HOME/.local/share/uv/tools" \
-        "$HOME/AppData/Roaming/uv/tools"; do
+        "$HOME/AppData/Roaming/uv/tools" \
+        "$HOME"/snap/*/current/.local/share/uv/tools \
+        "$HOME"/snap/*/[0-9]*/.local/share/uv/tools; do
         [ -n "$_GFY_TOOLS" ] || continue
         for _GFY_CAND in "$_GFY_TOOLS"/*/bin/python "$_GFY_TOOLS"/*/Scripts/python.exe; do
             [ -x "$_GFY_CAND" ] || continue
@@ -136,7 +144,7 @@ fi
 # caracteres de aspas duplas, $, crase ou barra invertida: é transportado dentro de um
 # shell double-quoted `-c "..."` argument (see _detached_launch).
 _REBUILD_BODY_COMMIT = """\
-import os, signal, sys, threading
+import os, signal, sys, threading, multiprocessing
 from pathlib import Path
 
 changed_raw = os.environ.get('OMNIGRAPH_CHANGED', '')
@@ -153,11 +161,24 @@ try:
     _timeout = int(os.environ.get('OMNIGRAPH_REBUILD_TIMEOUT', '600'))
     if _timeout > 0:
         if hasattr(signal, 'SIGALRM'):
-            signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'omnigraph rebuild exceeded {_timeout}s')))
+            def _sigalrm_bail(*_a):
+                # Killing here, before the exception unwinds, matters: once
+                # TimeoutError starts propagating it passes straight through
+                # the ProcessPoolExecutor with-block's own __exit__, which
+                # calls shutdown(wait=True) and blocks until every worker
+                # exits -- forever, for a worker stuck the way #3341 was,
+                # since the alarm firing never actually stops it. Killing the
+                # workers first means shutdown has nothing left to wait for.
+                for _child in multiprocessing.active_children():
+                    _child.kill()
+                raise TimeoutError(f'omnigraph rebuild exceeded {_timeout}s')
+            signal.signal(signal.SIGALRM, _sigalrm_bail)
             signal.alarm(_timeout)
         else:
             def _bail():
                 print(f'[omnigraph hook] omnigraph rebuild exceeded {_timeout}s', flush=True)
+                for _child in multiprocessing.active_children():
+                    _child.kill()
                 os._exit(1)
             _watchdog = threading.Timer(_timeout, _bail)
             _watchdog.daemon = True
@@ -169,7 +190,20 @@ try:
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _candidate = Path(_txt)
+            try:
+                _cwd = Path.cwd().resolve()
+                _resolved = _candidate.resolve()
+                # Python 3.13 no longer raises on a symlink loop (resolve returns
+                # the path unresolved), so require a real directory: a loop or a
+                # dangling target is not a dir and correctly falls back.
+                _in_repo = (_resolved == _cwd or _cwd in _resolved.parents) and _resolved.is_dir()
+            except (OSError, RuntimeError):
+                _in_repo = False
+            if _in_repo:
+                _root = _candidate
+            else:
+                print(f'[omnigraph hook] ignoring out-of-repo .omnigraph_root: {_txt}')
     _rebuild_code(_root, changed_paths=changed, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
@@ -193,17 +227,30 @@ except Exception as exc:
 _REBUILD_BODY_CHECKOUT = """\
 from omnigraph.watch import _rebuild_code, _apply_resource_limits
 from pathlib import Path
-import os, signal, sys, threading
+import os, signal, sys, threading, multiprocessing
 try:
     _apply_resource_limits()
     _timeout = int(os.environ.get('OMNIGRAPH_REBUILD_TIMEOUT', '600'))
     if _timeout > 0:
         if hasattr(signal, 'SIGALRM'):
-            signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(TimeoutError(f'omnigraph rebuild exceeded {_timeout}s')))
+            def _sigalrm_bail(*_a):
+                # Killing here, before the exception unwinds, matters: once
+                # TimeoutError starts propagating it passes straight through
+                # the ProcessPoolExecutor with-block's own __exit__, which
+                # calls shutdown(wait=True) and blocks until every worker
+                # exits -- forever, for a worker stuck the way #3341 was,
+                # since the alarm firing never actually stops it. Killing the
+                # workers first means shutdown has nothing left to wait for.
+                for _child in multiprocessing.active_children():
+                    _child.kill()
+                raise TimeoutError(f'omnigraph rebuild exceeded {_timeout}s')
+            signal.signal(signal.SIGALRM, _sigalrm_bail)
             signal.alarm(_timeout)
         else:
             def _bail():
                 print(f'[omnigraph] omnigraph rebuild exceeded {_timeout}s', flush=True)
+                for _child in multiprocessing.active_children():
+                    _child.kill()
                 os._exit(1)
             _watchdog = threading.Timer(_timeout, _bail)
             _watchdog.daemon = True
@@ -218,7 +265,20 @@ try:
     if _saved.exists():
         _txt = _saved.read_text(encoding='utf-8-sig').strip()
         if _txt:
-            _root = Path(_txt)
+            _candidate = Path(_txt)
+            try:
+                _cwd = Path.cwd().resolve()
+                _resolved = _candidate.resolve()
+                # Python 3.13 no longer raises on a symlink loop (resolve returns
+                # the path unresolved), so require a real directory: a loop or a
+                # dangling target is not a dir and correctly falls back.
+                _in_repo = (_resolved == _cwd or _cwd in _resolved.parents) and _resolved.is_dir()
+            except (OSError, RuntimeError):
+                _in_repo = False
+            if _in_repo:
+                _root = _candidate
+            else:
+                print(f'[omnigraph] ignoring out-of-repo .omnigraph_root: {_txt}')
     _rebuild_code(_root, force=_force)
     # Refresh the work-memory lessons doc when saved Q&A outcomes exist
     # (best-effort; never fails the hook).
@@ -313,10 +373,20 @@ fi
 """
 
 
+# Both hook bodies run inside a subshell `( ... )`. The generated block is
+# appended to whatever post-commit / post-checkout already exists, and other
+# tools chain their own logic after it; every skip condition in the block is a
+# bare `exit 0`, which in a flat script ends the WHOLE hook, silently dropping
+# anything after omnigraph's end marker - on every root commit (HEAD~1 does
+# not exist), every rebase/merge, every linked worktree, every
+# OMNIGRAPH_SKIP_HOOK=1. Inside the subshell an `exit` ends only
+# omnigraph's section; the detached rebuild launch is unaffected, and the
+# hook's own exit status stays 0 as before.
 _HOOK_SCRIPT = """\
 # omnigraph-hook-start
 # Auto-rebuilds the knowledge graph after each commit (code files only, no LLM needed).
 # Installed by: omnigraph hook install
+(
 
 # Deterministic clustering: networkx louvain iterates string-keyed sets whose
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
@@ -364,7 +434,8 @@ _OMNIGRAPH_LOG="${HOME}/.cache/omnigraph-rebuild.log"
 mkdir -p "$(dirname "$_OMNIGRAPH_LOG")"
 export OMNIGRAPH_REBUILD_LOG="$_OMNIGRAPH_LOG"
 echo "[omnigraph hook] launching background rebuild (log: $_OMNIGRAPH_LOG)"
-""" + _detached_launch(_REBUILD_BODY_COMMIT) + """# omnigraph-hook-end
+""" + _detached_launch(_REBUILD_BODY_COMMIT) + """)
+# omnigraph-hook-end
 """
 
 
@@ -372,6 +443,7 @@ _CHECKOUT_SCRIPT = """\
 # omnigraph-checkout-hook-start
 # Auto-rebuilds the knowledge graph (code only) when switching branches.
 # Installed by: omnigraph hook install
+(
 
 # Deterministic clustering: networkx louvain iterates string-keyed sets whose
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
@@ -421,10 +493,15 @@ _OMNIGRAPH_LOG="${HOME}/.cache/omnigraph-rebuild.log"
 mkdir -p "$(dirname "$_OMNIGRAPH_LOG")"
 export OMNIGRAPH_REBUILD_LOG="$_OMNIGRAPH_LOG"
 echo "[omnigraph] Branch switched - launching background rebuild (log: $_OMNIGRAPH_LOG)"
-""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """# omnigraph-checkout-hook-end
+""" + _detached_launch(_REBUILD_BODY_CHECKOUT) + """)
+# omnigraph-checkout-hook-end
 """
 
 
+# Runs inside a subshell `( ... )` for the same reason _HOOK_SCRIPT/
+# _CHECKOUT_SCRIPT do (#2986): the generated block is appended to whatever
+# post-merge a repo already has, so a bare `exit 0` on any skip condition
+# would otherwise end that chained hook too, not just this section.
 _MERGE_SCRIPT = """\
 # omnigraph-merge-hook-start
 # Auto-rebuilds the knowledge graph after `git pull`/`git merge` brings in
@@ -433,6 +510,7 @@ _MERGE_SCRIPT = """\
 # teammate who just pulls those commits keeps a stale one until they rebuild
 # by hand.
 # Installed by: omnigraph hook install
+(
 
 # Deterministic clustering: networkx louvain iterates string-keyed sets whose
 # order is randomized per-process by PYTHONHASHSEED, so community assignments
@@ -479,7 +557,8 @@ _OMNIGRAPH_LOG="${HOME}/.cache/omnigraph-rebuild.log"
 mkdir -p "$(dirname "$_OMNIGRAPH_LOG")"
 export OMNIGRAPH_REBUILD_LOG="$_OMNIGRAPH_LOG"
 echo "[omnigraph hook] pull brought in changes - launching background rebuild (log: $_OMNIGRAPH_LOG)"
-""" + _detached_launch(_REBUILD_BODY_COMMIT) + """# omnigraph-merge-hook-end
+""" + _detached_launch(_REBUILD_BODY_COMMIT) + """)
+# omnigraph-merge-hook-end
 """
 
 
@@ -668,7 +747,29 @@ def _pinned_python() -> str:
     """
     if re.search(r"[^a-zA-Z0-9/_.@: \\-]", sys.executable):
         return ""
+    if _is_rotating_prefix(sys.executable):
+        return ""
     return sys.executable
+
+
+# ``~/snap/<app>/<revision>/`` — snap swaps <revision> on every package update and
+# prunes the old tree, so anything under it is a path with an expiry date.
+_ROTATING_PREFIX_RE = re.compile(r"/snap/[^/]+/(\d+|current)/")
+
+
+def _is_rotating_prefix(path: str) -> bool:
+    """True if `path` lives under a directory the packaging system rotates.
+
+    A pin is only worth writing if it will still resolve tomorrow. An interpreter
+    inside a snap revision will not: the revision number changes on update and the
+    old tree is removed, which silently kills every hook pinned to it — observed
+    across 15 repositories at once when an editor snap moved past its revision.
+
+    Returning "" here is the documented safe degradation: the hook falls through to
+    its other probes, including the uv-tools scan, which searches snap-confined
+    homes too.
+    """
+    return bool(_ROTATING_PREFIX_RE.search(path.replace("\\", "/")))
 
 
 def _merge_attr_line() -> str:
