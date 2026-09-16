@@ -526,7 +526,7 @@ def test_claude_hook_is_shell_agnostic(tmp_path):
     _install_claude_hook(tmp_path)
     hooks = _json.loads((tmp_path / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
     matchers = {h["matcher"] for h in hooks}
-    assert {"Bash|Grep", "Read|Glob"} <= matchers  # Grep in the search matcher:
+    assert {"Bash|Grep", "Read|Glob", "Task"} <= matchers  # Grep in the search matcher:
     for h in hooks:
         cmd = h["hooks"][0]["command"]
         for token in ("$(", "case ", "[ -f", "&&", "||", ";;", "echo '"):
@@ -548,7 +548,7 @@ def test_claude_hook_install_idempotent_and_replaces_old_bash_hook(tmp_path):
     _install_claude_hook(tmp_path)  # second install must not duplicate
     hooks = _json.loads(settings_path.read_text())["hooks"]["PreToolUse"]
     omnigraph_hooks = [h for h in hooks if "omnigraph" in str(h)]
-    assert len(omnigraph_hooks) == 2, "exactly the Bash + Read|Glob guards, no dupes"
+    assert len(omnigraph_hooks) == 3, "exactly the Bash + Read|Glob + Task guards, no dupes"
     # the legacy bash payload must be gone
     assert not any("[ -f omnigraph-out" in h["hooks"][0]["command"] for h in omnigraph_hooks)
 

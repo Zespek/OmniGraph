@@ -116,6 +116,36 @@ def test_search_non_dict_tool_input_is_silent(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# task: subagent dispatch must nudge, unconditionally, whenever a graph exists
+# --------------------------------------------------------------------------- #
+def test_task_nudges_when_graph_exists(tmp_path, monkeypatch):
+    out = _invoke("task", {"tool_input": {"subagent_type": "Explore", "prompt": "find the login flow"}},
+                  tmp_path, monkeypatch)
+    assert "omnigraph query" in out
+    assert "subagent" in out
+
+
+def test_task_nudges_regardless_of_subagent_type_or_prompt_content(tmp_path, monkeypatch):
+    """Unlike search/read, this must not try to guess "is this exploration" from
+    subagent_type or prompt text - that would silently miss most real dispatches
+    while giving a false sense of precision (see _run_hook_guard docstring)."""
+    out = _invoke("task", {"tool_input": {"subagent_type": "general-purpose", "prompt": "fix a typo"}},
+                  tmp_path, monkeypatch)
+    assert "omnigraph query" in out
+
+
+def test_task_silent_without_a_graph(tmp_path, monkeypatch):
+    out = _invoke("task", {"tool_input": {"subagent_type": "Explore", "prompt": "find X"}},
+                  tmp_path, monkeypatch, graph=False)
+    assert out.strip() == ""
+
+
+def test_task_silent_on_empty_payload(tmp_path, monkeypatch):
+    out = _invoke("task", {}, tmp_path, monkeypatch)
+    assert "omnigraph query" in out  # unconditional: even an empty tool_input nudges
+
+
+# --------------------------------------------------------------------------- #
 # read: file targets that MUST nudge
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("tool_input", [

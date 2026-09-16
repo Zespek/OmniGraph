@@ -136,6 +136,30 @@ def test_uninstall_removes_settings_hook(tmp_path):
         assert not any(h.get("matcher") == "Bash|Grep" and "omnigraph" in str(h) for h in hooks)
 
 
+def test_install_creates_task_hook(tmp_path):
+    """A subagent's context does not carry CLAUDE.md, so delegating exploration
+    to one bypasses the Bash|Grep/Read|Glob nudges entirely - the Task matcher
+    nudges the parent at the one point it can still act, before dispatch."""
+    import json
+    claude_install(tmp_path)
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    hooks = settings.get("hooks", {}).get("PreToolUse", [])
+    task_hooks = [h for h in hooks if h.get("matcher") == "Task" and "omnigraph" in str(h)]
+    assert len(task_hooks) == 1
+    assert "hook-guard task" in task_hooks[0]["hooks"][0]["command"]
+
+
+def test_uninstall_removes_task_hook(tmp_path):
+    import json
+    claude_install(tmp_path)
+    claude_uninstall(tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    if settings_path.exists():
+        settings = json.loads(settings_path.read_text())
+        hooks = settings.get("hooks", {}).get("PreToolUse", [])
+        assert not any(h.get("matcher") == "Task" and "omnigraph" in str(h) for h in hooks)
+
+
 # ---------------------------------------------------------------------------
 # local-only variants: settings.local.json / CLAUDE.local.md
 # ---------------------------------------------------------------------------

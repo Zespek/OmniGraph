@@ -87,7 +87,7 @@ def test_claude_install_preserves_existing_settings(tmp_path):
     pre_tool = result["hooks"]["PreToolUse"]
     assert seeded["hooks"]["PreToolUse"][0] in pre_tool
     omnigraph_hooks = [h for h in pre_tool if "omnigraph" in str(h)]
-    assert len(omnigraph_hooks) == 2
+    assert len(omnigraph_hooks) == 3
     # strict=True lands on the read guard
     assert any(h["hooks"][0]["command"].endswith("--strict") for h in omnigraph_hooks)
 

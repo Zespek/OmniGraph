@@ -14,6 +14,12 @@ generic term shared across apps can seed the traversal in the wrong one. If the 
 `--budget` (e.g. `--budget 8000`) for a broad/architecture question before falling back to grep - the
 default budget can cut before reaching the relevant node.
 
+This applies to you and to every subagent you spawn, including a general-purpose search/explore
+agent: check whether omnigraph answers the question in one call BEFORE delegating broad code
+exploration, not just before reading/grepping yourself. A subagent starts a fresh context that does
+not include this file, so if you still delegate, put the omnigraph instruction explicitly in its
+prompt.
+
 Triggers: "how do I…", "where is…", "what does … do", "add/modify a <component>",
 "explain the architecture", or anything that depends on how files or classes relate.
 

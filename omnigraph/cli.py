@@ -68,6 +68,25 @@ _READ_DENY = json.dumps({
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
+# A subagent starts a fresh context that does not carry CLAUDE.md, so
+# delegating broad code exploration to one never matched the Bash|Grep or
+# Read|Glob matchers above at all - the parent's own tool call is Task, not a
+# search/read, so neither nudge had a chance to fire before the work moved to
+# a context where this reminder does not exist. This fires on the dispatch
+# itself, while the parent can still decide not to delegate, or to pass the
+# instruction along explicitly.
+_TASK_NUDGE = json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "additionalContext": (
+            'omnigraph-out/graph.json exists. Before delegating this to a subagent, '
+            'check whether `omnigraph query "<question>"`, `omnigraph explain '
+            '"<concept>"`, or `omnigraph path "<A>" "<B>"` answers it in one call. A '
+            'subagent does not inherit this reminder - if you still delegate, include '
+            'the omnigraph instruction explicitly in its prompt.'
+        ),
+    }
+}, ensure_ascii=False, separators=(",", ":")) + "\n"
 _HOOK_SOURCE_EXTS = (
     '.py', '.js', '.cjs', '.ts', '.tsx', '.jsx', '.astro', '.vue', '.svelte', '.go',
     '.rs', '.java', '.rb', '.c', '.h', '.cpp', '.hpp', '.cc', '.cs', '.kt',
@@ -877,6 +896,12 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     file listing would strand navigation. #1840: reads of out-of-project files are
     ignored, and a graph that is stale for the target file softens to a non-mandatory
     nudge instead of blocking or demanding.
+
+    `kind == "task"` nudges before a subagent is dispatched (matcher "Task"):
+    a subagent's context does not carry CLAUDE.md, so delegating exploration
+    to one bypassed the search/read nudges entirely, since the parent's own
+    call never matched either of those matchers. Unconditional, like search -
+    a Task call carries nothing to inspect.
     """
     from omnigraph.paths import out_path, OMNIGRAPH_OUT_NAME
     # O gancho BeforeTool do Gemini não aceita stdin e SEMPRE deve retornar uma decisão, então
@@ -901,7 +926,14 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     if not isinstance(t, dict):
         return
     try:
-        if kind == "search":
+        if kind == "task":
+            # Unconditional (like the search nudge): a Task call carries no
+            # command/pattern/path to inspect, and guessing "is this
+            # exploration" from subagent_type/prompt text would miss most
+            # real dispatches while adding a false sense of precision.
+            if out_path("graph.json").is_file():
+                sys.stdout.write(_TASK_NUDGE)
+        elif kind == "search":
             cmd_str = str(t.get("command", "") or "")
             # Two input shapes reach this guard (matcher "Bash|Grep"):
             # the Bash tool carries `command`, while Claude Code's dedicated

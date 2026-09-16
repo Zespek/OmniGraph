@@ -324,16 +324,23 @@ def _print_project_git_add_hint(paths: list[Path]) -> None:
 def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "list[dict]":
     """omnigraph's Claude/Codebuddy PreToolUse hooks, resolved at install time.
 
-    The command invokes `omnigraph hook-guard <search|read>` via the absolute exe
-    path (`_resolve_omnigraph_exe`) — or, for a project-scoped install, via the
+    The command invokes `omnigraph hook-guard <search|read|task>` via the absolute
+    exe path (`_resolve_omnigraph_exe`) — or, for a project-scoped install, via the
     bare `omnigraph` command, since that config gets committed (#3129). Either
     form parses under sh, cmd.exe and PowerShell alike — this is the #522 fix,
     and mirrors the codex hook. Matchers are
-    "Bash|Grep" and "Read|Glob" and the command always contains "omnigraph", so the
-    existing install/uninstall filters find and replace both old bash hooks and
-    these. "Grep" is in the search matcher because current Claude Code routes
-    content search through its dedicated Grep tool, not Bash (#1986) — a
-    Bash-only matcher never fired on the agent's primary search path.
+    "Bash|Grep", "Read|Glob" and "Task", and the command always contains
+    "omnigraph", so the existing install/uninstall filters find and replace both
+    old bash hooks and these. "Grep" is in the search matcher because current
+    Claude Code routes content search through its dedicated Grep tool, not Bash
+    (#1986) — a Bash-only matcher never fired on the agent's primary search path.
+
+    "Task" nudges before a subagent is dispatched: a subagent gets a fresh
+    context that does not carry CLAUDE.md, so delegating broad exploration to one
+    (e.g. an Explore-style search agent) bypassed both the Bash|Grep and Read|Glob
+    nudges entirely, since nothing the parent called matched either matcher. The
+    "check omnigraph first" reminder never fired at the one point where the
+    parent still could have acted on it. This one fires on the dispatch itself.
 
     When ``strict`` is set, the read hook carries ``--strict`` so it blocks the
     first raw read per session (Claude Code only). The ``OMNIGRAPH_HOOK_STRICT`` env
@@ -348,6 +355,8 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
          "hooks": [{"type": "command", "command": f"{exe} hook-guard search"}]},
         {"matcher": "Read|Glob",
          "hooks": [{"type": "command", "command": read_cmd}]},
+        {"matcher": "Task",
+         "hooks": [{"type": "command", "command": f"{exe} hook-guard task"}]},
     ]
 def _skill_registration(skill_path: str = "~/.claude/skills/omnigraph/SKILL.md") -> str:
     return (
@@ -1837,11 +1846,11 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "omnigraph" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task") and "omnigraph" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
-    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob){_mode}")
+    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob + Task){_mode}")
 def _uninstall_claude_hook(project_dir: Path) -> None:
     """Remove the omnigraph PreToolUse hook from .claude/settings.json and its
     local-only sibling .claude/settings.local.json.
@@ -1861,7 +1870,7 @@ def _strip_omnigraph_hook(settings_path: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "omnigraph" in str(h))]
+    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task") and "omnigraph" in str(h))]
     if len(filtered) == len(pre_tool):
         return
     settings["hooks"]["PreToolUse"] = filtered
@@ -2019,7 +2028,7 @@ def _install_codebuddy_hook(project_dir: Path) -> None:
     if not isinstance(pre_tool, list):
         _refuse_to_modify(settings_path)
 
-    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "omnigraph" in str(h))]
+    hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task") and "omnigraph" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks())
     _write_settings_with_backup(settings_path, settings)
     print(f"  .codebuddy/settings.json  ->  PreToolUse hooks registered")
@@ -2033,7 +2042,7 @@ def _uninstall_codebuddy_hook(project_dir: Path) -> None:
     except json.JSONDecodeError:
         return
     pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
-    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob") and "omnigraph" in str(h))]
+    filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task") and "omnigraph" in str(h))]
     if len(filtered) == len(pre_tool):
         return
     settings["hooks"]["PreToolUse"] = filtered
