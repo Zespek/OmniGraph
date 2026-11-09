@@ -194,3 +194,33 @@ def test_local_antigravity_install_is_ignored(repo, monkeypatch):
     assert ".agents/rules/omnigraph.md" in ignored
     assert ".agents/workflows/omnigraph.md" in ignored
     assert _git(repo, "status", "--porcelain").split() == ["??", ".gitignore"]
+
+
+def test_local_install_takes_omnigraph_out_of_the_shared_files(repo, capsys):
+    (repo / "CLAUDE.md").write_text("# Team\n\nKeep tests green.\n\n## omnigraph\n\nold rules\n", encoding="utf-8")
+    shared = repo / ".claude" / "settings.json"
+    shared.parent.mkdir()
+    shared.write_text(json.dumps({
+        "permissions": {"allow": ["Bash(ls)"]},
+        "hooks": {"PreToolUse": [{"matcher": "Bash|Grep", "hooks": [
+            {"type": "command", "command": "/Users/someone/.local/bin/omnigraph hook-guard search"}]}]},
+    }), encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "old shared setup")
+    capsys.readouterr()
+    claude_install(repo, local=True)
+    md = (repo / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "Keep tests green." in md and "## omnigraph" not in md
+    settings = json.loads(shared.read_text(encoding="utf-8"))
+    assert "omnigraph" not in json.dumps(settings.get("hooks", {}))
+    assert settings["permissions"]["allow"] == ["Bash(ls)"]
+    assert "Commit this change once" in capsys.readouterr().err
+    changed = _git(repo, "status", "--porcelain")
+    assert " M CLAUDE.md" in changed and " M .claude/settings.json" in changed
+
+
+def test_local_install_leaves_files_without_omnigraph_untouched(repo, capsys):
+    (repo / "CLAUDE.md").write_text("# Team\n", encoding="utf-8")
+    claude_install(repo, local=True)
+    assert (repo / "CLAUDE.md").read_text(encoding="utf-8") == "# Team\n"
+    assert "Commit this change once" not in capsys.readouterr().err

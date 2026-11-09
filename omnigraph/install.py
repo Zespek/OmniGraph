@@ -1880,6 +1880,7 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
         from omnigraph.paths import keep_out_of_git
         keep_out_of_git(target)
         keep_out_of_git((project_dir or Path(".")) / ".claude" / "settings.local.json")
+        _drop_shared_claude_setup(project_dir or Path("."))
 
     print()
     print("Claude Code will now check the knowledge graph before answering")
@@ -2035,6 +2036,34 @@ def claude_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         print("omnigraph section not found in CLAUDE.md - nothing to do")
 
     _uninstall_claude_hook(project_dir)
+def _drop_shared_claude_setup(project_dir: Path) -> list[str]:
+    """Remove omnigraph from the team's CLAUDE.md and .claude/settings.json.
+
+    Older installs wrote the rules and hooks there, and teams committed them.
+    Once this machine carries both in its local files, the shared copies only
+    load the old rules twice, and their hook commands hold another machine's
+    path. The change shows in git status, to be committed once for the team.
+    """
+    dropped: list[str] = []
+    shared_md = project_dir / "CLAUDE.md"
+    if shared_md.exists() and _strip_omnigraph_md_section(shared_md):
+        dropped.append("CLAUDE.md")
+    shared_settings = project_dir / ".claude" / "settings.json"
+    if shared_settings.exists():
+        before = shared_settings.read_bytes()
+        _strip_omnigraph_hook(shared_settings)
+        if shared_settings.read_bytes() != before:
+            dropped.append(".claude/settings.json")
+    if dropped:
+        print(
+            f"[omnigraph] removed the old shared omnigraph setup from {' and '.join(dropped)}; "
+            "it now lives only in this machine's local files. Commit this change once "
+            "so nobody on the team loads the old rules again.",
+            file=sys.stderr,
+        )
+    return dropped
+
+
 def _strip_omnigraph_md_section(target: Path) -> bool:
     """Strip the ## omnigraph section from one CLAUDE.md-style file.
 
