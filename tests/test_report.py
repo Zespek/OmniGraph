@@ -201,3 +201,23 @@ def test_report_hubs_use_wikilinks_when_obsidian():
     labels = {cid: f"Widget {cid}" for cid in communities}
     report = generate(G, communities, cohesion, labels, gods, surprises, detection, tokens, "./project", min_community_size=1, obsidian=True)
     assert "[[_COMMUNITY_" in report
+
+
+def test_report_caps_community_sections_on_large_graphs():
+    import networkx as nx
+    from omnigraph.report import _MAX_REPORT_COMMUNITIES
+    G = nx.Graph()
+    communities = {}
+    for cid in range(_MAX_REPORT_COMMUNITIES + 20):
+        members = [f"c{cid}_n{i}" for i in range(4)]
+        for m in members:
+            G.add_node(m, label=f"{m}_label", source_file=f"f{cid}.py", source_location="L1", file_type="code")
+        G.add_edge(members[0], members[1], relation="calls", confidence="EXTRACTED")
+        G.add_edge(members[2], members[3], relation="calls", confidence="EXTRACTED")
+        G.add_edge(members[1], members[2], relation="calls", confidence="EXTRACTED")
+        communities[cid] = members
+    labels = {cid: f"Group {cid}" for cid in communities}
+    report = generate(G, communities, {cid: 0.5 for cid in communities}, labels, [], [],
+                      {"total_files": 1, "total_words": 1, "needs_graph": True, "warning": None}, {"input": 0, "output": 0}, "./project")
+    assert report.count("### Community ") == _MAX_REPORT_COMMUNITIES
+    assert "20 smaller communities not listed" in report

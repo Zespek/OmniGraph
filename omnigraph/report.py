@@ -6,6 +6,9 @@ from pathlib import Path
 import networkx as nx
 
 
+_MAX_REPORT_COMMUNITIES = 30
+
+
 def _portable_root_label(root: str) -> str:
     """Portable label for the report header — the project directory basename.
 
@@ -201,13 +204,16 @@ def generate(
     # sinais de saída Obsidiana; caso contrário, uma lista simples, que não navega para lugar nenhum.
     if non_empty:
         lines += ["", "## Community Hubs (Navigation)"]
-        for cid in non_empty:
+        hub_ids = list(non_empty) if obsidian else sorted(non_empty, key=lambda c: -len(non_empty[c]))[:_MAX_REPORT_COMMUNITIES]
+        for cid in hub_ids:
             label = community_labels.get(cid, f"Community {cid}")
             if obsidian:
                 safe = _safe_community_name(label)
                 lines.append(f"- [[_COMMUNITY_{safe}|{label}]]")
             else:
                 lines.append(f"- {label}")
+        if len(hub_ids) < len(non_empty):
+            lines.append(f"- ... and {len(non_empty) - len(hub_ids)} more")
 
     lines += [
         "",
@@ -272,7 +278,12 @@ def generate(
             lines.append(f"- **{h.get('label', h.get('id', ''))}** — {node_labels} [{conf_tag}]")
 
     lines += ["", f"## Communities ({len(communities)} total, {thin_count_summary} thin omitted)"]
-    for cid, nodes in communities.items():
+    # Largest first, and capped: the report is read whole by agents, and on a
+    # large repo one section per community reached 200+ KB. graph.html and
+    # `omnigraph query` still reach every community.
+    community_sections = 0
+    communities_cut = 0
+    for cid, nodes in sorted(communities.items(), key=lambda kv: -len(kv[1])):
         label = community_labels.get(cid, f"Community {cid}")
         score = cohesion_scores.get(cid, 0.0)
         # Filtrar stubs de método/função da exibição - eles são ruído estrutural
@@ -281,6 +292,10 @@ def generate(
             continue
         if len(real_nodes) < min_community_size:
             continue
+        if community_sections >= _MAX_REPORT_COMMUNITIES:
+            communities_cut += 1
+            continue
+        community_sections += 1
         display = [G.nodes[n].get("label", n) for n in real_nodes[:8]]
         suffix = f" (+{len(real_nodes)-8} more)" if len(real_nodes) > 8 else ""
         lines += [
@@ -289,6 +304,8 @@ def generate(
             f"Cohesion: {score:.2f}",
             f"Nodes ({len(real_nodes)}): {', '.join(display)}{suffix}",
         ]
+    if communities_cut:
+        lines += ["", f"_{communities_cut} smaller communities not listed; use `omnigraph query` to reach them._"]
 
     ambiguous = [(u, v, d) for u, v, d in G.edges(data=True) if d.get("confidence") == "AMBIGUOUS"]
     if ambiguous:
