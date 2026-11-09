@@ -70,7 +70,7 @@ def test_strict_first_read_denies_then_nudges(tmp_path, monkeypatch):
     assert (tmp_path / "omnigraph-out" / "cache" / "hook_sessions" / "s1.denied").exists()
     # same session again -> soft nudge, not a second deny
     out2 = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
-    assert not _is_deny(out2) and "MANDATORY" in out2
+    assert not _is_deny(out2) and "usually cheaper" in out2
 
 
 def test_strict_new_session_denies_again(tmp_path, monkeypatch):
@@ -86,7 +86,8 @@ def test_fresh_query_stamp_suppresses_deny(tmp_path, monkeypatch):
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
-    assert not _is_deny(out) and "MANDATORY" in out
+    # Already oriented by a recent query: neither a deny nor a nudge is needed.
+    assert out == ""
 
 
 def test_expired_query_stamp_still_denies(tmp_path, monkeypatch):
@@ -103,7 +104,7 @@ def test_expired_query_stamp_still_denies(tmp_path, monkeypatch):
 def test_soft_mode_never_denies(tmp_path, monkeypatch):
     f = _fixture(tmp_path)
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=False)
-    assert not _is_deny(out) and "MANDATORY" in out
+    assert not _is_deny(out) and "usually cheaper" in out
 
 
 def test_env_forces_strict_on(tmp_path, monkeypatch):
@@ -130,7 +131,7 @@ def test_stale_graph_softens_never_denies(tmp_path, monkeypatch):
     f = _fixture(tmp_path, fresh=False)  # source newer than graph
     out = _invoke("read", _read(f), tmp_path, monkeypatch, strict=True)
     assert not _is_deny(out)
-    assert "stale" in out.lower() and "MANDATORY" not in out
+    assert "stale" in out.lower() and "usually cheaper" not in out
 
 
 def test_needs_update_flag_softens(tmp_path, monkeypatch):

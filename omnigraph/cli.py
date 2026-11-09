@@ -11,7 +11,7 @@ import os
 import re
 import sys
 import time
-from omnigraph.paths import OMNIGRAPH_OUT as _OMNIGRAPH_OUT
+from omnigraph.paths import OMNIGRAPH_OUT as _OMNIGRAPH_OUT, touch_query_stamp as _touch_query_stamp
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
@@ -19,9 +19,9 @@ _SEARCH_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'MANDATORY: omnigraph-out/graph.json exists. You MUST run '
-            '`omnigraph query "<question>"` before grepping raw files. Only grep '
-            'after omnigraph has oriented you, or to modify/debug specific lines.'
+            'omnigraph-out/graph.json exists. To locate code, `omnigraph query '
+            '"<question>"` is usually cheaper than grep. Skip it if you already '
+            'know the file or symbol.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -29,13 +29,9 @@ _READ_NUDGE = json.dumps({
     "hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "additionalContext": (
-            'MANDATORY: omnigraph-out/graph.json exists. You MUST run omnigraph '
-            'before reading source files. Use: `omnigraph query "<question>"` '
-            '(scoped subgraph), `omnigraph explain "<concept>"`, or '
-            '`omnigraph path "<A>" "<B>"`. Only read raw files after omnigraph has '
-            'oriented you, or to modify/debug specific lines. This rule applies to '
-            'subagents too — include it in every subagent prompt involving code '
-            'exploration.'
+            'omnigraph-out/graph.json exists. To find where something lives, '
+            '`omnigraph query "<question>"` is usually cheaper than opening files — '
+            'skip it if you already know the file. Subagents do not see this hint.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"
@@ -751,18 +747,6 @@ def _hook_strict_enabled(flag: bool) -> bool:
     return flag
 
 
-def _touch_query_stamp(graph_path: "Path") -> None:
-    """Record that omnigraph oriented the agent recently, next to the queried graph.
-    The strict guard suppresses its block while this stamp is fresh. Fail-silent."""
-    try:
-        from omnigraph.paths import write_text_atomic
-        stamp = Path(graph_path).parent / "cache" / "last_query_stamp"
-        stamp.parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(stamp, str(time.time()))
-    except Exception:
-        pass
-
-
 def _query_stamp_fresh() -> bool:
     """True if a query/explain/path ran within OMNIGRAPH_HOOK_STRICT_TTL (default
     1800s) — recent orientation, so strict mode does not block this read."""
@@ -775,10 +759,32 @@ def _query_stamp_fresh() -> bool:
 
 
 def _mark_session_denied(session_id: str) -> bool:
-    """Atomically claim a one-time strict block for this session. Returns True only
-    on the FIRST call for a given session id (O_EXCL create wins once); every later
-    call — or any error — returns False, so a session is blocked at most once and an
-    agent can never be stranded. Best-effort GC of markers older than 24h."""
+    """Atomically claim a one-time strict block for this session, so a session is
+    blocked at most once and an agent can never be stranded."""
+    return _claim_session_marker(session_id, "denied")
+
+
+def _should_nudge(payload: dict, kind: str) -> bool:
+    """Whether a soft nudge is worth its tokens right now.
+
+    Hook output is injected into the conversation and stays there, so a nudge
+    on every Read or grep cost more than the queries it was promoting: a heavy
+    session pays for it hundreds of times. Once per session and kind is enough
+    to make the tool known, and nothing is needed after the agent has just
+    queried. A payload with no session id keeps the old always-nudge behavior.
+    """
+    if _query_stamp_fresh():
+        return False
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        return True
+    return _claim_session_marker(session_id, f"nudge-{kind}")
+
+
+def _claim_session_marker(session_id: str, suffix: str) -> bool:
+    """Atomically claim a per-session marker. Returns True only on the FIRST call
+    for a given session id and suffix (O_EXCL create wins once); every later call —
+    or any error — returns False. Best-effort GC of markers older than 24h."""
     from omnigraph.paths import out_path
     sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
     if not sid:
@@ -786,7 +792,7 @@ def _mark_session_denied(session_id: str) -> bool:
     try:
         d = out_path("cache", "hook_sessions")
         d.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(d / f"{sid}.denied"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(str(d / f"{sid}.{suffix}"), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         os.close(fd)
         try:
             cutoff = time.time() - 86400
@@ -910,7 +916,9 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     if kind == "gemini":
         payload = {"decision": "allow"}
         try:
-            if out_path("graph.json").is_file():
+            # Injected on every read_file/list_directory call (the hook gets no
+            # session id), so at least stop once the agent has just queried.
+            if out_path("graph.json").is_file() and not _query_stamp_fresh():
                 payload["additionalContext"] = _GEMINI_NUDGE_TEXT
         except Exception:
             pass
@@ -931,7 +939,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # command/pattern/path to inspect, and guessing "is this
             # exploration" from subagent_type/prompt text would miss most
             # real dispatches while adding a false sense of precision.
-            if out_path("graph.json").is_file():
+            if out_path("graph.json").is_file() and _should_nudge(d, "task"):
                 sys.stdout.write(_TASK_NUDGE)
         elif kind == "search":
             cmd_str = str(t.get("command", "") or "")
@@ -946,7 +954,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # grep. Nudge-only, even in strict mode — see the docstring.
             is_grep_tool = not cmd_str and bool(t.get("pattern"))
             is_bash_search = bool(cmd_str) and _bash_invokes_search(cmd_str)
-            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file():
+            if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file() \
+                    and _should_nudge(d, "search"):
                 sys.stdout.write(_SEARCH_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
@@ -1006,7 +1015,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             except Exception:
                 pass
             if stale:
-                sys.stdout.write(_READ_NUDGE_STALE)
+                if _should_nudge(d, "read"):
+                    sys.stdout.write(_READ_NUDGE_STALE)
                 return
             # Strict block: Read tool only, first time per session, not recently
             # oriented, and the file is demonstrably indexed.
@@ -1017,7 +1027,8 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and _mark_session_denied(str(d.get("session_id") or "")):
                 sys.stdout.write(_READ_DENY)
                 return
-            sys.stdout.write(_READ_NUDGE)
+            if _should_nudge(d, "read"):
+                sys.stdout.write(_READ_NUDGE)
     except Exception:
         pass
 
