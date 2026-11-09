@@ -1448,6 +1448,23 @@ def _stems_in_graph(G: nx.Graph, ranked: list[tuple[float, str]], stems: list[st
     return present or stems
 
 
+def _coverage_total(G: nx.Graph, ranked: list[tuple[float, str]], stems: list[str], idf: dict[str, float]) -> float:
+    """Coverage denominator scaled so the best-covered node counts as complete.
+
+    A bilingual query on code that uses both languages keeps every word, yet no
+    single name carries both translations: the best answer covered about half
+    the question, and its one-word neighbors fell under the pruning cut that a
+    one-language query let through.
+    """
+    total = sum(idf.get(s, 0.0) for s in stems) or 1.0
+    best = 0.0
+    for _score, nid in ranked:
+        best = max(best, _term_coverage(G.nodes[nid], stems, idf, total))
+        if best >= 1.0:
+            break
+    return total * best if best > 0 else total
+
+
 def _rationale_owner(G: nx.Graph, nid: str) -> str | None:
     """The symbol a docstring node documents, or None when it has no owner."""
     for neighbor in G.neighbors(nid):
@@ -1462,6 +1479,8 @@ def _rerank_for_question(
     stems: list[str],
     idf: dict[str, float],
     want_tests: bool,
+    *,
+    total: float | None = None,
 ) -> list[tuple[float, str]]:
     """Reorder `_score_query` hits by how much of the question each one answers.
 
@@ -1471,7 +1490,7 @@ def _rerank_for_question(
     identifier matching three of them. A docstring hit is credited to the symbol
     it documents, because that symbol is what the agent has to open.
     """
-    total = sum(idf.get(s, 0.0) for s in stems) or 1.0
+    total = total or sum(idf.get(s, 0.0) for s in stems) or 1.0
     best: dict[str, float] = {}
     for score, nid in ranked:
         data = G.nodes[nid]
@@ -1500,6 +1519,8 @@ def _select_answer_nodes(
     want_tests: bool,
     max_nodes: int,
     add_direct_hits: bool,
+    *,
+    total: float | None = None,
 ) -> tuple[list[str], int]:
     """Choose and order the nodes worth printing; return them and the count of
     matching nodes left out.
@@ -1525,7 +1546,7 @@ def _select_answer_nodes(
                     hops[nb] = hop
                     nxt.append(nb)
         frontier = nxt
-    total = sum(idf.get(s, 0.0) for s in stems) or 1.0
+    total = total or sum(idf.get(s, 0.0) for s in stems) or 1.0
     prune = len(pool) > max_nodes
     near = {nb for s in seeds[:2] if s in G for nb in G.neighbors(s)}
     scored: list[tuple[float, int, str]] = []
@@ -1630,7 +1651,8 @@ def _query_graph_text(
     want_tests = any(t in _TEST_INTENT_TERMS for t in terms)
     stems = _stems_in_graph(G, qs.ranked, list(dict.fromkeys(stem_of.get(tok, tok) for tok in tokens)))
     idf = _compute_idf(G, stems)
-    ranked = _rerank_for_question(view, qs.ranked, stems, idf, want_tests)
+    coverage_total = _coverage_total(G, qs.ranked, stems, idf)
+    ranked = _rerank_for_question(view, qs.ranked, stems, idf, want_tests, total=coverage_total)
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
     # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
@@ -1685,7 +1707,7 @@ def _query_graph_text(
     max_nodes = max(10, token_budget // 100)
     kept, omitted = _select_answer_nodes(
         traversal_graph, nodes, ranked, start_nodes, stems, idf, want_tests, max_nodes,
-        add_direct_hits=not resolved_filters,
+        add_direct_hits=not resolved_filters, total=coverage_total,
     )
     pruned = len(kept) < len(nodes) or omitted > 0
     if pruned:

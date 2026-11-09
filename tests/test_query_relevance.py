@@ -140,3 +140,11 @@ def test_rationale_attribute_counts_toward_coverage():
     data = {"label": "FAB visibility rule", "rationale": "hide the button while the map moves"}
     idf = {"button": 2.0, "map": 2.0}
     assert _term_coverage(data, ["button", "map"], idf, 4.0) == 0.5
+
+
+def test_bilingual_query_on_mixed_language_code_keeps_one_word_neighbors():
+    G = _bilingual_graph()
+    G.add_node("pt", label="restaurar_sessao()", source_file="legado/sessao.py", source_location="L3", file_type="code")
+    lines = _node_lines(_query_graph_text(G, "restaurar sessao restore session", depth=2))
+    assert any("restore_session()" in line for line in lines[:3])
+    assert any("refresh_session_token()" in line for line in lines)
