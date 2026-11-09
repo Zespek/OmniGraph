@@ -860,20 +860,12 @@ _COMMAND_WRAPPERS = frozenset({
 _HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 
-def _bash_invokes_search(cmd_str: str) -> bool:
-    """Whether a Bash command actually RUNS a search tool (#3121).
+def _bash_commands(cmd_str: str) -> list[tuple[str, list[str]]]:
+    """The executable and arguments of each command a Bash string actually runs.
 
-    The old test was a plain substring scan over the whole command string,
-    including quoted arguments and heredoc bodies - so `git commit -m "add
-    flag support"` fired ("flag " contains "ag "), prose containing "find "
-    fired, and a design doc written via heredoc fired if its body mentioned
-    grep. Every false positive injects a nudge where omnigraph has nothing to
-    contribute and trains the agent to skim the line.
-
-    Decide on the command's executed tokens instead: drop heredoc bodies and
-    quoted spans, split on shell operators, and match the executable at each
-    command position (wrappers like sudo/xargs/env skipped; `git grep` and
-    `VAR=x grep ...` still count; a search-tool name inside prose does not).
+    Heredoc bodies and quoted spans are dropped, the string is split on shell
+    operators, and wrappers like sudo/xargs/env and `VAR=x` prefixes are
+    skipped, so a tool name inside prose or a quoted argument never counts.
     """
     text = cmd_str
     # Drop heredoc bodies: from the line after `<<WORD` through the line that
@@ -895,6 +887,7 @@ def _bash_invokes_search(cmd_str: str) -> bool:
     # here - anything quoted is an argument, never the executable).
     text = re.sub(r"'[^']*'", " ", text)
     text = re.sub(r'"[^"]*"', " ", text)
+    commands: list[tuple[str, list[str]]] = []
     # Split into command segments at shell operators / substitution boundaries.
     for segment in re.split(r"[|;&\n]|\$\(|`|\(|\)|\{|\}", text):
         tokens = segment.split()
@@ -912,14 +905,73 @@ def _bash_invokes_search(cmd_str: str) -> bool:
                 while i < len(tokens) and tokens[i].startswith("-"):
                     i += 1
                 continue
-            if name in _SEARCH_COMMANDS:
-                return True
-            if name == "git" and any(
-                t2 == "grep" for t2 in tokens[i + 1:i + 4] if not t2.startswith("-")
-            ):
-                return True
+            commands.append((name, tokens[i + 1:]))
             break  # first real token decides this segment
+    return commands
+
+
+def _bash_invokes_search(cmd_str: str) -> bool:
+    """Whether a Bash command actually RUNS a search tool (#3121).
+
+    The old test was a plain substring scan over the whole command string,
+    including quoted arguments and heredoc bodies - so `git commit -m "add
+    flag support"` fired ("flag " contains "ag "), prose containing "find "
+    fired, and a design doc written via heredoc fired if its body mentioned
+    grep. Every false positive injects a nudge where omnigraph has nothing to
+    contribute and trains the agent to skim the line.
+
+    Decide on the command's executed tokens instead: drop heredoc bodies and
+    quoted spans, split on shell operators, and match the executable at each
+    command position (wrappers like sudo/xargs/env skipped; `git grep` and
+    `VAR=x grep ...` still count; a search-tool name inside prose does not).
+    """
+    for name, args in _bash_commands(cmd_str):
+        if name in _SEARCH_COMMANDS:
+            return True
+        if name == "git" and any(a == "grep" for a in args[:3] if not a.startswith("-")):
+            return True
     return False
+
+
+# Commands that print a file whole or in part. `sed` counts only with -n and
+# without -i (an in-place edit is not a read).
+_READ_COMMANDS = frozenset({"cat", "head", "tail", "less", "more", "bat", "nl", "awk"})
+
+
+def _bash_read_targets(cmd_str: str) -> list[str]:
+    """Indexed-looking files a Bash command reads: `cat x.py`, `sed -n '1,80p' x.py`.
+
+    Reading through the shell skipped the Read hook entirely, so an agent that
+    explored with cat/head never heard about the graph. Anything after an
+    output redirection is a write target (`cat > notes.md <<EOF`), not a read.
+    """
+    targets: list[str] = []
+    for name, args in _bash_commands(cmd_str):
+        if name == "sed":
+            if "-n" not in args or any(a.startswith(("-i", "--in-place")) for a in args):
+                continue
+        elif name not in _READ_COMMANDS:
+            continue
+        for arg in args:
+            if ">" in arg:
+                break
+            if arg.startswith("-"):
+                continue
+            tail = arg.lower().replace("\\", "/").rsplit("/", 1)[-1]
+            if "." in tail and "." + tail.rsplit(".", 1)[-1] in _HOOK_SOURCE_EXTS:
+                targets.append(arg)
+    return targets
+
+
+def _path_in_project(value: str, root: "Path") -> bool:
+    """Whether a path a tool names lies inside the graph's project."""
+    if _is_cwd_relative(value):
+        return True
+    try:
+        Path(value).resolve().relative_to(root)
+        return True
+    except (ValueError, OSError, RuntimeError):
+        return False
 
 
 def _run_hook_guard(kind: str, strict: bool = False) -> None:
@@ -1004,6 +1056,20 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             if (is_grep_tool or is_bash_search) and out_path("graph.json").is_file() \
                     and _should_nudge(d, "search"):
                 sys.stdout.write(_SEARCH_NUDGE)
+            elif cmd_str and not is_bash_search and out_path("graph.json").is_file():
+                root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+                try:
+                    root = root.resolve()
+                except (OSError, RuntimeError):
+                    pass
+                out_name = OMNIGRAPH_OUT_NAME.lower() + "/"
+                reads = [
+                    f for f in _bash_read_targets(cmd_str)
+                    if out_name not in f.lower().replace("\\", "/") and _path_in_project(f, root)
+                ]
+                # Shares the Read tool's budget: one read nudge per agent.
+                if reads and _should_nudge(d, "read"):
+                    sys.stdout.write(_READ_NUDGE)
         elif kind == "read":
             vals = [str(t.get("file_path") or ""), str(t.get("pattern") or ""), str(t.get("path") or "")]
             j = " ".join(vals).lower().replace("\\", "/")

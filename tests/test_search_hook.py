@@ -93,9 +93,15 @@ def test_silent_without_graph(tmp_path):
 
 
 def test_silent_on_non_search_commands(tmp_path):
-    for command in ("ls -la", "git status", "cat README.md", "python app.py"):
+    for command in ("ls -la", "git status", "python app.py"):
         out = _run(command, tmp_path, graph=True).stdout
         assert out.strip() == "", f"{command!r} should not nudge"
+
+
+def test_reading_a_file_with_cat_gets_the_read_nudge_not_the_search_one(tmp_path):
+    out = _run("cat README.md", tmp_path, graph=True).stdout
+    context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "opening files" in context
 
 
 def test_nudge_payload_is_valid_pretooluse_json(tmp_path):

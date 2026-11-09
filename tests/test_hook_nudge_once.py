@@ -5,6 +5,8 @@ import io
 import json
 import time
 
+import pytest
+
 from omnigraph.cli import _run_hook_guard
 
 
@@ -135,3 +137,40 @@ def test_install_registers_and_uninstall_removes_the_compaction_hook(tmp_path):
     assert starts[0]["hooks"][0]["command"].endswith("hook-guard compact")
     claude_uninstall(tmp_path)
     assert "hook-guard" not in settings_path.read_text(encoding="utf-8")
+
+
+def _bash(cmd, session="s1"):
+    return {"session_id": session, "tool_name": "Bash", "tool_input": {"command": cmd}}
+
+
+def test_reading_a_file_through_the_shell_gets_the_read_nudge(tmp_path, monkeypatch, capsys):
+    src = _graph(tmp_path, monkeypatch)
+    assert "opening files" in _run("search", _bash("cat mod.py"), monkeypatch, capsys)
+    read = {"session_id": "s1", "tool_name": "Read", "tool_input": {"file_path": str(src)}}
+    assert _run("read", read, monkeypatch, capsys) == "", "shares the Read tool's budget"
+
+
+@pytest.mark.parametrize("cmd", [
+    "sed -n '1,40p' mod.py",
+    "head -n 20 mod.py",
+    "tail mod.py 2>/dev/null",
+    "nl mod.py | less",
+])
+def test_partial_reads_through_the_shell_count(cmd, tmp_path, monkeypatch, capsys):
+    _graph(tmp_path, monkeypatch)
+    assert "opening files" in _run("search", _bash(cmd), monkeypatch, capsys)
+
+
+@pytest.mark.parametrize("cmd", [
+    "git log | head -20",
+    "sed -i 's/a/b/' mod.py",
+    "cat > notes.md <<'EOF'\nhello\nEOF\n",
+    "cat >notes.md",
+    "cat /somewhere/else/x.py",
+    "cat omnigraph-out/GRAPH_REPORT.md",
+    "tail -f server.log",
+    "python mod.py",
+])
+def test_writes_and_unrelated_commands_stay_quiet(cmd, tmp_path, monkeypatch, capsys):
+    _graph(tmp_path, monkeypatch)
+    assert _run("search", _bash(cmd), monkeypatch, capsys) == ""

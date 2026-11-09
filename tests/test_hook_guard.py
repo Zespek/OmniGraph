@@ -78,7 +78,6 @@ def test_search_nudges(command, tmp_path, monkeypatch):
     "pgrep -f server",
     "ls -la",
     "git status",
-    "cat README.md",
     "python app.py",
     "cd findings && ls",         # 'find' without a trailing space is not a match
     "manage db migrate",         # 'ag' mid-word, no 'ag ' token
