@@ -413,6 +413,8 @@ def to_json(G: nx.Graph, communities: dict[int, list[str]], output_path: str, *,
     from omnigraph.paths import write_json_atomic
     # Atomic write: a crash/ENOSPC mid-write must not truncate a good graph.json.
     write_json_atomic(output_path, data, indent=2)
+    from omnigraph.paths import ensure_output_git_ignored
+    ensure_output_git_ignored(output_path)
     return True
 
 

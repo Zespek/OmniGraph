@@ -810,6 +810,11 @@ def _register_merge_driver(root: Path) -> str:
     launcher is not on PATH at merge time.
     """
     import subprocess as _sp
+    from omnigraph.paths import output_is_git_ignored
+    if output_is_git_ignored(root):
+        # An ignored graph never reaches a merge, and the .gitattributes line
+        # would only add a tracked change for the team to commit.
+        return "skipped (graph output is git-ignored)"
     pinned = _pinned_python()
     if pinned:
         # Double-quoted: the allowlist in _pinned_python() permits a space (Windows

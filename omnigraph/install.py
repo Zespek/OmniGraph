@@ -912,8 +912,13 @@ def gemini_uninstall(project_dir: Path | None = None, *, project: bool = False, 
         print(f"GEMINI.md was empty after removal - deleted {target.resolve()}")
     _uninstall_gemini_hook(project_dir)
 _VSCODE_INSTRUCTIONS_MARKER = "## omnigraph"
-def vscode_install(project_dir: Path | None = None) -> None:
-    """Install omnigraph skill for VS Code Copilot Chat + write .github/copilot-instructions.md."""
+# A file of omnigraph's own for the local install: .github/copilot-instructions.md
+# usually holds the team's instructions and is committed, so it cannot be ignored.
+_VSCODE_LOCAL_INSTRUCTIONS = Path(".github") / "instructions" / "omnigraph.instructions.md"
+_VSCODE_LOCAL_HEADER = '---\napplyTo: "**"\n---\n\n'
+def vscode_install(project_dir: Path | None = None, local: bool = False) -> None:
+    """Install omnigraph skill for VS Code Copilot Chat + write .github/copilot-instructions.md,
+    or with `local` a git-ignored .github/instructions/omnigraph.instructions.md."""
     skill_src = Path(__file__).parent / "skill-vscode.md"
     refs_bundle = "vscode"
     if not skill_src.exists():
@@ -942,6 +947,17 @@ def vscode_install(project_dir: Path | None = None) -> None:
             shutil.rmtree(orphan_refs)
     _write_version_stamp(skill_dst, __version__)
     print(f"  skill installed  ->  {skill_dst}")
+
+    if local:
+        own = (project_dir or Path(".")) / _VSCODE_LOCAL_INSTRUCTIONS
+        own.parent.mkdir(parents=True, exist_ok=True)
+        own.write_text(_VSCODE_LOCAL_HEADER + _always_on("vscode-instructions"), encoding="utf-8")
+        print(f"  {own}  ->  written")
+        from omnigraph.paths import keep_out_of_git
+        keep_out_of_git(own)
+        print()
+        print("VS Code Copilot Chat configured on this machine only.")
+        return
 
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     instructions.parent.mkdir(parents=True, exist_ok=True)
@@ -985,6 +1001,11 @@ def vscode_uninstall(project_dir: Path | None = None) -> None:
             d.rmdir()
         except OSError:
             break
+
+    own = (project_dir or Path(".")) / _VSCODE_LOCAL_INSTRUCTIONS
+    if own.exists():
+        own.unlink()
+        print(f"  {own}  ->  removed")
 
     instructions = (project_dir or Path(".")) / ".github" / "copilot-instructions.md"
     if not instructions.exists():
@@ -1101,12 +1122,17 @@ def _antigravity_finalize(skill_dst: Path, project_dir: Path) -> None:
     else:
         wf_path.write_text(_ANTIGRAVITY_WORKFLOW, encoding="utf-8")
         print(f"omnigraph workflow written to {wf_path.resolve()}")
-def _antigravity_install(project_dir: Path) -> None:
-    """Install omnigraph for Google Antigravity (global skill + .agents/rules + .agents/workflows)."""
+def _antigravity_install(project_dir: Path, local: bool = False) -> None:
+    """Install omnigraph for Google Antigravity (global skill + .agents/rules + .agents/workflows).
+    With `local` the two project files are git-ignored, so they stay on this machine."""
     # Copie a habilidade para ~/.gemini/config/skills/omnigraph/SKILL.md (global) e, em seguida,
     # estabeleça as regras/fluxos de trabalho sempre ativos no diretório do projeto.
     install(platform="antigravity")
     _antigravity_finalize(_platform_skill_destination("antigravity"), project_dir)
+    if local:
+        from omnigraph.paths import keep_out_of_git
+        keep_out_of_git(project_dir / _ANTIGRAVITY_RULES_PATH)
+        keep_out_of_git(project_dir / _ANTIGRAVITY_WORKFLOW_PATH)
 
     print()
     print("Antigravity will now check the knowledge graph before answering")
@@ -1166,24 +1192,32 @@ alwaysApply: true
 
 This project has a omnigraph knowledge graph at omnigraph-out/.
 
-**MANDATORY: Before using Read, Grep, Glob, or Bash to explore the codebase, you MUST run omnigraph first:**
-- `omnigraph query "<question>"` — scoped subgraph for any codebase or architecture question
+To locate code you do not already know the file for, run omnigraph first:
+- `omnigraph query "<question>"` — scoped subgraph ordered by relevance; go straight to the `file:line` shown
 - `omnigraph path "<A>" "<B>"` — dependency path between two symbols
 - `omnigraph explain "<concept>"` — all nodes related to a concept
 
-This applies to YOU and to every subagent you spawn. Include this rule explicitly in every subagent prompt that involves code exploration. Do not skip omnigraph because files are "already known" or because you are executing a plan — the graph surfaces cross-file dependencies and INFERRED edges that grep and Read cannot find.
+The search matches literal words against the code's own names, not meaning. Put the key words in both the user's language and English in the same query (e.g. `omnigraph query "restaurar sessao restore session"`): code often mixes languages, and a query in only one of them misses every name written in the other.
 
-Only use Read/Grep/Glob directly when:
-1. omnigraph has already oriented you and you need to modify or debug specific lines
-2. `omnigraph-out/graph.json` does not exist yet
+Subagents do not see this rule, so include it in the prompt when you delegate code exploration.
+
+Skip omnigraph when you already know the file or symbol, or when `omnigraph-out/graph.json` does not exist yet.
 
 - If `omnigraph-out/wiki/index.md` exists, navigate it instead of reading raw files
 - Read `omnigraph-out/GRAPH_REPORT.md` only for broad architecture review when query/path/explain do not surface enough context
 - After modifying code files, run `omnigraph update .` to keep the graph current (AST-only, no API cost)
 """
-def _cursor_install(project_dir: Path) -> None:
-    """Write .cursor/rules/omnigraph.mdc with alwaysApply: true."""
+def _cursor_install(project_dir: Path, local: bool = False) -> None:
+    """Write .cursor/rules/omnigraph.mdc with alwaysApply: true. With `local` the
+    rule is git-ignored, so it stays on this machine."""
     rule_path = (project_dir or Path(".")) / _CURSOR_RULE_PATH
+    _write_cursor_rule(rule_path)
+    if local:
+        from omnigraph.paths import keep_out_of_git
+        keep_out_of_git(rule_path)
+
+
+def _write_cursor_rule(rule_path: Path) -> None:
     rule_path.parent.mkdir(parents=True, exist_ok=True)
     if rule_path.exists() and rule_path.read_text(encoding="utf-8") == _CURSOR_RULE:
         print(f"omnigraph rule at {rule_path} already configured (no change)")
@@ -1214,6 +1248,7 @@ This project has a omnigraph knowledge graph at omnigraph-out/.
 
 Rules:
 - For codebase or architecture questions, when `omnigraph-out/graph.json` exists, first run `omnigraph query "<question>"` (or `omnigraph path "<A>" "<B>"` / `omnigraph explain "<concept>"`). These return a scoped subgraph, usually much smaller than `GRAPH_REPORT.md` or raw grep output.
+- The search matches literal words against the code's own names, not meaning. Put the key words in both the user's language and English in the same query (e.g. `omnigraph query "restaurar sessao restore session"`): code often mixes languages, and a query in only one of them misses every name written in the other.
 - If omnigraph-out/wiki/index.md exists, navigate it instead of reading raw files
 - Read omnigraph-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context
 - After modifying code files in this session, run `omnigraph update .` to keep the graph current (AST-only, no API cost)
@@ -1255,7 +1290,7 @@ export const OmniGraphPlugin = async ({ directory }) => {
         // the first bash command in every OpenCode session on Windows (#1646).
         // ';' works in PowerShell 5.1, Bash, and POSIX shells alike.
         output.args.command =
-          'echo "[omnigraph] Knowledge graph available. Read omnigraph-out/GRAPH_REPORT.md for god nodes and architecture context before searching files." ; ' +
+          'echo "[omnigraph] knowledge graph at omnigraph-out/. For focused questions, run omnigraph query with your question (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context." ; ' +
           output.args.command;
         reminded = true;
       }
@@ -1800,9 +1835,11 @@ def _kilo_uninstall(project_dir: Path) -> None:
     _agents_uninstall(project_dir or Path("."), platform="kilo")
     removed = _kilo_uninstall_global()
     print("; ".join(removed) if removed else "nothing to remove")
-def claude_install(project_dir: Path | None = None, strict: bool = False, project: bool = False) -> None:
-    """Write the omnigraph section to the local CLAUDE.md."""
-    target = (project_dir or Path(".")) / "CLAUDE.md"
+def claude_install(project_dir: Path | None = None, strict: bool = False, project: bool = False, local: bool = False) -> None:
+    """Write the omnigraph section to CLAUDE.md, or with `local` to the personal
+    CLAUDE.local.md + settings.local.json, which are kept out of git. The hook
+    command holds this machine's absolute path, so it must not reach a commit."""
+    target = (project_dir or Path(".")) / ("CLAUDE.local.md" if local else "CLAUDE.md")
 
     if target.exists():
         content = target.read_text(encoding="utf-8")
@@ -1820,7 +1857,11 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
 
     # Sempre reinstale o gancho Claude Code PreToolUse para um gancho antigo
     # a carga útil (por exemplo, texto pré-edição) é substituída na atualização.
-    _install_claude_hook(project_dir or Path("."), strict=strict, project=project)
+    _install_claude_hook(project_dir or Path("."), strict=strict, project=project, local=local)
+    if local:
+        from omnigraph.paths import keep_out_of_git
+        keep_out_of_git(target)
+        keep_out_of_git((project_dir or Path(".")) / ".claude" / "settings.local.json")
 
     print()
     print("Claude Code will now check the knowledge graph before answering")
@@ -1828,13 +1869,13 @@ def claude_install(project_dir: Path | None = None, strict: bool = False, projec
     if strict:
         print("Strict mode: the first raw file read per session is blocked until")
         print("one `omnigraph query` runs (toggle with OMNIGRAPH_HOOK_STRICT=0).")
-def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool = False) -> None:
-    """Add omnigraph PreToolUse hook to .claude/settings.json.
+def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool = False, local: bool = False) -> None:
+    """Add omnigraph PreToolUse hook to .claude/settings.json (settings.local.json with `local`).
 
     A project-scoped install emits the bare command, since .claude/settings.json
     is then committed and an installing machine's path is wrong there (#3129).
     """
-    settings_path = project_dir / ".claude" / "settings.json"
+    settings_path = project_dir / ".claude" / ("settings.local.json" if local else "settings.json")
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
     settings = _read_settings_for_merge(settings_path)
@@ -1850,7 +1891,7 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
-    print(f"  .claude/settings.json  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob + Task){_mode}")
+    print(f"  .claude/{settings_path.name}  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob + Task){_mode}")
 def _uninstall_claude_hook(project_dir: Path) -> None:
     """Remove the omnigraph PreToolUse hook from .claude/settings.json and its
     local-only sibling .claude/settings.local.json.
@@ -2217,7 +2258,7 @@ def dispatch_install_cli(cmd: str) -> bool:
             if "--project" in sys.argv[3:]:
                 _project_install("claude", Path("."), strict=_strict)
             else:
-                claude_install(strict=_strict)
+                claude_install(strict=_strict, local="--local" in sys.argv[3:])
         elif subcmd == "uninstall":
             if "--project" in sys.argv[3:]:
                 _project_uninstall("claude", Path("."))
@@ -2247,7 +2288,7 @@ def dispatch_install_cli(cmd: str) -> bool:
     elif cmd == "cursor":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
-            _cursor_install(Path("."))
+            _cursor_install(Path("."), local="--local" in sys.argv[3:])
         elif subcmd == "uninstall":
             _cursor_uninstall(Path("."))
         else:
@@ -2256,7 +2297,7 @@ def dispatch_install_cli(cmd: str) -> bool:
     elif cmd == "vscode":
         subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
         if subcmd == "install":
-            vscode_install()
+            vscode_install(local="--local" in sys.argv[3:])
         elif subcmd == "uninstall":
             vscode_uninstall()
         else:
@@ -2380,7 +2421,7 @@ def dispatch_install_cli(cmd: str) -> bool:
             if "--project" in sys.argv[3:]:
                 _project_install("antigravity", Path("."))
             else:
-                _antigravity_install(Path("."))
+                _antigravity_install(Path("."), local="--local" in sys.argv[3:])
         elif subcmd == "uninstall":
             if "--project" in sys.argv[3:]:
                 _project_uninstall("antigravity", Path("."))

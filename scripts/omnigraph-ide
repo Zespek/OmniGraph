@@ -38,6 +38,33 @@ fi
 # 2) registra o OmniGraph no assistente/IDE
 printf "${roxo}▸ Registrando o OmniGraph no seu assistente…${zero}\n"
 ( cd "$alvo" && "$OG" install )
+# 'install' só grava a skill global. É a regra no CLAUDE.md do projeto e o hook
+# que fazem o Claude Code realmente consultar o mapa em vez de sair lendo arquivos.
+existe() { for p in "$@"; do [ -e "$p" ] && return 0; done; return 1; }
+# O plugin do Claude (VS Code, Cursor, Antigravity...) traz o próprio Claude Code
+# e não coloca 'claude' no PATH, então procura também pela extensão instalada.
+if command -v claude >/dev/null 2>&1 || existe "$HOME/.claude" \
+    "$HOME"/.antigravity*/extensions/anthropic.claude-code-* \
+    "$HOME"/.vscode/extensions/anthropic.claude-code-* \
+    "$HOME"/.cursor/extensions/anthropic.claude-code-* \
+    "$HOME"/.windsurf/extensions/anthropic.claude-code-*; then
+  ( cd "$alvo" && "$OG" claude install --local ) >/dev/null \
+    && printf "  ${verde}✓${zero} Claude Code configurado só nesta máquina (fora do git)\n"
+fi
+if command -v cursor >/dev/null 2>&1 || [ -d "$HOME/.cursor" ] || [ -d "/Applications/Cursor.app" ]; then
+  ( cd "$alvo" && "$OG" cursor install --local ) >/dev/null \
+    && printf "  ${verde}✓${zero} Cursor configurado só nesta máquina (fora do git)\n"
+fi
+if command -v code >/dev/null 2>&1 || [ -d "$HOME/.vscode" ] || [ -d "/Applications/Visual Studio Code.app" ]; then
+  ( cd "$alvo" && "$OG" vscode install --local ) >/dev/null \
+    && printf "  ${verde}✓${zero} VS Code (Copilot) configurado só nesta máquina (fora do git)\n"
+fi
+# agente nativo do Antigravity (lê .agents/rules)
+if command -v antigravity >/dev/null 2>&1 || existe /Applications/Antigravity*.app \
+    "$HOME/.gemini/antigravity" "$HOME"/.antigravity*; then
+  ( cd "$alvo" && "$OG" antigravity install --local ) >/dev/null \
+    && printf "  ${verde}✓${zero} Antigravity configurado só nesta máquina (fora do git)\n"
+fi
 
 # 3) git hook: mantém o mapa atualizado sozinho a cada commit (se for repo git)
 if [ -d "$alvo/.git" ]; then

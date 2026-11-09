@@ -110,6 +110,9 @@ omnigraph-perguntar "como funciona o pagamento?"
 
 # Usar na IDE (Claude, Cursor, Copilot...) gastando menos tokens:
 #   gera o mapa e registra o OmniGraph no seu assistente
+#   tudo fica local: o grafo e a configuração (Claude Code e o plugin do Claude,
+#   Antigravity, Cursor, VS Code)
+#   entram no .gitignore, fora dos commits
 omnigraph-ide
 
 # Atualizar tudo para a última versão (rápido):

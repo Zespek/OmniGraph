@@ -672,8 +672,10 @@ def _run_cli() -> None:
         )
         print("  gemini uninstall        remove GEMINI.md section + BeforeTool hook")
         print("  cursor install          write .cursor/rules/omnigraph.mdc (Cursor)")
+        print("    --local                 git-ignored, stays on this machine")
         print("  cursor uninstall        remove .cursor/rules/omnigraph.mdc")
         print("  claude install          write omnigraph section to CLAUDE.md + PreToolUse hook (Claude Code)")
+        print("    --local                 use CLAUDE.local.md + settings.local.json, kept out of git")
         print("  claude uninstall        remove omnigraph section from CLAUDE.md + PreToolUse hook")
         print("  codebuddy install       write omnigraph section to CODEBUDDY.md + PreToolUse hook (CodeBuddy)")
         print("  codebuddy uninstall     remove omnigraph section from CODEBUDDY.md + PreToolUse hook")
@@ -700,6 +702,7 @@ def _run_cli() -> None:
         print(
             "  vscode install          configure VS Code Copilot Chat (skill + .github/copilot-instructions.md)"
         )
+        print("    --local                 own git-ignored instructions file, stays on this machine")
         print("  vscode uninstall        remove VS Code Copilot Chat configuration")
         print(
             "  claw install            write omnigraph section to AGENTS.md (OpenClaw)"
@@ -716,6 +719,7 @@ def _run_cli() -> None:
         print(
             "  antigravity install     write .agents/rules + .agents/workflows + skill (Google Antigravity)"
         )
+        print("    --local                 git-ignored, stays on this machine")
         print(
             "  antigravity uninstall   remove .agents/rules, .agents/workflows, and skill"
         )

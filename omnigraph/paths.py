@@ -20,7 +20,10 @@ import json
 import os
 import re
 import stat
+import subprocess
+import sys
 import tempfile
+import time
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 OMNIGRAPH_OUT = os.environ.get("OMNIGRAPH_OUT", "omnigraph-out")
@@ -354,6 +357,122 @@ def disambiguate_ambiguous_candidates(
 # Bare directory name even when OMNIGRAPH_OUT is an absolute path. Used by path
 # guards that walk parents looking for the output directory by name.
 OMNIGRAPH_OUT_NAME = os.path.basename(os.path.normpath(OMNIGRAPH_OUT))
+
+
+def touch_query_stamp(graph_path: "str | Path") -> None:
+    """Record that omnigraph oriented the agent recently, next to the queried graph.
+    The hook guards stay quiet while this stamp is fresh. Fail-silent."""
+    try:
+        stamp = Path(graph_path).parent / "cache" / "last_query_stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(stamp, str(time.time()))
+    except Exception:
+        pass
+
+
+def _git(cwd: Path, *args: str) -> "subprocess.CompletedProcess[str] | None":
+    """Run git in `cwd`; None when git is missing or does not answer."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _tracking_output_on_purpose() -> bool:
+    return os.environ.get("OMNIGRAPH_TRACK_OUTPUT", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def ensure_git_ignored(target: "str | Path", pattern: str | None = None) -> bool:
+    """Add `target` to the .gitignore at the root of its git repository.
+
+    `pattern` defaults to the path relative to that root. Returns True only when
+    the file changed. Does nothing outside a repository or when an existing rule
+    (project, global or info/exclude) already covers the path. Never raises: a
+    failed ignore must not fail a build.
+    """
+    try:
+        target = Path(target).resolve()
+        found = _git(target.parent, "rev-parse", "--show-toplevel")
+        if found is None or found.returncode != 0:
+            return False
+        repo_root = Path(found.stdout.strip()).resolve()
+        rel = target.relative_to(repo_root).as_posix()
+        # --no-index asks the ignore rules alone. With the index, a tracked file
+        # is never reported as ignored, so the line would be appended every build.
+        checked = _git(repo_root, "check-ignore", "-q", "--no-index", "--", rel)
+        if checked is None or checked.returncode != 1:
+            return False
+        gitignore = repo_root / ".gitignore"
+        current = gitignore.read_bytes() if gitignore.exists() else b""
+        separator = b"" if not current or current.endswith(b"\n") else b"\n"
+        entry = pattern or rel
+        with open(gitignore, "ab") as handle:
+            handle.write(separator + entry.encode("utf-8") + b"\n")
+    except (OSError, ValueError):
+        return False
+    print(f"[omnigraph] added {entry} to {gitignore}", file=sys.stderr)
+    return True
+
+
+def output_is_git_ignored(repo_root: Path) -> bool:
+    """Whether ignore rules cover the graph output inside this repository."""
+    checked = _git(repo_root, "check-ignore", "-q", "--no-index", "--", f"{OMNIGRAPH_OUT_NAME}/graph.json")
+    return checked is not None and checked.returncode == 0
+
+
+def keep_out_of_git(target: "str | Path") -> None:
+    """Git-ignore a personal config file, warning when it was already committed.
+
+    An ignore rule does not untrack a committed file, so its edits would still
+    show up in `git status` and reach the next commit.
+    """
+    ensure_git_ignored(target)
+    try:
+        target = Path(target).resolve()
+        found = _git(target.parent, "rev-parse", "--show-toplevel")
+        if found is None or found.returncode != 0:
+            return
+        rel = target.relative_to(Path(found.stdout.strip()).resolve()).as_posix()
+    except (OSError, ValueError):
+        return
+    tracked = _git(target.parent, "ls-files", "--error-unmatch", "--", target.name)
+    if tracked is not None and tracked.returncode == 0:
+        print(
+            f"[omnigraph] {rel} is already tracked by git, so .gitignore has no effect "
+            f"on it. From the repository root, run once and commit (your local copy "
+            f"stays):\n  git rm --cached {rel}",
+            file=sys.stderr,
+        )
+
+
+def ensure_output_git_ignored(written: "str | Path") -> None:
+    """Keep a freshly written graph out of version control.
+
+    The graph changes on every build, so tracking it fills each commit with
+    generated noise. The pattern has no leading slash, so one line also covers
+    builds run from subfolders of a monorepo.
+
+    A .gitignore entry cannot untrack files that were already committed, so that
+    case gets a warning with the one command that fixes it. Removing them from
+    the index stages a deletion for the whole team, which is not a build's call.
+    """
+    path = Path(written)
+    if path.parent.name != OMNIGRAPH_OUT_NAME or _tracking_output_on_purpose():
+        return
+    ensure_git_ignored(path, f"{OMNIGRAPH_OUT_NAME}/")
+    listed = _git(path.parent, "ls-files", ".")
+    if listed is None or listed.returncode != 0 or not listed.stdout.strip():
+        return
+    prefix = _git(path.parent, "rev-parse", "--show-prefix")
+    tracked_dir = (prefix.stdout.strip().rstrip("/") if prefix and prefix.returncode == 0 else "") or OMNIGRAPH_OUT_NAME
+    print(
+        f"[omnigraph] {tracked_dir}/ is still tracked by git, so .gitignore has no "
+        f"effect on it yet. From the repository root, run once and commit (your "
+        f"local files stay):\n  git rm -r --cached {tracked_dir}",
+        file=sys.stderr,
+    )
 
 
 def out_path(*parts: str) -> Path:

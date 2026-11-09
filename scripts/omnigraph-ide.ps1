@@ -27,6 +27,13 @@ Write-Host "> Registrando o OmniGraph no seu assistente..." -ForegroundColor Mag
 Push-Location $alvo
 try {
   & $og install
+  # 'install' so grava a skill global; a regra no CLAUDE.md e o hook e que fazem o Claude Code usar o mapa
+  # o plugin do Claude (VS Code, Cursor, Antigravity...) nao coloca 'claude' no PATH: procura a extensao tambem
+  $extClaude = @("$HOME\.antigravity*\extensions\anthropic.claude-code-*", "$HOME\.vscode\extensions\anthropic.claude-code-*", "$HOME\.cursor\extensions\anthropic.claude-code-*", "$HOME\.windsurf\extensions\anthropic.claude-code-*") | Where-Object { Test-Path $_ }
+  if ((Get-Command claude -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $HOME '.claude')) -or $extClaude) { & $og claude install --local | Out-Null }
+  if ((Get-Command cursor -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $HOME '.cursor'))) { & $og cursor install --local | Out-Null }
+  if ((Get-Command code -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $HOME '.vscode'))) { & $og vscode install --local | Out-Null }
+  if ((Get-Command antigravity -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $HOME '.gemini\antigravity')) -or (Test-Path "$HOME\.antigravity*")) { & $og antigravity install --local | Out-Null }
   # 3) git hook: mantem o mapa atualizado sozinho a cada commit (se for repo git)
   if (Test-Path (Join-Path $alvo ".git")) {
     & $og hook install *> $null
