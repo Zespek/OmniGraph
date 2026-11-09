@@ -346,9 +346,7 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
     first raw read per session (Claude Code only). The ``OMNIGRAPH_HOOK_STRICT`` env
     var can force it on or off at runtime without a reinstall.
     """
-    exe = _resolve_omnigraph_exe(project=project)
-    if " " in exe and not exe.startswith('"'):
-        exe = f'"{exe}"'
+    exe = _hook_exe(project)
     read_cmd = f"{exe} hook-guard read" + (" --strict" if strict else "")
     return [
         {"matcher": "Bash|Grep",
@@ -358,6 +356,26 @@ def _claude_pretooluse_hooks(strict: bool = False, project: bool = False) -> "li
         {"matcher": "Task",
          "hooks": [{"type": "command", "command": f"{exe} hook-guard task"}]},
     ]
+def _hook_exe(project: bool = False) -> str:
+    """The omnigraph command a hook runs, quoted when its path has a space."""
+    exe = _resolve_omnigraph_exe(project=project)
+    if " " in exe and not exe.startswith('"'):
+        exe = f'"{exe}"'
+    return exe
+
+
+def _claude_compact_hook(project: bool = False) -> dict:
+    """SessionStart entry that gives a compacted session its nudge budget back."""
+    return {"matcher": "compact",
+            "hooks": [{"type": "command", "command": f"{_hook_exe(project)} hook-guard compact"}]}
+
+
+def _is_omnigraph_compact_hook(entry) -> bool:
+    text = str(entry)
+    return isinstance(entry, dict) and entry.get("matcher") == "compact" \
+        and "omnigraph" in text and "hook-guard compact" in text
+
+
 def _skill_registration(skill_path: str = "~/.claude/skills/omnigraph/SKILL.md") -> str:
     return (
         "\n# omnigraph\n"
@@ -1889,6 +1907,11 @@ def _install_claude_hook(project_dir: Path, strict: bool = False, project: bool 
 
     hooks["PreToolUse"] = [h for h in pre_tool if not (isinstance(h, dict) and h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task") and "omnigraph" in str(h))]
     hooks["PreToolUse"].extend(_claude_pretooluse_hooks(strict=strict, project=project))
+    session_start = hooks.setdefault("SessionStart", [])
+    if not isinstance(session_start, list):
+        _refuse_to_modify(settings_path)
+    hooks["SessionStart"] = [h for h in session_start if not _is_omnigraph_compact_hook(h)]
+    hooks["SessionStart"].append(_claude_compact_hook(project=project))
     _write_settings_with_backup(settings_path, settings)
     _mode = " (strict)" if strict else ""
     print(f"  .claude/{settings_path.name}  ->  PreToolUse hooks registered (Bash|Grep search + Read/Glob + Task){_mode}")
@@ -1910,11 +1933,17 @@ def _strip_omnigraph_hook(settings_path: Path) -> None:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return
-    pre_tool = settings.get("hooks", {}).get("PreToolUse", [])
+    hooks = settings.get("hooks", {})
+    pre_tool = hooks.get("PreToolUse", [])
     filtered = [h for h in pre_tool if not (h.get("matcher") in ("Glob|Grep", "Bash", "Bash|Grep", "Read|Glob", "Task") and "omnigraph" in str(h))]
-    if len(filtered) == len(pre_tool):
+    session_start = hooks.get("SessionStart", [])
+    kept_start = [h for h in session_start if not _is_omnigraph_compact_hook(h)]
+    if len(filtered) == len(pre_tool) and len(kept_start) == len(session_start):
         return
-    settings["hooks"]["PreToolUse"] = filtered
+    if "PreToolUse" in hooks:
+        hooks["PreToolUse"] = filtered
+    if "SessionStart" in hooks:
+        hooks["SessionStart"] = kept_start
     settings_path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     print(f"  .claude/{settings_path.name}  ->  PreToolUse hook removed")
 def uninstall_all(project_dir: Path | None = None, purge: bool = False) -> None:

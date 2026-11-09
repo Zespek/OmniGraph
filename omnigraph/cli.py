@@ -761,7 +761,41 @@ def _query_stamp_fresh() -> bool:
 def _mark_session_denied(session_id: str) -> bool:
     """Atomically claim a one-time strict block for this session, so a session is
     blocked at most once and an agent can never be stranded."""
-    return _claim_session_marker(session_id, "denied")
+    return _claim_session_marker(_session_key(session_id), "denied")
+
+
+def _session_key(session_id: str, agent_id: str = "") -> str:
+    """File-safe marker key: the session, plus a short hash of the subagent id.
+
+    Claude Code gives subagents the parent's session id and adds `agent_id`.
+    A subagent starts from an empty context, so it needs its own budget.
+    """
+    key = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    if key and agent_id:
+        import hashlib
+        key += "-" + hashlib.sha256(agent_id.encode("utf-8")).hexdigest()[:12]
+    return key
+
+
+def _reset_session_markers(session_id: str) -> None:
+    """Forget the nudges and strict block of a session and of its subagents.
+
+    After a compaction the model keeps the session id but no longer sees the
+    nudges it was given, so the session gets its budget back. Other sessions
+    are untouched.
+    """
+    from omnigraph.paths import out_path
+    key = _session_key(session_id)
+    folder = out_path("cache", "hook_sessions")
+    if not key or not folder.is_dir():
+        return
+    own = re.compile(re.escape(key) + r"(?:-[0-9a-f]{12})?\.(?:nudge-[a-z]+|denied)")
+    for entry in os.scandir(folder):
+        if own.fullmatch(entry.name):
+            try:
+                os.unlink(entry.path)
+            except OSError:
+                pass
 
 
 def _should_nudge(payload: dict, kind: str) -> bool:
@@ -772,13 +806,17 @@ def _should_nudge(payload: dict, kind: str) -> bool:
     session pays for it hundreds of times. Once per session and kind is enough
     to make the tool known, and nothing is needed after the agent has just
     queried. A payload with no session id keeps the old always-nudge behavior.
+
+    Each subagent has its own budget and always gets its first nudge: the query
+    stamp is project-wide, and a fresh subagent did not see the query that set it.
     """
-    if _query_stamp_fresh():
+    agent_id = str(payload.get("agent_id") or "")
+    if not agent_id and _query_stamp_fresh():
         return False
     session_id = str(payload.get("session_id") or "")
     if not session_id:
         return True
-    return _claim_session_marker(session_id, f"nudge-{kind}")
+    return _claim_session_marker(_session_key(session_id, agent_id), f"nudge-{kind}")
 
 
 def _claim_session_marker(session_id: str, suffix: str) -> bool:
@@ -786,7 +824,7 @@ def _claim_session_marker(session_id: str, suffix: str) -> bool:
     for a given session id and suffix (O_EXCL create wins once); every later call —
     or any error — returns False. Best-effort GC of markers older than 24h."""
     from omnigraph.paths import out_path
-    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:96]
     if not sid:
         return False
     try:
@@ -929,6 +967,15 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     except Exception:
         return
     if not isinstance(d, dict):
+        return
+    if kind == "compact":
+        # Claude Code SessionStart, matcher "compact": the conversation was just
+        # summarized, so the nudges already spent are gone from the model's view.
+        try:
+            if d.get("source") == "compact":
+                _reset_session_markers(str(d.get("session_id") or ""))
+        except Exception:
+            pass
         return
     t = d.get("tool_input", d)
     if not isinstance(t, dict):
