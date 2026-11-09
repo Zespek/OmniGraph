@@ -31,7 +31,9 @@ _READ_NUDGE = json.dumps({
         "additionalContext": (
             'omnigraph-out/graph.json exists. To find where something lives, '
             '`omnigraph query "<question>"` is usually cheaper than opening files — '
-            'skip it if you already know the file. Subagents do not see this hint.'
+            'skip it if you already know the file. Either way, read only the lines you '
+            'need (offset/limit, or a symbol tool), not the whole file. Subagents do not '
+            'see this hint.'
         ),
     }
 }, ensure_ascii=False, separators=(",", ":")) + "\n"

@@ -7,7 +7,7 @@ report or raw grep output. The search matches literal words against the code's o
 (e.g. `--scope backend` or `--scope apps/provider`) so results come only from that app - without it, a
 generic term shared across apps can seed the traversal in the wrong one. Results are ordered by
 relevance, so the top lines are the answer: go straight to the `file:line` shown instead of querying
-again. If they miss, retry once with a specific identifier or `--scope`, then fall back to grep. Raise
+again. Then read only that part, not the whole file: a symbol tool such as Serena's `find_symbol` if you have one, otherwise Read with offset/limit around that line (about 80 lines). If they miss, retry once with a specific identifier or `--scope`, then fall back to grep. Raise
 `--budget` only for an explicit broad/architecture review.
 
 This applies to you and to every subagent you spawn, including a general-purpose search/explore

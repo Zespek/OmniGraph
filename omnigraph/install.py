@@ -1211,7 +1211,7 @@ alwaysApply: true
 This project has a omnigraph knowledge graph at omnigraph-out/.
 
 To locate code you do not already know the file for, run omnigraph first:
-- `omnigraph query "<question>"` — scoped subgraph ordered by relevance; go straight to the `file:line` shown
+- `omnigraph query "<question>"` — scoped subgraph ordered by relevance; go straight to the `file:line` shown and read only that part (a symbol tool such as Serena's `find_symbol`, or Read with offset/limit)
 - `omnigraph path "<A>" "<B>"` — dependency path between two symbols
 - `omnigraph explain "<concept>"` — all nodes related to a concept
 

@@ -148,3 +148,13 @@ def test_bilingual_query_on_mixed_language_code_keeps_one_word_neighbors():
     lines = _node_lines(_query_graph_text(G, "restaurar sessao restore session", depth=2))
     assert any("restore_session()" in line for line in lines[:3])
     assert any("refresh_session_token()" in line for line in lines)
+
+
+def test_rules_say_to_read_only_the_part_found():
+    import pathlib
+    import omnigraph
+    from omnigraph.install import _CURSOR_RULE
+    texts = {f.name: f.read_text(encoding="utf-8") for f in (pathlib.Path(omnigraph.__file__).parent / "always_on").glob("*.md")}
+    texts["_CURSOR_RULE"] = _CURSOR_RULE
+    for name, text in texts.items():
+        assert "offset/limit" in " ".join(text.split()), name
