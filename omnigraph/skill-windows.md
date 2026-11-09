@@ -1,6 +1,6 @@
 ---
 name: omnigraph
-description: "Use for any question about a codebase, its architecture, file relationships, or project content — especially when omnigraph-out/ exists, where the question should be treated as a omnigraph query first. Turns any input (code, docs, papers, images, videos) into a persistent knowledge graph with god nodes, community detection, and query/path/explain tools."
+description: "Build, update or export a knowledge graph from a folder (code, docs, papers, images, videos). Use only when the user types /omnigraph or explicitly asks to build, update or export the graph. To answer questions about code, run the omnigraph query command instead of loading this skill."
 ---
 
 # /omnigraph

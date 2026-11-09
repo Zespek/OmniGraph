@@ -1,18 +1,14 @@
 ## omnigraph
 
-For any question about this repo's architecture, structure, components, or how to add/modify/find
-code, your first action should be `omnigraph query "<question>"` when `omnigraph-out/graph.json`
-exists. Use `omnigraph path "<A>" "<B>"` for relationship questions and `omnigraph explain "<concept>"`
+To locate code you do not already know the file for, run `omnigraph query "<question>"` when
+`omnigraph-out/graph.json` exists. Use `omnigraph path "<A>" "<B>"` for relationship questions and `omnigraph explain "<concept>"`
 for focused-concept questions. These return a scoped subgraph, usually much smaller than the full
-report or raw grep output. The search matches literal keywords against the code's own identifiers,
-not semantic meaning: if the user asks in a language other than the codebase's, phrase the query in
-the codebase's language (translate the concept, do not pass the user's own words verbatim) or it will
-return no matches. In a monorepo with multiple independent apps/modules, pass `--scope <path-substring>`
+report or raw grep output. The search matches literal words against the code's own names, not meaning. Put the key words in both the user's language and English in the same query (e.g. `omnigraph query "restaurar sessao restore session"`): code often mixes languages, and a query in only one of them misses every name written in the other. In a monorepo with multiple independent apps/modules, pass `--scope <path-substring>`
 (e.g. `--scope backend` or `--scope apps/provider`) so results come only from that app - without it, a
-generic term shared across apps can seed the traversal in the wrong one. If the result says
-`[!] TRUNCATED`, that means nodes are missing, not that the answer is complete: rerun with a higher
-`--budget` (e.g. `--budget 8000`) for a broad/architecture question before falling back to grep - the
-default budget can cut before reaching the relevant node.
+generic term shared across apps can seed the traversal in the wrong one. Results are ordered by
+relevance, so the top lines are the answer: go straight to the `file:line` shown instead of querying
+again. If they miss, retry once with a specific identifier or `--scope`, then fall back to grep. Raise
+`--budget` only for an explicit broad/architecture review.
 
 This applies to you and to every subagent you spawn, including a general-purpose search/explore
 agent: check whether omnigraph answers the question in one call BEFORE delegating broad code
