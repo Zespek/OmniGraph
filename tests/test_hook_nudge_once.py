@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import time
 
 import pytest
@@ -103,6 +104,8 @@ def test_subagent_is_nudged_even_right_after_a_query(tmp_path, monkeypatch, caps
     stamp = tmp_path / "omnigraph-out" / "cache" / "last_query_stamp"
     stamp.parent.mkdir(parents=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
+    earlier = time.time() - 5  # the parent queried before dispatching the subagent
+    os.utime(stamp, (earlier, earlier))
     assert _run("search", _search(), monkeypatch, capsys) == ""
     assert _run("search", _sub(), monkeypatch, capsys)
 
@@ -184,3 +187,19 @@ def test_partial_reads_through_the_shell_count(cmd, tmp_path, monkeypatch, capsy
 def test_writes_and_unrelated_commands_stay_quiet(cmd, tmp_path, monkeypatch, capsys):
     _graph(tmp_path, monkeypatch)
     assert _run("search", _bash(cmd), monkeypatch, capsys) == ""
+
+
+def test_subagent_that_queried_first_is_not_nudged(tmp_path, monkeypatch, capsys):
+    src = _graph(tmp_path, monkeypatch)
+    query_call = dict(_bash('omnigraph query "restore session"'), agent_id="agent-7")
+    assert _run("search", query_call, monkeypatch, capsys) == ""
+    stamp = tmp_path / "omnigraph-out" / "cache" / "last_query_stamp"
+    stamp.write_text(str(time.time()), encoding="utf-8")
+    later = time.time() + 5  # the query ran after the subagent started
+    os.utime(stamp, (later, later))
+    assert _run("search", _sub(), monkeypatch, capsys) == ""
+    read = {"session_id": "s1", "agent_id": "agent-7", "tool_name": "Read", "tool_input": {"file_path": str(src)}}
+    assert _run("read", read, monkeypatch, capsys) == ""
+    earlier = time.time() - 5  # a subagent dispatched after that query never saw it
+    os.utime(stamp, (earlier, earlier))
+    assert _run("search", _sub("agent-8"), monkeypatch, capsys)

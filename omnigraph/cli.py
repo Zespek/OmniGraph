@@ -747,15 +747,47 @@ def _hook_strict_enabled(flag: bool) -> bool:
     return flag
 
 
-def _query_stamp_fresh() -> bool:
-    """True if a query/explain/path ran within OMNIGRAPH_HOOK_STRICT_TTL (default
-    1800s) — recent orientation, so strict mode does not block this read."""
+def _query_stamp_time() -> "float | None":
+    """When a query/explain/path last ran, if within OMNIGRAPH_HOOK_STRICT_TTL
+    (default 1800s); None when there is no recent orientation."""
     from omnigraph.paths import out_path
     try:
         ttl = float(os.environ.get("OMNIGRAPH_HOOK_STRICT_TTL", "1800"))
-        return (time.time() - out_path("cache", "last_query_stamp").stat().st_mtime) < ttl
+        stamp = out_path("cache", "last_query_stamp").stat().st_mtime
     except Exception:
-        return False
+        return None
+    return stamp if time.time() - stamp < ttl else None
+
+
+def _query_stamp_fresh() -> bool:
+    """True if a query/explain/path ran recently, so strict mode does not block."""
+    return _query_stamp_time() is not None
+
+
+def _agent_started(payload: dict) -> "float | None":
+    """When this subagent first reached a hook, recorded on that first call.
+
+    It tells the subagent's own query (made after it started) from the parent's
+    (made before it was dispatched, which the subagent never saw).
+    """
+    agent_id = str(payload.get("agent_id") or "")
+    session_id = str(payload.get("session_id") or "")
+    if not agent_id or not session_id:
+        return None
+    from omnigraph.paths import out_path
+    try:
+        if not out_path("graph.json").is_file():
+            return None
+        folder = out_path("cache", "hook_sessions")
+        folder.mkdir(parents=True, exist_ok=True)
+        marker = folder / f"{_session_key(session_id, agent_id)}.seen"
+        try:
+            os.close(os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
+        except FileExistsError:
+            pass
+        return marker.stat().st_mtime
+    except Exception:
+        return None
 
 
 def _mark_session_denied(session_id: str) -> bool:
@@ -789,7 +821,7 @@ def _reset_session_markers(session_id: str) -> None:
     folder = out_path("cache", "hook_sessions")
     if not key or not folder.is_dir():
         return
-    own = re.compile(re.escape(key) + r"(?:-[0-9a-f]{12})?\.(?:nudge-[a-z]+|denied)")
+    own = re.compile(re.escape(key) + r"(?:-[0-9a-f]{12})?\.(?:nudge-[a-z]+|denied|seen)")
     for entry in os.scandir(folder):
         if own.fullmatch(entry.name):
             try:
@@ -807,11 +839,17 @@ def _should_nudge(payload: dict, kind: str) -> bool:
     to make the tool known, and nothing is needed after the agent has just
     queried. A payload with no session id keeps the old always-nudge behavior.
 
-    Each subagent has its own budget and always gets its first nudge: the query
-    stamp is project-wide, and a fresh subagent did not see the query that set it.
+    Each subagent has its own budget. The query stamp is project-wide, so it
+    silences a subagent only when the query ran after that subagent started:
+    a query the parent made before dispatching it is one the subagent never saw.
     """
     agent_id = str(payload.get("agent_id") or "")
-    if not agent_id and _query_stamp_fresh():
+    stamp = _query_stamp_time()
+    if agent_id:
+        started = _agent_started(payload)
+        if stamp is not None and started is not None and stamp > started:
+            return False
+    elif stamp is not None:
         return False
     session_id = str(payload.get("session_id") or "")
     if not session_id:
@@ -1069,6 +1107,10 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     if not isinstance(t, dict):
         return
     try:
+        if kind in ("search", "read", "task"):
+            # Every call counts, not only the ones that nudge: a subagent's
+            # first call is often the omnigraph query itself.
+            _agent_started(d)
         if kind == "task":
             # Unconditional (like the search nudge): a Task call carries no
             # command/pattern/path to inspect, and guessing "is this
