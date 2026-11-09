@@ -15,7 +15,10 @@ import networkx as nx
 from networkx.readwrite import json_graph
 from omnigraph.security import sanitize_label, check_graph_file_size_cap
 from omnigraph.build import edge_data, edge_datas
-from omnigraph.paths import default_graph_json as _default_graph_json
+from omnigraph.paths import default_graph_json as _default_graph_json, touch_query_stamp
+
+# MCP counterparts of the CLI's query/explain/path, which silence the hook nudges.
+_ORIENTING_TOOLS = frozenset({"query_graph", "get_node", "get_neighbors", "shortest_path"})
 
 try:
     with warnings.catch_warnings():
@@ -272,6 +275,12 @@ _QUERY_STOPWORDS = frozenset({
     "porque", "por", "para", "funciona", "está", "están", "hay",
     # Portuguese
     "qual", "quais", "quando", "onde", "são", "estão", "tem", "uma", "não",
+    # typed without accents, and fillers that otherwise become substring noise
+    # ("onde fica o login" used to search for "fica" and hit "verificar")
+    "nao", "sao", "estao", "esta", "fica", "ficam", "com", "sem", "ser", "foi",
+    "isso", "isto", "esse", "essa", "esses", "essas", "este", "aqui", "quem",
+    "seu", "sua", "seus", "suas", "dos", "das", "nos", "nas", "num", "numa",
+    "pelo", "pela", "pelos", "pelas", "voce", "você", "existe", "acontece",
     # Italian
     "perché", "cosa", "quale", "quali", "dove", "funziona", "sono", "che",
     "della",
@@ -508,7 +517,11 @@ def _score_nodes(G: nx.Graph, terms: list[str]) -> list[tuple[float, str]]:
 
 
 def _score_query(
-    G: nx.Graph, terms: list[str], *, collect_per_term_seeds: bool
+    G: nx.Graph,
+    terms: list[str],
+    *,
+    collect_per_term_seeds: bool,
+    stems: dict[str, str] | None = None,
 ) -> _QueryScores:
     """Single-pass combined scorer that optionally also records the best seed
     for each normalized query token.
@@ -542,7 +555,8 @@ def _score_query(
     # abaixo, também inflacionaria o índice de prazo combinado.
     norm_terms = list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t)))
     n_terms = len(norm_terms)
-    idf = _compute_idf(G, norm_terms)
+    stem_of = stems or {}
+    idf = _compute_idf(G, norm_terms + list(stem_of.values()))
     # String de consulta inteira para correspondência de rótulo completo (espelha o `term` de _find_node).
     joined = " ".join(norm_terms)
     # Pondere o bônus de consulta completa pelo termo constituinte mais raro, de modo que um específico
@@ -552,7 +566,7 @@ def _score_query(
     # de volta ao grafo inteiro quando o índice não é seletivo. O resultado é
     # idêntico de qualquer maneira - a pontuação por nó abaixo permanece inalterada e um
     # o nó não candidato sempre pontua 0. (O IDF acima permanece uma estatística de grafo inteiro.)
-    candidate_ids = _trigram_candidates(G, norm_terms + ([joined] if joined else []))
+    candidate_ids = _trigram_candidates(G, norm_terms + list(stem_of.values()) + ([joined] if joined else []))
     node_iter = (
         G.nodes(data=True) if candidate_ids is None
         else ((nid, G.nodes[nid]) for nid in candidate_ids)
@@ -615,7 +629,11 @@ def _score_query(
         matched = 0
         tiered = 0.0
         for t in norm_terms:
-            w = idf.get(t, 1.0)
+            # A word the label lacks literally falls back to its stem (`hooks` ->
+            # `hook`), in this same pass. A literal hit keeps its own tier, so
+            # `process_orders` typed in full still beats `process_order`.
+            probe = t if not stem_of or t in norm_label else stem_of.get(t, t)
+            w = idf.get(probe, 1.0)
             # Contribuições por nível para este token, mantidas separadas para que o
             # o rastreamento singleton abaixo pode reutilizá-los sem reavaliar
             # os mesmos predicados. Precedência de três níveis: exato > prefixo >
@@ -624,23 +642,23 @@ def _score_query(
             tier_value = 0.0
             substr_value = 0.0
             source_value = 0.0
-            if t == norm_label or t == bare_label:
+            if probe == norm_label or probe == bare_label:
                 tier_value = _EXACT_MATCH_BONUS * w
                 matched += 1
-            elif norm_label.startswith(t) or bare_label.startswith(t):
+            elif norm_label.startswith(probe) or bare_label.startswith(probe):
                 tier_value = _PREFIX_MATCH_BONUS * w
                 matched += 1
-            elif t in norm_label:
+            elif probe in norm_label:
                 substr_value = _SUBSTRING_MATCH_BONUS * w
                 score += substr_value
                 matched += 1
-            if t in source:
+            if probe in source:
                 source_value = _SOURCE_MATCH_BONUS * w
                 score += source_value
             # Rationale tier: recall for "why" questions whose words
             # live only in the attribute. Adds to the score, not to `matched`.
             rationale_value = 0.0
-            if rationale and t in rationale:
+            if rationale and probe in rationale:
                 rationale_value = _RATIONALE_MATCH_BONUS * w
                 score += rationale_value
             tiered += tier_value
@@ -1034,11 +1052,22 @@ def _dfs(G: nx.Graph, start_nodes: list[str], depth: int) -> tuple[set[str], lis
     return visited, edges_seen
 
 
-def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_budget: int = 2000, *, seeds: list[str] | None = None) -> str:
+def _subgraph_to_text(
+    G: nx.Graph,
+    nodes: set[str],
+    edges: list[tuple],
+    token_budget: int = 2000,
+    *,
+    seeds: list[str] | None = None,
+    order: list[str] | None = None,
+) -> str:
     """Render subgraph as text, cutting at token_budget (approx 3 chars/token).
 
     seeds: exact-match nodes rendered first before the degree-sorted expansion,
     so the queried symbol always appears at the top of the output.
+
+    order: relevance ranking computed by the caller. When given it replaces the
+    hop/degree ordering for every non-seed node.
     """
     char_budget = token_budget * 3
     lines = []
@@ -1070,10 +1099,13 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                     dist[nb] = hop
                     nxt.append(nb)
         frontier = nxt
-    ordered = seed_hits + sorted(
-        nodes - seed_set,
-        key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
-    )
+    if order is not None:
+        ordered = seed_hits + [n for n in order if n in nodes and n not in seed_set]
+    else:
+        ordered = seed_hits + sorted(
+            nodes - seed_set,
+            key=lambda n: (dist.get(n, 1 << 30), -G.degree(n), str(n)),
+        )
     for nid in ordered:
         d = G.nodes[nid]
         # Cada campo derivado do LLM passa por sanitize_label antes de ser
@@ -1089,13 +1121,10 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
             status = sanitize_label(str(entry.get("status", "")))
             if status:
                 learning_suffix = f" learning={status}{':stale' if entry.get('stale') else ''}"
-        line = (
-            f"NODE {sanitize_label(d.get('label', nid))} "
-            f"[src={sanitize_label(str(d.get('source_file', '')))} "
-            f"loc={sanitize_label(str(d.get('source_location', '')))} "
-            f"community={sanitize_label(str(d.get('community_name') or d.get('community', '')))}"
-            f"{learning_suffix}]"
-        )
+        src_text = sanitize_label(str(d.get('source_file') or ''))
+        loc_text = sanitize_label(str(d.get('source_location') or ''))
+        where = f"{src_text}:{loc_text}" if src_text and loc_text else (src_text or loc_text)
+        line = f"NODE {sanitize_label(d.get('label', nid))} [{where}{learning_suffix}]"
         lines.append(line)
     for u, v in edges:
         if u in nodes and v in nodes:
@@ -1125,10 +1154,12 @@ def _subgraph_to_text(G: nx.Graph, nodes: set[str], edges: list[tuple], token_bu
                 f" at={sanitize_label(str(d.get('source_file') or ''))}:{sanitize_label(_loc)}"
                 if _loc else ""
             )
+            confidence = sanitize_label(str(d.get('confidence', '')))
+            qualifier = ("" if confidence == "EXTRACTED" else confidence) + context_suffix
+            qualifier = f" [{qualifier.strip()}]" if qualifier.strip() else ""
             line = (
                 f"EDGE {sanitize_label(G.nodes[src].get('label', src))} "
-                f"--{sanitize_label(str(d.get('relation', '')))} "
-                f"[{sanitize_label(str(d.get('confidence', '')))}{context_suffix}]--> "
+                f"--{sanitize_label(str(d.get('relation', '')))}{qualifier}--> "
                 f"{sanitize_label(G.nodes[tgt].get('label', tgt))}{at_suffix}"
             )
             lines.append(line)
@@ -1321,6 +1352,255 @@ def _filter_graph_by_scope(G: nx.Graph, scope: str | None) -> nx.Graph:
     return H
 
 
+# Relevance layer for `query`. BFS reach is not relevance: on a real codebase the
+# traversal returns hundreds of nodes and the old renderer filled the whole
+# budget with them, so every answer came back truncated and the symbol that
+# answered the question sat near the bottom, behind test helpers and file hubs.
+_TEST_PATH_RE = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|specs?|fixtures)/"
+    r"|(?:^|/)test_[^/]*$|(?:^|/)conftest\.py$"
+    r"|_test\.[^/.]+$|\.(?:test|spec)\.[^/]+$",
+    re.IGNORECASE,
+)
+_TEST_INTENT_TERMS: frozenset[str] = frozenset({
+    "test", "tests", "testing", "tested", "spec", "specs", "pytest", "unittest",
+    "fixture", "fixtures", "mock", "mocks", "coverage",
+})
+_TEST_RELEVANCE_FACTOR = 0.25
+_MAX_TEST_NODES = 3
+_MAX_DIRECT_HITS = 8
+_DIRECT_HIT_RATIO = 0.3
+_MAX_STRUCTURAL_NODES = 6
+_MIN_FAR_COVERAGE = 0.34
+_EDGE_FOCUS_NODES = 6
+# `contains` repeats the file already printed on the NODE line; `rationale_for`
+# points at a docstring node the answer has collapsed into its owner.
+_LOW_VALUE_RELATIONS = frozenset({"contains", "rationale_for", "method"})
+
+
+def _term_stem(term: str) -> str:
+    """Strip a plural or verb suffix so `hooks` finds `_install_claude_hook`.
+
+    Node matching is substring-based and the suffix sits on the query side, so
+    a plural query term never matched the singular identifier. Conservative on
+    purpose: only ASCII words, and only suffixes long enough to leave a usable
+    stem (`status` and `analysis` stay whole).
+    """
+    if not term.isascii() or len(term) < 4:
+        return term
+    if term.endswith("ing") and len(term) >= 7:
+        return term[:-3]
+    if term.endswith("ed") and len(term) >= 6:
+        return term[:-2]
+    if term.endswith("ies") and len(term) >= 5:
+        return term[:-3] + "y"
+    if term.endswith(("sses", "xes", "ches", "shes")):
+        return term[:-2]
+    if term.endswith("s") and not term.endswith(("ss", "us", "is")):
+        return term[:-1]
+    return term
+
+
+def _is_test_source(data: dict) -> bool:
+    return bool(_TEST_PATH_RE.search(str(data.get("source_file") or "").replace("\\", "/")))
+
+
+def _term_coverage(data: dict, stems: list[str], idf: dict[str, float], total: float) -> float:
+    """IDF-weighted share of the question this node's label answers (0..1).
+
+    A hit in the file name or in the node's own `rationale` text counts half:
+    it places the node near the topic without saying that the node is the
+    thing being asked about.
+    """
+    label = data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower()
+    source = str(data.get("source_file") or "").lower().replace("\\", "/").rsplit("/", 1)[-1]
+    rationale = _node_rationale_text(data)
+    got = 0.0
+    for stem in stems:
+        if stem in label:
+            got += idf[stem]
+        elif stem in source or (rationale and stem in rationale):
+            got += idf[stem] * 0.5
+    return got / total
+
+
+def _stems_in_graph(G: nx.Graph, ranked: list[tuple[float, str]], stems: list[str]) -> list[str]:
+    """The query words that occur somewhere among the scored nodes.
+
+    A word found nowhere cannot tell candidates apart, but it would still sit in
+    the coverage denominator with the highest IDF of all. The rules ask agents
+    to write each key word in two languages, so a query always carries such
+    words: they cut every node's coverage and pruned relevant neighbors that a
+    one-language query kept. Falls back to all words when none occurs.
+    """
+    remaining = set(stems)
+    for _score, nid in ranked:
+        if not remaining:
+            break
+        data = G.nodes[nid]
+        text = " ".join((
+            data.get("norm_label") or _strip_diacritics(data.get("label") or "").lower(),
+            str(data.get("source_file") or "").lower(),
+            _node_rationale_text(data),
+        ))
+        remaining -= {s for s in remaining if s in text}
+    present = [s for s in stems if s not in remaining]
+    return present or stems
+
+
+def _rationale_owner(G: nx.Graph, nid: str) -> str | None:
+    """The symbol a docstring node documents, or None when it has no owner."""
+    for neighbor in G.neighbors(nid):
+        if edge_data(G, nid, neighbor).get("relation") == "rationale_for":
+            return neighbor
+    return None
+
+
+def _rerank_for_question(
+    G: nx.Graph,
+    ranked: list[tuple[float, str]],
+    stems: list[str],
+    idf: dict[str, float],
+    want_tests: bool,
+) -> list[tuple[float, str]]:
+    """Reorder `_score_query` hits by how much of the question each one answers.
+
+    `_score_query` stays the shared scorer for path/explain, where a single
+    exact label is what matters. A question needs the node covering most of its
+    words instead: without this, a prefix hit on one generic word outranks an
+    identifier matching three of them. A docstring hit is credited to the symbol
+    it documents, because that symbol is what the agent has to open.
+    """
+    total = sum(idf.get(s, 0.0) for s in stems) or 1.0
+    best: dict[str, float] = {}
+    for score, nid in ranked:
+        data = G.nodes[nid]
+        coverage = _term_coverage(data, stems, idf, total)
+        adjusted = score * (0.05 + coverage * coverage)
+        if not want_tests and _is_test_source(data):
+            adjusted *= _TEST_RELEVANCE_FACTOR
+        target = nid
+        if data.get("file_type") == "rationale":
+            target = _rationale_owner(G, nid) or nid
+        if adjusted > best.get(target, 0.0):
+            best[target] = adjusted
+    return sorted(
+        ((score, nid) for nid, score in best.items()),
+        key=lambda item: (-item[0], len(G.nodes[item[1]].get("label") or item[1]), item[1]),
+    )
+
+
+def _select_answer_nodes(
+    G: nx.Graph,
+    reached: set[str],
+    ranked: list[tuple[float, str]],
+    seeds: list[str],
+    stems: list[str],
+    idf: dict[str, float],
+    want_tests: bool,
+    max_nodes: int,
+    add_direct_hits: bool,
+) -> tuple[list[str], int]:
+    """Choose and order the nodes worth printing; return them and the count of
+    matching nodes left out.
+
+    A traversal small enough to fit is returned whole, only reordered. Otherwise
+    a node stays only if it matches the question, or is a direct neighbor of the
+    strongest seeds. The budget is a ceiling, not a target.
+    """
+    top = ranked[0][0] if ranked else 0.0
+    score_of = dict((nid, score) for score, nid in ranked)
+    hits = [nid for score, nid in ranked[:_MAX_DIRECT_HITS]
+            if score >= top * _DIRECT_HIT_RATIO] if add_direct_hits else []
+    pool = (set(reached) | set(hits)) & set(G.nodes)
+    seed_set = set(seeds) | set(hits)
+    hops: dict[str, int] = {n: 0 for n in seeds if n in pool}
+    frontier, hop = list(hops), 0
+    while frontier:
+        hop += 1
+        nxt = []
+        for n in frontier:
+            for nb in G.neighbors(n):
+                if nb in pool and nb not in hops:
+                    hops[nb] = hop
+                    nxt.append(nb)
+        frontier = nxt
+    total = sum(idf.get(s, 0.0) for s in stems) or 1.0
+    prune = len(pool) > max_nodes
+    near = {nb for s in seeds[:2] if s in G for nb in G.neighbors(s)}
+    scored: list[tuple[float, int, str]] = []
+    structural: list[tuple[float, int, str]] = []
+    for n in pool:
+        data = G.nodes[n]
+        coverage = _term_coverage(data, stems, idf, total)
+        hop_n = 0 if n in seed_set else hops.get(n, 3)
+        relevance = coverage + 0.6 / (1 + hop_n)
+        if top:
+            relevance += 0.4 * score_of.get(n, 0.0) / top
+        is_test = _is_test_source(data)
+        if is_test and not want_tests:
+            relevance *= _TEST_RELEVANCE_FACTOR
+        entry = (-relevance, -G.degree(n), str(n))
+        if prune and n not in seed_set:
+            if data.get("file_type") == "rationale":
+                continue
+            if coverage <= 0:
+                if n in near and not is_test and not _is_answerless_hub(G, n):
+                    structural.append(entry)
+                continue
+            if hop_n > 1 and coverage < _MIN_FAR_COVERAGE:
+                continue
+        scored.append(entry)
+    scored.sort()
+    structural.sort()
+    ordered = [n for _, _, n in scored]
+    if prune and not want_tests:
+        production = [n for n in ordered if not _is_test_source(G.nodes[n])]
+        if len(production) >= 3:
+            tests = [n for n in ordered if _is_test_source(G.nodes[n])][:_MAX_TEST_NODES]
+            keep = set(production) | set(tests)
+            ordered = [n for n in ordered if n in keep]
+    if prune:
+        ordered += [n for _, _, n in structural[:_MAX_STRUCTURAL_NODES]]
+    return ordered[:max_nodes], max(0, len(ordered) - max_nodes)
+
+
+def _is_answerless_hub(G: nx.Graph, nid: str) -> bool:
+    """A file node with no query match: its path is already on every child line."""
+    from omnigraph.analyze import _is_file_node
+    return _is_file_node(G, nid)
+
+
+def _select_answer_edges(
+    G: nx.Graph,
+    kept: list[str],
+    edges: list[tuple],
+    max_edges: int,
+) -> list[tuple]:
+    """Relations worth printing: those touching the top answers, best first."""
+    kept_set = set(kept)
+    rank = {n: i for i, n in enumerate(kept)}
+    focus = set(kept[:_EDGE_FOCUS_NODES])
+    candidates = list(edges)
+    _complete_induced_edges(G, kept_set, candidates)
+    picked = []
+    seen = set()
+    for u, v in candidates:
+        if u not in kept_set or v not in kept_set or u == v:
+            continue
+        if u not in focus and v not in focus:
+            continue
+        key = frozenset((u, v))
+        if key in seen:
+            continue
+        seen.add(key)
+        if edge_data(G, u, v).get("relation") in _LOW_VALUE_RELATIONS:
+            continue
+        picked.append((u, v))
+    picked.sort(key=lambda e: (min(rank[e[0]], rank[e[1]]), max(rank[e[0]], rank[e[1]]), str(e[0]), str(e[1])))
+    return picked[:max_edges]
+
+
 def _query_graph_text(
     G: nx.Graph,
     question: str,
@@ -1343,7 +1623,14 @@ def _query_graph_text(
     # — um combinado + um por token de consulta — percorrendo novamente o grafo inteiro cada
     # tempo; em um benchmark de três termos de 100 mil nós, aproximadamente 71% do tempo de pontuação foi
     # gastos nesses passes redundantes por período.
-    qs = _score_query(G, terms, collect_per_term_seeds=True)
+    tokens = list(dict.fromkeys(tok for t in terms for tok in _search_tokens(t)))
+    stem_of = {tok: _term_stem(tok) for tok in tokens if _term_stem(tok) != tok}
+    qs = _score_query(G, terms, collect_per_term_seeds=True, stems=stem_of)
+    view = _traversal_view(G)
+    want_tests = any(t in _TEST_INTENT_TERMS for t in terms)
+    stems = _stems_in_graph(G, qs.ranked, list(dict.fromkeys(stem_of.get(tok, tok) for tok in tokens)))
+    idf = _compute_idf(G, stems)
+    ranked = _rerank_for_question(view, qs.ranked, stems, idf, want_tests)
     # Relational-intent verbs ("calls", "uses", ...) describe the relation the
     # question asks about, not a symbol to seed from; drop them from the
     # per-term seed GUARANTEE so an incidental verb match cannot seat a decoy
@@ -1357,11 +1644,24 @@ def _query_graph_text(
         best_seed_by_term = {
             t: nid for t, nid in best_seed_by_term.items() if t not in intent
         }
-    start_nodes = _pick_seeds(qs.ranked, G=G, best_seed_by_term=best_seed_by_term)
+    if not want_tests:
+        # The per-term guarantee must not hand a seat to a test helper, nor to a
+        # docstring whose owner is what the question needs.
+        guaranteed: dict[str, str] = {}
+        for term, nid in best_seed_by_term.items():
+            data = G.nodes[nid]
+            if data.get("file_type") == "rationale":
+                nid = _rationale_owner(view, nid) or nid
+                data = G.nodes[nid]
+            if not _is_test_source(data):
+                guaranteed[term] = nid
+        if guaranteed or len(terms) > 1:
+            best_seed_by_term = guaranteed
+    start_nodes = _pick_seeds(ranked, G=G, best_seed_by_term=best_seed_by_term)
     if not start_nodes:
         return "No matching nodes found."
     resolved_filters, filter_source = _resolve_context_filters(question, context_filters)
-    traversal_graph = _filter_graph_by_context(_traversal_view(G), resolved_filters)
+    traversal_graph = _filter_graph_by_context(view, resolved_filters)
     nodes, edges = _dfs(traversal_graph, start_nodes, depth) if mode == "dfs" else _bfs(traversal_graph, start_nodes, depth)
     header_parts = [
         f"Traversal: {mode.upper()} depth={depth}",
@@ -1382,10 +1682,30 @@ def _query_graph_text(
         header_parts.append(f"Context: {', '.join(resolved_filters)} ({filter_source})")
     header_parts.append(f"{len(nodes)} nodes found")
     header = " | ".join(header_parts) + "\n\n"
+    max_nodes = max(10, token_budget // 100)
+    kept, omitted = _select_answer_nodes(
+        traversal_graph, nodes, ranked, start_nodes, stems, idf, want_tests, max_nodes,
+        add_direct_hits=not resolved_filters,
+    )
+    pruned = len(kept) < len(nodes) or omitted > 0
+    if pruned:
+        chosen = _select_answer_edges(traversal_graph, kept, edges, max(6, token_budget // 150))
+        # Top of the relevance order, so the seed guarantee protects the answer
+        # rather than a per-term seed that only matched one generic word.
+        render_seeds = kept[:3]
+    else:
+        chosen = edges
+        render_seeds = start_nodes
     # Pass the seeds so the queried symbol renders first and survives truncation
     # (#BUG2): a branch merge had silently dropped this argument, leaving the
     # seed-first ordering as dead code.
-    return header + _subgraph_to_text(traversal_graph, nodes, edges, token_budget, seeds=start_nodes)
+    body = _subgraph_to_text(traversal_graph, set(kept), chosen, token_budget, seeds=render_seeds, order=kept)
+    if omitted:
+        body += (
+            f"\n(+{omitted} lower-ranked matches omitted; results are ordered by "
+            f"relevance. To see others, use a specific identifier or --scope)"
+        )
+    return header + body
 
 
 def _resolve_path_scoped_symbol(G: nx.Graph, path_part: str, symbol_part: str) -> list[str]:
@@ -2311,7 +2631,10 @@ def _build_server(graph_path: str):
             return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
         try:
             _select_graph(project_path)  # vincular G/comunidades ao grafo de destino
-            return [types.TextContent(type="text", text=handler(arguments))]
+            result = handler(arguments)
+            if name in _ORIENTING_TOOLS:
+                touch_query_stamp(active_graph_path)
+            return [types.TextContent(type="text", text=result)]
         except ToolError:
             # A handler-signalled error: propagate so the result is marked
             # isError:true (the mcp 1.x decorator wraps a raised exception into

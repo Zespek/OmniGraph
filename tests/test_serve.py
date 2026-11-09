@@ -1437,6 +1437,7 @@ def test_query_graph_text_makes_exactly_one_score_query_call(monkeypatch):
         "router service handler",                          # three (the scenario the RFC targets)
         "get user run name path",                          # five
         "extract build report router config service token rate limit widget",  # ten
+        "routers services handlers",                       # plurals, which fall back to stems
     ]
     for q in queries:
         state["sq"] = 0
@@ -1557,7 +1558,7 @@ def test_subgraph_to_text_overshoot_notice_when_edges_exceed_budget():
     edges = list(itertools.combinations(labels, 2))
     for u, v in edges:
         G.add_edge(u, v, relation="calls", confidence="high")
-    node_chars = len("\n".join(f"NODE {l} [src=f.py loc=L1 community=c]" for l in labels))
+    node_chars = len("\n".join(f"NODE {l} [f.py:L1]" for l in labels))
     budget = (node_chars // 3) + 5  # fits every node, nowhere near every edge
     text = _subgraph_to_text(G, set(G.nodes), edges, token_budget=budget)
     node_lines = [l for l in text.splitlines() if l.startswith("NODE ")]

@@ -1,10 +1,13 @@
-"""Token-reduction benchmark - measures how much context omnigraph saves vs naive full-corpus approach."""
+"""Token benchmark: real `omnigraph query` output vs reading the whole corpus.
+
+The corpus figure is an upper bound, not a saving: no agent reads every file to
+answer one question. Real savings against grep are smaller and depend on the task.
+"""
 from __future__ import annotations
 import sys
 import networkx as nx
 
-from omnigraph.build import edge_data
-from omnigraph.serve import _query_terms
+from omnigraph.serve import _query_graph_text
 from omnigraph.paths import default_graph_json as _default_graph_json
 
 
@@ -35,42 +38,11 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _query_subgraph_tokens(G: nx.Graph, question: str, depth: int = 3) -> int:
-    """Run BFS from best-matching nodes and return estimated tokens in the subgraph context."""
-    terms = _query_terms(question)
-    scored = []
-    for nid, data in G.nodes(data=True):
-        label = (data.get("label") or "").lower()
-        score = sum(1 for t in terms if t in label)
-        if score > 0:
-            scored.append((score, nid))
-    scored.sort(reverse=True)
-    start_nodes = [nid for _, nid in scored[:3]]
-    if not start_nodes:
+    """Estimated tokens of what `omnigraph query` really prints for this question."""
+    text = _query_graph_text(G, question, depth=depth)
+    if text.startswith("No matching nodes found"):
         return 0
-
-    visited: set[str] = set(start_nodes)
-    frontier = set(start_nodes)
-    edges_seen: list[tuple] = []
-    for _ in range(depth):
-        next_frontier: set[str] = set()
-        for n in frontier:
-            for neighbor in G.neighbors(n):
-                if neighbor not in visited:
-                    next_frontier.add(neighbor)
-                    edges_seen.append((n, neighbor))
-        visited.update(next_frontier)
-        frontier = next_frontier
-
-    lines = []
-    for nid in visited:
-        d = G.nodes[nid]
-        lines.append(f"NODE {d.get('label', nid)} src={d.get('source_file', '')} loc={d.get('source_location', '')}")
-    for u, v in edges_seen:
-        if u in visited and v in visited:
-            d = edge_data(G, u, v)
-            lines.append(f"EDGE {G.nodes[u].get('label', u)} --{d.get('relation', '')}--> {G.nodes[v].get('label', v)}")
-
-    return _estimate_tokens("\n".join(lines))
+    return _estimate_tokens(text)
 
 
 _SAMPLE_QUESTIONS = [
@@ -145,7 +117,7 @@ def print_benchmark(result: dict) -> None:
     print(f"  Corpus:          {result['corpus_words']:,} words {arrow} ~{result['corpus_tokens']:,} tokens (naive)")
     print(f"  Graph:           {result['nodes']:,} nodes, {result['edges']:,} edges")
     print(f"  Avg query cost:  ~{result['avg_query_tokens']:,} tokens")
-    print(f"  Reduction:       {result['reduction_ratio']}x fewer tokens per query")
+    print(f"  Vs whole corpus: {result['reduction_ratio']}x smaller (reduction upper bound; agents grep, they do not read every file)")
     print(f"\n  Per question:")
     for p in result["per_question"]:
         print(f"    [{p['reduction']}x] {p['question'][:55]}")

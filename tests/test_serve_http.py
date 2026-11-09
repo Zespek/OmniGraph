@@ -429,3 +429,17 @@ def test_get_node_and_get_neighbors_agree_on_ambiguous_label(tmp_path):
         # A unique label still resolves cleanly on get_node.
         unique = _call_tool(client, headers, "get_node", {"label": "unique_helper"}, rid=4)
         assert "Node: unique_helper" in unique, unique
+
+
+def test_orienting_tools_silence_hook_nudges_but_stats_do_not(tmp_path):
+    """An MCP query orients the agent exactly like the CLI's, so the hook guards
+    must see the same stamp. A stats call locates no code and must not."""
+    graph = _graph_file(tmp_path)
+    stamp = Path(graph).parent / "cache" / "last_query_stamp"
+    app = serve_mod._build_http_app(graph, json_response=True)
+    with _client(app) as client:
+        headers = _init_session(client)
+        _call_tool(client, headers, "graph_stats", {}, rid=2)
+        assert not stamp.exists()
+        _call_tool(client, headers, "query_graph", {"question": "anything"}, rid=3)
+        assert stamp.exists()
