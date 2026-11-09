@@ -3398,6 +3398,9 @@ def dispatch_command(cmd: str) -> None:
                       f"import), so load a graph with: omnigraph export falkordb --push "
                       f"falkordb://localhost:6379")
 
+    elif cmd == "medir":
+        from omnigraph.medir import main as _medir
+        sys.exit(_medir(sys.argv[2:]))
     elif cmd == "benchmark":
         from omnigraph.benchmark import run_benchmark, print_benchmark
 
