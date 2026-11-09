@@ -226,7 +226,7 @@ def test_search_out_path_error_is_swallowed(tmp_path, monkeypatch):
     # blocks the tool).
     def _boom(*a, **k):
         raise OSError("boom")
-    monkeypatch.setattr("omnigraph.paths.out_path", _boom)
+    monkeypatch.setattr("omnigraph.paths.graph_out_path", _boom)
     out = _invoke("search", {"tool_input": {"command": "grep x"}}, tmp_path, monkeypatch)
     assert out.strip() == ""
 
@@ -250,7 +250,7 @@ def test_gemini_allow_without_graph(tmp_path, monkeypatch):
 def test_gemini_always_allows_even_when_check_throws(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise OSError("boom")
-    monkeypatch.setattr("omnigraph.paths.out_path", _boom)
+    monkeypatch.setattr("omnigraph.paths.graph_out_path", _boom)
     out = _invoke("gemini", None, tmp_path, monkeypatch, graph=True)
     assert json.loads(out) == {"decision": "allow"}
 

@@ -87,3 +87,11 @@ def test_setup_date_comes_from_the_local_rules_file(tmp_path, monkeypatch, capsy
     (project / "CLAUDE.local.md").write_text("## omnigraph\n", encoding="utf-8")
     assert main([]) == 0
     assert "antes" in capsys.readouterr().out
+
+
+def test_setup_date_is_found_in_a_workspace_folder_above(tmp_path, monkeypatch, capsys):
+    project, folder = _setup(tmp_path, monkeypatch)
+    _session(folder, "s", str(project), time.time() - 86400, [("Grep", {}, 400)])
+    (project.parent / "CLAUDE.local.md").write_text("## omnigraph\n", encoding="utf-8")
+    assert main([]) == 0
+    assert "antes" in capsys.readouterr().out

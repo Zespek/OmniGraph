@@ -23,9 +23,23 @@ MAPA="$(command -v omnigraph-mapa 2>/dev/null || echo "$HOME/.local/bin/omnigrap
 
 printf "${roxo}▸ Preparando o projeto para a IA da sua IDE${zero}\n"
 
+# mapa de um workspace: pasta acima com omnigraph-out (para antes da pasta pessoal)
+mapa_acima() {
+  local d casa
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  casa="$(cd "$HOME" 2>/dev/null && pwd -P)"
+  while :; do
+    d="$(dirname "$d")"
+    { [ "$d" = "/" ] || [ "$d" = "$casa" ]; } && return 1
+    [ -f "$d/omnigraph-out/graph.json" ] && { printf '%s\n' "$d"; return 0; }
+  done
+}
+
 # 1) garante o mapa (usa o omnigraph-mapa: barra de progresso, IA e fallback)
 if [ -f "$alvo/omnigraph-out/graph.json" ]; then
   printf "  ${verde}✓${zero} mapa já existe (use 'omnigraph-mapa' para atualizar)\n"
+elif acima="$(mapa_acima "$alvo")"; then
+  printf "  ${verde}✓${zero} usando o mapa que já existe em %s\n" "$acima"
 else
   if [ -x "$MAPA" ]; then
     "$MAPA" "$alvo" || { printf "${amarelo}! não consegui gerar o mapa${zero}\n" >&2; exit 1; }

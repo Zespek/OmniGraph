@@ -41,15 +41,21 @@ def _project_roots() -> set[str]:
 
 
 def _setup_time(root: Path) -> float | None:
-    """When OmniGraph was set up here: when omnigraph-ide wrote CLAUDE.local.md."""
-    marker = root / "CLAUDE.local.md"
-    try:
-        if "omnigraph" not in marker.read_text(encoding="utf-8", errors="replace"):
-            return None
-        st = marker.stat()
-    except OSError:
-        return None
-    return getattr(st, "st_birthtime", st.st_mtime)
+    """When OmniGraph was set up here: when omnigraph-ide wrote CLAUDE.local.md,
+    in this folder or one above it (a workspace that holds several repos)."""
+    home = Path.home()
+    for folder in (root, *root.parents):
+        if folder == home or folder == folder.parent:
+            break
+        marker = folder / "CLAUDE.local.md"
+        try:
+            if "omnigraph" not in marker.read_text(encoding="utf-8", errors="replace"):
+                continue
+            st = marker.stat()
+        except OSError:
+            continue
+        return getattr(st, "st_birthtime", st.st_mtime)
+    return None
 
 
 def _classify(name: str, tool_input: dict) -> str:

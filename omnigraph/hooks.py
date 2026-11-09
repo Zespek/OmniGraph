@@ -810,7 +810,9 @@ def _register_merge_driver(root: Path) -> str:
     launcher is not on PATH at merge time.
     """
     import subprocess as _sp
-    from omnigraph.paths import output_is_git_ignored
+    from omnigraph.paths import OMNIGRAPH_OUT, _graph_dir_above, output_is_git_ignored
+    if not (root / OMNIGRAPH_OUT / "graph.json").exists() and _graph_dir_above(root) is not None:
+        return "skipped (the graph lives in a workspace folder above this repository)"
     if output_is_git_ignored(root):
         # An ignored graph never reaches a merge, and the .gitattributes line
         # would only add a tracked change for the team to commit.

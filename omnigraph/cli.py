@@ -97,7 +97,9 @@ _GEMINI_NUDGE_TEXT = (
 
 
 def _default_graph_path() -> str:
-    return str(Path(_OMNIGRAPH_OUT) / "graph.json")
+    """graph.json in this folder, or in the nearest folder above that has one."""
+    from omnigraph.paths import find_out_dir
+    return str(find_out_dir() / "graph.json")
 
 
 def _stamped_manifest_files(
@@ -747,10 +749,20 @@ def _hook_strict_enabled(flag: bool) -> bool:
     return flag
 
 
+def _hook_project_root() -> Path:
+    """The project the graph covers: the folder holding the output dir when the
+    graph was found above the current folder, else CLAUDE_PROJECT_DIR or cwd."""
+    from omnigraph.paths import _graph_dir_above
+    above = None if (Path(_OMNIGRAPH_OUT) / "graph.json").is_file() else _graph_dir_above()
+    if above is not None:
+        return above.parent
+    return Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+
+
 def _query_stamp_time() -> "float | None":
     """When a query/explain/path last ran, if within OMNIGRAPH_HOOK_STRICT_TTL
     (default 1800s); None when there is no recent orientation."""
-    from omnigraph.paths import out_path
+    from omnigraph.paths import graph_out_path as out_path
     try:
         ttl = float(os.environ.get("OMNIGRAPH_HOOK_STRICT_TTL", "1800"))
         stamp = out_path("cache", "last_query_stamp").stat().st_mtime
@@ -774,7 +786,7 @@ def _agent_started(payload: dict) -> "float | None":
     session_id = str(payload.get("session_id") or "")
     if not agent_id or not session_id:
         return None
-    from omnigraph.paths import out_path
+    from omnigraph.paths import graph_out_path as out_path
     try:
         if not out_path("graph.json").is_file():
             return None
@@ -816,7 +828,7 @@ def _reset_session_markers(session_id: str) -> None:
     nudges it was given, so the session gets its budget back. Other sessions
     are untouched.
     """
-    from omnigraph.paths import out_path
+    from omnigraph.paths import graph_out_path as out_path
     key = _session_key(session_id)
     folder = out_path("cache", "hook_sessions")
     if not key or not folder.is_dir():
@@ -861,7 +873,7 @@ def _claim_session_marker(session_id: str, suffix: str) -> bool:
     """Atomically claim a per-session marker. Returns True only on the FIRST call
     for a given session id and suffix (O_EXCL create wins once); every later call —
     or any error — returns False. Best-effort GC of markers older than 24h."""
-    from omnigraph.paths import out_path
+    from omnigraph.paths import graph_out_path as out_path
     sid = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:96]
     if not sid:
         return False
@@ -1073,7 +1085,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
     call never matched either of those matchers. Unconditional, like search -
     a Task call carries nothing to inspect.
     """
-    from omnigraph.paths import out_path, OMNIGRAPH_OUT_NAME
+    from omnigraph.paths import graph_out_path as out_path, OMNIGRAPH_OUT_NAME
     # O gancho BeforeTool do Gemini não aceita stdin e SEMPRE deve retornar uma decisão, então
     # a ferramenta nunca é bloqueada; o deslocamento do grafo é anexado somente quando um grafo
     # existe. Manipulado antes do stdin ler abaixo (que os guardas de pesquisa/leitura precisam).
@@ -1135,7 +1147,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
                     and _should_nudge(d, "search"):
                 sys.stdout.write(_SEARCH_NUDGE)
             elif cmd_str and not is_bash_search and out_path("graph.json").is_file():
-                root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+                root = _hook_project_root()
                 try:
                     root = root.resolve()
                 except (OSError, RuntimeError):
@@ -1164,7 +1176,7 @@ def _run_hook_guard(kind: str, strict: bool = False) -> None:
             # CLAUDE_PROJECT_DIR, which Claude Code sets) is the project root, since
             # the guard only triggers when graph.json exists relative to cwd. A path
             # candidate that resolves outside that root is out-of-project.
-            root = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+            root = _hook_project_root()
             try:
                 root = root.resolve()
             except (OSError, RuntimeError):
@@ -1256,7 +1268,7 @@ def _target_is_indexed(file_path: str, root: "Path") -> bool:
     Reads manifest.json (cheap, capped); on any doubt (missing/corrupt/oversized
     manifest, unresolvable path) returns True so the once-per-session deny still
     applies — that block is self-limiting, so erring toward it is safe."""
-    from omnigraph.paths import out_path
+    from omnigraph.paths import graph_out_path as out_path
     if not file_path:
         return True
     try:
@@ -2730,6 +2742,17 @@ def dispatch_command(cmd: str) -> None:
                 sys.exit(2)
             watch_arg = a
 
+        if watch_arg in (None, ".") and not (Path(_OMNIGRAPH_OUT) / "graph.json").exists():
+            # No graph here but one in a workspace folder above (a monorepo or a
+            # folder of sibling repos): keep that one current instead of starting
+            # a second, partial graph here that would then shadow it.
+            from omnigraph.paths import _graph_dir_above
+            _above = _graph_dir_above()
+            if _above is not None:
+                os.chdir(_above.parent)
+                print(f"[omnigraph] no graph in this folder; updating the workspace graph in {_above.parent}",
+                      file=sys.stderr)
+                watch_arg = None
         if watch_arg is not None:
             watch_path = Path(watch_arg)
         else:

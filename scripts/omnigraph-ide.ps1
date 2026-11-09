@@ -14,9 +14,20 @@ $mapa = (Get-Command omnigraph-mapa -ErrorAction SilentlyContinue).Source
 
 Write-Host "> Preparando o projeto para a IA da sua IDE" -ForegroundColor Magenta
 
+# mapa de um workspace: pasta acima com omnigraph-out (para antes da pasta pessoal)
+$acima = $null
+$d = (Resolve-Path $alvo).Path
+while ($true) {
+  $d = Split-Path $d -Parent
+  if (-not $d -or $d -eq $HOME) { break }
+  if (Test-Path (Join-Path $d "omnigraph-out\graph.json")) { $acima = $d; break }
+}
+
 # 1) garante o mapa
 if (Test-Path (Join-Path $alvo "omnigraph-out\graph.json")) {
   Write-Host "  [ok] mapa ja existe (use 'omnigraph-mapa' para atualizar)" -ForegroundColor Green
+} elseif ($acima) {
+  Write-Host "  [ok] usando o mapa que ja existe em $acima" -ForegroundColor Green
 } else {
   if ($mapa) { & $mapa $alvo }
   else { Push-Location $alvo; try { & $og extract . *> $null; & $og cluster-only . *> $null } finally { Pop-Location } }

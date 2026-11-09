@@ -475,6 +475,47 @@ def ensure_output_git_ignored(written: "str | Path") -> None:
     )
 
 
+def _graph_dir_above(start: "Path | None" = None) -> "Path | None":
+    """The output dir of the nearest folder above `start` (default: the current
+    folder) that has a graph.
+
+    Stops before the home folder and the filesystem root, so a stray graph
+    there cannot capture every project below it.
+    """
+    configured = Path(OMNIGRAPH_OUT)
+    if configured.is_absolute():
+        return None
+    try:
+        here = (start or Path.cwd()).resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return None
+    for folder in here.parents:
+        if folder == home or folder == folder.parent:
+            break
+        if (folder / configured / "graph.json").is_file():
+            return folder / configured
+    return None
+
+
+def find_out_dir() -> Path:
+    """The output dir to READ the graph from: here, or the nearest folder above.
+
+    A workspace that holds several sibling repos often keeps one graph at its
+    root while the agent runs inside one repo, so queries and hooks look upward
+    the way git does. Builds keep writing to the current folder (`out_path`).
+    """
+    configured = Path(OMNIGRAPH_OUT)
+    if configured.is_absolute() or (configured / "graph.json").is_file():
+        return configured
+    return _graph_dir_above() or configured
+
+
+def graph_out_path(*parts: str) -> Path:
+    """A path inside the output dir the graph is read from (see find_out_dir)."""
+    return Path(find_out_dir(), *parts)
+
+
 def out_path(*parts: str) -> Path:
     """A path inside the configured output dir, e.g. ``out_path("cache")``.
 
