@@ -6,8 +6,8 @@ the sessions before and after OmniGraph was set up here. Only sizes are used:
 no transcript content is printed or sent anywhere.
 
 "Finding code" is what the hooks watch: Read/Grep/Glob, shell searches (grep,
-rg, find...) and shell reads (cat, head, sed -n...), plus the graph queries
-that are meant to replace them.
+rg, find...) and shell reads (cat, head, sed -n...), code-navigation tools of
+MCP servers such as Serena, plus the graph queries meant to replace them.
 """
 from __future__ import annotations
 
@@ -23,6 +23,12 @@ _CHARS_PER_TOKEN = 4
 _SEARCH_TOOLS = frozenset({"Read", "Grep", "Glob"})
 _MAP_SUBCOMMANDS = frozenset({"query", "path", "explain"})
 _MAP_MCP_TOOLS = ("query_graph", "get_node", "get_neighbors", "shortest_path")
+# Code-navigation tools of other MCP servers (Serena and the like): they find and
+# read code too, so leaving them out would hide part of the cost being compared.
+_MCP_CODE_TOOLS = frozenset({
+    "find_symbol", "find_referencing_symbols", "get_symbols_overview",
+    "search_for_pattern", "read_file", "find_file", "list_dir",
+})
 _MIN_SESSIONS = 3
 
 
@@ -64,6 +70,8 @@ def _classify(name: str, tool_input: dict) -> str:
         return "busca"
     if "omnigraph" in name.lower() and name.endswith(_MAP_MCP_TOOLS):
         return "mapa"
+    if name.startswith("mcp__") and name.rsplit("__", 1)[-1] in _MCP_CODE_TOOLS:
+        return "busca"
     if name == "Bash":
         from omnigraph.cli import _bash_commands, _bash_invokes_search, _bash_read_targets
         cmd = str(tool_input.get("command") or "")

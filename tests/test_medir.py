@@ -44,6 +44,9 @@ def test_classify_matches_what_the_hooks_watch():
     assert _classify("mcp__omnigraph__query_graph", {}) == "mapa"
     assert _classify("Bash", {"command": "npm test"}) == "outros"
     assert _classify("Edit", {"file_path": "a.py"}) == "outros"
+    assert _classify("mcp__serena__find_symbol", {"name_path": "restore_session"}) == "busca"
+    assert _classify("mcp__serena__search_for_pattern", {}) == "busca"
+    assert _classify("mcp__serena__replace_symbol_body", {}) == "outros"
 
 
 def test_compares_sessions_before_and_after(tmp_path, monkeypatch, capsys):
