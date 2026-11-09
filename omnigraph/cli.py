@@ -860,12 +860,16 @@ _COMMAND_WRAPPERS = frozenset({
 _HEREDOC_OPEN_RE = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
 
 
-def _bash_commands(cmd_str: str) -> list[tuple[str, list[str]]]:
+def _bash_commands(cmd_str: str, keep_quoted: bool = False) -> list[tuple[str, list[str]]]:
     """The executable and arguments of each command a Bash string actually runs.
 
-    Heredoc bodies and quoted spans are dropped, the string is split on shell
-    operators, and wrappers like sudo/xargs/env and `VAR=x` prefixes are
-    skipped, so a tool name inside prose or a quoted argument never counts.
+    Heredoc bodies are dropped, the string is split on shell operators, and
+    wrappers like sudo/xargs/env and `VAR=x` prefixes are skipped, so a tool
+    name inside prose or a quoted argument never counts as the executable.
+
+    Quoted spans are dropped by default. With `keep_quoted` they come back as
+    plain arguments (`cat "my file.py"`), and an unquoted redirection ends the
+    arguments with a single ">" marker, since what follows it is written.
     """
     text = cmd_str
     # Drop heredoc bodies: from the line after `<<WORD` through the line that
@@ -885,8 +889,16 @@ def _bash_commands(cmd_str: str) -> list[tuple[str, list[str]]]:
         m = _HEREDOC_OPEN_RE.search(text, nl_idx + 1)
     # Drop quoted spans (backslash escapes inside double quotes are irrelevant
     # here - anything quoted is an argument, never the executable).
-    text = re.sub(r"'[^']*'", " ", text)
-    text = re.sub(r'"[^"]*"', " ", text)
+    held: list[str] = []
+
+    def _hold(match: "re.Match[str]") -> str:
+        if not keep_quoted:
+            return " "
+        held.append(match.group(0)[1:-1])
+        return f"\x00{len(held) - 1}\x00"
+
+    text = re.sub(r"'[^']*'", _hold, text)
+    text = re.sub(r'"[^"]*"', _hold, text)
     commands: list[tuple[str, list[str]]] = []
     # Split into command segments at shell operators / substitution boundaries.
     for segment in re.split(r"[|;&\n]|\$\(|`|\(|\)|\{|\}", text):
@@ -905,7 +917,16 @@ def _bash_commands(cmd_str: str) -> list[tuple[str, list[str]]]:
                 while i < len(tokens) and tokens[i].startswith("-"):
                     i += 1
                 continue
-            commands.append((name, tokens[i + 1:]))
+            args = tokens[i + 1:]
+            if keep_quoted:
+                restored = []
+                for arg in args:
+                    if ">" in arg:
+                        restored.append(">")
+                        break
+                    restored.append(re.sub(r"\x00(\d+)\x00", lambda m: held[int(m.group(1))], arg))
+                args = restored
+            commands.append((name, args))
             break  # first real token decides this segment
     return commands
 
@@ -946,17 +967,32 @@ def _bash_read_targets(cmd_str: str) -> list[str]:
     output redirection is a write target (`cat > notes.md <<EOF`), not a read.
     """
     targets: list[str] = []
-    for name, args in _bash_commands(cmd_str):
+    for name, args in _bash_commands(cmd_str, keep_quoted=True):
         if name == "sed":
             if "-n" not in args or any(a.startswith(("-i", "--in-place")) for a in args):
                 continue
         elif name not in _READ_COMMANDS:
             continue
+        positional: list[str] = []
+        script_given = skip_value = False
         for arg in args:
-            if ">" in arg:
+            if arg == ">":
                 break
-            if arg.startswith("-"):
+            if skip_value:
+                skip_value = False
                 continue
+            if (name == "sed" and arg in ("-e", "-f", "--expression", "--file")) \
+                    or (name == "awk" and arg == "-f"):
+                script_given = skip_value = True
+                continue
+            if name == "awk" and arg in ("-F", "-v"):
+                skip_value = True
+                continue
+            if not arg.startswith("-"):
+                positional.append(arg)
+        if name in ("sed", "awk") and not script_given:
+            positional = positional[1:]  # the script itself, not a file
+        for arg in positional:
             tail = arg.lower().replace("\\", "/").rsplit("/", 1)[-1]
             if "." in tail and "." + tail.rsplit(".", 1)[-1] in _HOOK_SOURCE_EXTS:
                 targets.append(arg)

@@ -155,6 +155,12 @@ def test_reading_a_file_through_the_shell_gets_the_read_nudge(tmp_path, monkeypa
     "head -n 20 mod.py",
     "tail mod.py 2>/dev/null",
     "nl mod.py | less",
+    'cat "mod.py"',
+    "sed -n '1,40p' \"mod.py\"",
+    "head -n 20 'meu arquivo.py'",
+    "awk '{print $1}' \"mod.py\"",
+    "awk '$1 > 5' mod.py",
+    "awk -F ',' '{print}' mod.py",
 ])
 def test_partial_reads_through_the_shell_count(cmd, tmp_path, monkeypatch, capsys):
     _graph(tmp_path, monkeypatch)
@@ -170,6 +176,10 @@ def test_partial_reads_through_the_shell_count(cmd, tmp_path, monkeypatch, capsy
     "cat omnigraph-out/GRAPH_REPORT.md",
     "tail -f server.log",
     "python mod.py",
+    'echo "cat mod.py"',
+    "sed -e 's/x/y/' -i mod.py",
+    "sed -n 's/old.py/new.py/p' notes.log",
+    "awk -f prog.awk data.csv",
 ])
 def test_writes_and_unrelated_commands_stay_quiet(cmd, tmp_path, monkeypatch, capsys):
     _graph(tmp_path, monkeypatch)
